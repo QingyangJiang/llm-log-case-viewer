@@ -331,13 +331,17 @@ function clipTextToTokens(text: string, maxTokens: number) {
 
 function calculateInputBudget(contextWindow: number, outputReserve: number, task: AiTask) {
   const promptOverhead = 700;
-  if (task === "translate") return Math.max(512, Math.floor((contextWindow - promptOverhead) * 0.36));
+  if (task === "translate") {
+    const contextBound = Math.floor((contextWindow - outputReserve - promptOverhead) * 0.9);
+    const translationBound = Math.floor(outputReserve / 1.5);
+    return Math.max(256, Math.min(contextBound, translationBound));
+  }
   return Math.max(512, Math.floor((contextWindow - outputReserve - promptOverhead) * 0.9));
 }
 
 function calculateOutputLimit(contextWindow: number, outputReserve: number, inputBudget: number, task: AiTask) {
   if (task !== "translate") return outputReserve;
-  return Math.max(512, Math.min(Math.floor(inputBudget * 1.5), contextWindow - inputBudget - 700));
+  return Math.max(128, Math.min(outputReserve, contextWindow - inputBudget - 700));
 }
 
 function packTextGroups(texts: string[], maxTokens: number) {
@@ -591,9 +595,11 @@ export default function Home() {
   const setOutputReserve = providerMode === "local" ? setLocalOutputReserve : setExternalOutputReserve;
   const inputBudget = calculateInputBudget(contextWindow, outputReserve, aiTask);
   const requestOutputLimit = calculateOutputLimit(contextWindow, outputReserve, inputBudget, aiTask);
-  const contextConfigError = aiTask !== "translate" && outputReserve * 2 + 700 >= contextWindow
-    ? "输出预留过大：需要至少为两段摘要合并保留输入空间。"
-    : "";
+  const contextConfigError = outputReserve + 700 >= contextWindow
+    ? "最大输出过大：上下文中没有足够空间容纳输入和系统提示。"
+    : aiTask !== "translate" && outputReserve * 2 + 700 >= contextWindow
+      ? "最大输出过大：需要至少为两段摘要合并保留输入空间。"
+      : "";
   const aiContentOptions = useMemo(() => ({ includeSystem, includeThinking, includeTools }), [includeSystem, includeThinking, includeTools]);
 
   const models = useMemo(() => Array.from(new Set(cases.map((item) => item.model).filter(Boolean) as string[])).sort(), [cases]);
@@ -1179,11 +1185,22 @@ export default function Home() {
               <label className="field-label"><span>API Base URL</span><input value={providerMode === "local" ? localEndpoint : externalEndpoint} onChange={(event) => providerMode === "local" ? setLocalEndpoint(event.target.value) : setExternalEndpoint(event.target.value)} placeholder="http://localhost:11434/v1" /></label>
               <label className="field-label"><span>模型名称</span><input value={aiModel} onChange={(event) => setAiModel(event.target.value)} placeholder="qwen3:8b" /></label>
               <label className="field-label"><span>API Key <em>仅保存在当前页面内存</em></span><input type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={providerMode === "local" ? "本地服务通常留空" : "sk-…"} autoComplete="off" /></label>
+              <div className="context-config-panel">
+                <div className="context-config-head"><strong>上下文与输出</strong><span>按模型实际能力填写</span></div>
+                <div className="context-config-grid">
+                  <label className="field-label"><span>上下文窗口 <em>Tokens</em></span><input type="number" min={2048} max={2000000} step={1024} value={contextWindow} onChange={(event) => setContextWindow(Math.max(0, Number(event.target.value)))} onBlur={() => setContextWindow(Math.min(2000000, Math.max(2048, Math.round(contextWindow))))} /></label>
+                  <label className="field-label"><span>单次最大输出 <em>Tokens</em></span><input type="number" min={128} max={524288} step={256} value={outputReserve} onChange={(event) => setOutputReserve(Math.max(0, Number(event.target.value)))} onBlur={() => setOutputReserve(Math.min(524288, Math.max(128, Math.round(outputReserve))))} /></label>
+                </div>
+                <div className="context-presets">
+                  <span>上下文快捷值</span>
+                  {[4096, 8192, 16384, 32768, 65536, 131072, 262144].map((value) => <button className={contextWindow === value ? "active" : ""} onClick={() => setContextWindow(value)} key={value}>{value >= 1024 ? `${value / 1024}K` : value}</button>)}
+                </div>
+                <div className="context-budget"><span>当前任务安全预算</span><strong>输入约 {inputBudget.toLocaleString()} · 输出最多 {requestOutputLimit.toLocaleString()}</strong></div>
+                {contextConfigError ? <p className="setting-error">{contextConfigError}</p> : null}
+              </div>
               <details className="advanced-settings">
-                <summary>长文本与发送内容设置</summary>
+                <summary>分片上限与发送内容</summary>
                 <div className="advanced-grid">
-                  <label><span>模型上下文窗口</span><select value={contextWindow} onChange={(event) => setContextWindow(Number(event.target.value))}><option value={4096}>4K</option><option value={8192}>8K</option><option value={16384}>16K</option><option value={32768}>32K</option><option value={65536}>64K</option><option value={131072}>128K</option><option value={262144}>256K</option></select></label>
-                  <label><span>摘要 / 自定义输出预留</span><select value={outputReserve} onChange={(event) => setOutputReserve(Number(event.target.value))}><option value={512}>512</option><option value={1024}>1K</option><option value={2048}>2K</option><option value={4096}>4K</option><option value={8192}>8K</option></select></label>
                   <label><span>最多处理片段</span><select value={maxChunks} onChange={(event) => setMaxChunks(Number(event.target.value))}><option value={8}>8</option><option value={20}>20</option><option value={50}>50</option><option value={100}>100</option><option value={200}>200</option></select></label>
                 </div>
                 <div className="check-grid">
@@ -1191,8 +1208,7 @@ export default function Home() {
                   <label><input type="checkbox" checked={includeThinking} onChange={(event) => setIncludeThinking(event.target.checked)} />包含 Thinking</label>
                   <label><input type="checkbox" checked={includeTools} onChange={(event) => setIncludeTools(event.target.checked)} />包含 Tools 定义</label>
                 </div>
-                <p>当前每段安全输入预算约 {inputBudget.toLocaleString()} Tokens。{aiTask === "translate" ? `翻译会自动为等长译文预留约 ${requestOutputLimit.toLocaleString()} Tokens，并逐段按顺序拼接。` : "已扣除系统提示、输出预留和安全余量；摘要逐段提炼后分层合并。"}</p>
-                {contextConfigError ? <p className="setting-error">{contextConfigError}</p> : null}
+                <p>当前每段安全输入预算约 {inputBudget.toLocaleString()} Tokens。{aiTask === "translate" ? `工具会根据最大输出反推片段大小，为译文保留最多 ${requestOutputLimit.toLocaleString()} Tokens，并逐段按顺序拼接。` : "已扣除系统提示、最大输出和安全余量；摘要逐段提炼后分层合并。"}</p>
               </details>
               <div className="config-actions"><button onClick={saveAiConfig}>保存配置</button><button onClick={() => void runConnectionTest()} disabled={aiBusy}>测试连接</button></div>
               {providerMode === "local" ? <details className="connection-help"><summary>本地连接失败怎么办？</summary><p>确认模型服务已启动并提供 OpenAI 兼容接口。Ollama 需允许当前网页来源访问；若浏览器拦截 HTTPS → HTTP 请求，建议下载仓库后本地运行查看器。</p><code>OLLAMA_ORIGINS=* ollama serve</code></details> : <p className="external-help">部分外部供应商不允许浏览器直接调用；遇到 CORS 错误时，请使用你自己的 OpenAI 兼容代理。</p>}
