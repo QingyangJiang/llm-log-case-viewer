@@ -14,7 +14,12 @@ type LogCase = JsonObject & {
 type Protocol = "openai" | "anthropic" | "unknown";
 type ViewTab = "conversation" | "tools" | "raw" | "ai";
 type AiTask = "summary" | "translate" | "bilingual" | "custom";
-type AiTarget = { kind: "case" } | { kind: "message"; index: number } | { kind: "batch" };
+type AiTarget =
+  | { kind: "case" }
+  | { kind: "message"; index: number }
+  | { kind: "batch" }
+  | { kind: "tool-definition"; index: number }
+  | { kind: "message-tool"; messageIndex: number; itemIndex: number; source: "content" | "tool_call" };
 type ProviderMode = "local" | "external";
 type AiResult = {
   resultId: string;
@@ -25,6 +30,7 @@ type AiResult = {
   caseId: string;
   caseIndex: number;
   messageIndex?: number;
+  anchorId?: string;
   model: string;
   provider: ProviderMode;
   sourceChars: number;
@@ -35,7 +41,7 @@ type AiResult = {
   createdAt: string;
 };
 
-type AiSource = { item: LogCase; caseIndex: number; caseId: string; target: string; source: string; messageIndex?: number };
+type AiSource = { item: LogCase; caseIndex: number; caseId: string; target: string; source: string; messageIndex?: number; anchorId?: string };
 type AiPlan = { sourceTokens: number; calls: number; chunks: number; blocked: boolean; clipped: boolean };
 type AiContentOptions = { includeSystem: boolean; includeThinking: boolean; includeTools: boolean };
 
@@ -452,7 +458,16 @@ function JsonCode({ value, compact = false }: { value: unknown; compact?: boolea
   return <pre className={compact ? "json-code compact" : "json-code"}>{tryPrettyJson(value)}</pre>;
 }
 
-function ContentBlock({ block }: { block: JsonObject }) {
+function ToolAiActions({ onAi, label }: { onAi: (task: AiTask) => void; label: string }) {
+  return (
+    <div className="tool-ai-actions">
+      <button onClick={() => onAi("translate")} aria-label={`翻译${label}`}>翻译</button>
+      <button onClick={() => onAi("summary")} aria-label={`总结${label}`}>摘要</button>
+    </div>
+  );
+}
+
+function ContentBlock({ block, anchorId, results = [], onAi, onCopyResult, onDownloadResult }: { block: JsonObject; anchorId?: string; results?: AiResult[]; onAi?: (task: AiTask) => void; onCopyResult?: (result: AiResult) => void; onDownloadResult?: (result: AiResult) => void }) {
   const type = String(block.type ?? "content");
   if (["text", "input_text", "output_text"].includes(type)) {
     return <p className="message-text">{String(block.text ?? "")}</p>;
@@ -467,18 +482,24 @@ function ContentBlock({ block }: { block: JsonObject }) {
   }
   if (type === "tool_use") {
     return (
-      <div className="tool-block">
-        <div className="tool-block-head"><span>TOOL USE</span><strong>{String(block.name ?? "unnamed_tool")}</strong></div>
-        <JsonCode value={block.input ?? {}} compact />
-        {block.id ? <code className="call-id">{String(block.id)}</code> : null}
+      <div className="tool-ai-wrapper" id={anchorId}>
+        <div className="tool-block">
+          <div className="tool-block-head"><span>TOOL USE</span><strong>{String(block.name ?? "unnamed_tool")}</strong>{onAi ? <ToolAiActions onAi={onAi} label={` Tool Use ${String(block.name ?? "")}`} /> : null}</div>
+          <JsonCode value={block.input ?? {}} compact />
+          {block.id ? <code className="call-id">{String(block.id)}</code> : null}
+        </div>
+        {onCopyResult && onDownloadResult ? <InlineAiResults results={results} label="该 Tool Use 的处理结果" onCopy={onCopyResult} onDownload={onDownloadResult} /> : null}
       </div>
     );
   }
   if (type === "tool_result") {
     return (
-      <div className="tool-block result">
-        <div className="tool-block-head"><span>TOOL RESULT</span><code>{String(block.tool_use_id ?? "")}</code></div>
-        <JsonCode value={block.content ?? block} compact />
+      <div className="tool-ai-wrapper" id={anchorId}>
+        <div className="tool-block result">
+          <div className="tool-block-head"><span>TOOL RESULT</span><code>{String(block.tool_use_id ?? "")}</code>{onAi ? <ToolAiActions onAi={onAi} label=" Tool Result" /> : null}</div>
+          <JsonCode value={block.content ?? block} compact />
+        </div>
+        {onCopyResult && onDownloadResult ? <InlineAiResults results={results} label="该 Tool Result 的处理结果" onCopy={onCopyResult} onDownload={onDownloadResult} /> : null}
       </div>
     );
   }
@@ -518,7 +539,7 @@ function InlineAiResults({ results, label, onCopy, onDownload }: { results: AiRe
   );
 }
 
-function MessageCard({ message, index, results, onAi, onCopyResult, onDownloadResult }: { message: JsonObject; index: number; results: AiResult[]; onAi: (index: number, task: AiTask) => void; onCopyResult: (result: AiResult) => void; onDownloadResult: (result: AiResult) => void }) {
+function MessageCard({ message, index, results, allResults, onAi, onToolAi, onCopyResult, onDownloadResult }: { message: JsonObject; index: number; results: AiResult[]; allResults: AiResult[]; onAi: (index: number, task: AiTask) => void; onToolAi: (target: AiTarget, task: AiTask) => void; onCopyResult: (result: AiResult) => void; onDownloadResult: (result: AiResult) => void }) {
   const role = String(message.role ?? "unknown");
   const content = message.content;
   const roleNames: Record<string, string> = { system: "SYSTEM", user: "USER", assistant: "ASSISTANT", tool: "TOOL", developer: "DEVELOPER" };
@@ -542,17 +563,24 @@ function MessageCard({ message, index, results, onAi, onCopyResult, onDownloadRe
       <div className="message-body">
         {typeof content === "string" ? <p className="message-text">{content}</p> : null}
         {content !== undefined && content !== null && !blocks && typeof content !== "string" ? <JsonCode value={content} compact /> : null}
-        {blocks?.map((block, blockIndex) =>
-          isObject(block) ? <ContentBlock key={blockIndex} block={block} /> : <JsonCode key={blockIndex} value={block} compact />,
-        )}
+        {blocks?.map((block, blockIndex) => {
+          if (!isObject(block)) return <JsonCode key={blockIndex} value={block} compact />;
+          const isToolBlock = block.type === "tool_use" || block.type === "tool_result";
+          const anchorId = isToolBlock ? `message-${index + 1}-tool-block-${blockIndex + 1}` : undefined;
+          return <ContentBlock key={blockIndex} block={block} anchorId={anchorId} results={anchorId ? allResults.filter((result) => result.anchorId === anchorId) : []} onAi={isToolBlock ? (task) => onToolAi({ kind: "message-tool", messageIndex: index, itemIndex: blockIndex, source: "content" }, task) : undefined} onCopyResult={onCopyResult} onDownloadResult={onDownloadResult} />;
+        })}
         {content === null && !toolCalls.length ? <p className="empty-content">content: null</p> : null}
         {toolCalls.map((call, callIndex) => {
           const fn = isObject(call.function) ? call.function : call;
+          const anchorId = `message-${index + 1}-tool-call-${callIndex + 1}`;
           return (
-            <div className="tool-block" key={callIndex}>
-              <div className="tool-block-head"><span>TOOL CALL</span><strong>{String(fn.name ?? "unnamed_tool")}</strong></div>
-              <JsonCode value={tryPrettyJson(fn.arguments ?? call.input ?? {})} compact />
-              {call.id ? <code className="call-id">{String(call.id)}</code> : null}
+            <div className="tool-ai-wrapper" id={anchorId} key={callIndex}>
+              <div className="tool-block">
+                <div className="tool-block-head"><span>TOOL CALL</span><strong>{String(fn.name ?? "unnamed_tool")}</strong><ToolAiActions onAi={(task) => onToolAi({ kind: "message-tool", messageIndex: index, itemIndex: callIndex, source: "tool_call" }, task)} label={` Tool Call ${String(fn.name ?? "")}`} /></div>
+                <JsonCode value={tryPrettyJson(fn.arguments ?? call.input ?? {})} compact />
+                {call.id ? <code className="call-id">{String(call.id)}</code> : null}
+              </div>
+              <InlineAiResults results={allResults.filter((result) => result.anchorId === anchorId)} label="该 Tool Call 的处理结果" onCopy={onCopyResult} onDownload={onDownloadResult} />
             </div>
           );
         })}
@@ -565,16 +593,17 @@ function MessageCard({ message, index, results, onAi, onCopyResult, onDownloadRe
   );
 }
 
-function ToolDefinition({ tool, index, protocol }: { tool: JsonObject; index: number; protocol: Protocol }) {
+function ToolDefinition({ tool, index, protocol, results, onAi, onCopyResult, onDownloadResult }: { tool: JsonObject; index: number; protocol: Protocol; results: AiResult[]; onAi: (task: AiTask) => void; onCopyResult: (result: AiResult) => void; onDownloadResult: (result: AiResult) => void }) {
   const fn = protocol === "openai" && isObject(tool.function) ? tool.function : tool;
   const schema = fn.parameters ?? fn.input_schema ?? {};
   return (
-    <article className="definition-card">
+    <article className="definition-card" id={`tool-definition-${index + 1}`}>
       <div className="definition-index">{String(index + 1).padStart(2, "0")}</div>
       <div className="definition-main">
-        <div className="definition-title"><strong>{String(fn.name ?? "unnamed_tool")}</strong><span>{protocolLabel(protocol)}</span></div>
+        <div className="definition-title"><strong>{String(fn.name ?? "unnamed_tool")}</strong><span>{protocolLabel(protocol)}</span><ToolAiActions onAi={onAi} label={` Tool 定义 ${String(fn.name ?? "")}`} /></div>
         {fn.description ? <p>{String(fn.description)}</p> : <p className="muted">无 description</p>}
         <details><summary>查看 Schema</summary><JsonCode value={schema} /></details>
+        <InlineAiResults results={results} label="该 Tool 定义的处理结果" onCopy={onCopyResult} onDownload={onDownloadResult} />
       </div>
     </article>
   );
@@ -675,6 +704,21 @@ export default function Home() {
     }
     if (!selected || !selectedPair) return [];
     const caseId = String(selected.id ?? `case-${selectedPair.index + 1}`);
+    if (aiTarget.kind === "tool-definition") {
+      const tool = selected.tools?.[aiTarget.index];
+      return [{ item: selected, caseIndex: selectedPair.index, caseId, target: `Tool 定义 #${aiTarget.index + 1}`, anchorId: `tool-definition-${aiTarget.index + 1}`, source: `[TOOL DEFINITION #${aiTarget.index + 1}]\n${stringify(tool)}` }];
+    }
+    if (aiTarget.kind === "message-tool") {
+      const message = selected.messages?.[aiTarget.messageIndex];
+      const value = aiTarget.source === "content"
+        ? (Array.isArray(message?.content) ? message.content[aiTarget.itemIndex] : undefined)
+        : (Array.isArray(message?.tool_calls) ? message.tool_calls[aiTarget.itemIndex] : undefined);
+      const anchorId = aiTarget.source === "content"
+        ? `message-${aiTarget.messageIndex + 1}-tool-block-${aiTarget.itemIndex + 1}`
+        : `message-${aiTarget.messageIndex + 1}-tool-call-${aiTarget.itemIndex + 1}`;
+      const label = aiTarget.source === "content" ? "Tool Block" : "Tool Call";
+      return [{ item: selected, caseIndex: selectedPair.index, caseId, target: `消息 #${aiTarget.messageIndex + 1} · ${label} #${aiTarget.itemIndex + 1}`, messageIndex: aiTarget.messageIndex, anchorId, source: `[${label.toUpperCase()}]\n${stringify(value)}` }];
+    }
     if (aiTarget.kind === "message") {
       const message = selected.messages?.[aiTarget.index];
       return [{ item: selected, caseIndex: selectedPair.index, caseId, target: `消息 #${aiTarget.index + 1}`, messageIndex: aiTarget.index, source: extractTextForAi(message?.content, includeThinking) }];
@@ -1008,7 +1052,7 @@ export default function Home() {
           const result: AiResult = {
             resultId,
             content: output, task: aiTask, target: aiSource.target, caseId: aiSource.caseId,
-            caseIndex: aiSource.caseIndex, messageIndex: aiSource.messageIndex, model: aiModel, provider: providerMode,
+            caseIndex: aiSource.caseIndex, messageIndex: aiSource.messageIndex, anchorId: aiSource.anchorId, model: aiModel, provider: providerMode,
             sourceChars: aiSource.source.length, sourceTokens: approximateTokenCount(aiSource.source),
             calls, chunks: usedChunks, sampled: clipped, createdAt,
           };
@@ -1023,7 +1067,7 @@ export default function Home() {
           const failedResult: AiResult = {
             resultId,
             content: "", error: message, task: aiTask, target: aiSource.target, caseId: aiSource.caseId,
-            caseIndex: aiSource.caseIndex, messageIndex: aiSource.messageIndex, model: aiModel, provider: providerMode,
+            caseIndex: aiSource.caseIndex, messageIndex: aiSource.messageIndex, anchorId: aiSource.anchorId, model: aiModel, provider: providerMode,
             sourceChars: aiSource.source.length, sourceTokens: approximateTokenCount(aiSource.source),
             calls, chunks: usedChunks, sampled: clipped, createdAt,
           };
@@ -1036,10 +1080,17 @@ export default function Home() {
       if (succeeded > 0) {
         setAiResultScope(aiTarget.kind === "batch" ? "all" : "case");
         setActiveAiResultId(latestResultId);
-        setTab(aiTarget.kind === "batch" ? "ai" : "conversation");
+        setTab(aiTarget.kind === "batch" ? "ai" : aiTarget.kind === "tool-definition" ? "tools" : "conversation");
         setAiOpen(false);
         if (aiTarget.kind === "message") {
           window.setTimeout(() => document.getElementById(`message-${aiTarget.index + 1}`)?.scrollIntoView({ behavior: "smooth", block: "center" }), 80);
+        } else if (aiTarget.kind === "message-tool") {
+          const anchorId = aiTarget.source === "content"
+            ? `message-${aiTarget.messageIndex + 1}-tool-block-${aiTarget.itemIndex + 1}`
+            : `message-${aiTarget.messageIndex + 1}-tool-call-${aiTarget.itemIndex + 1}`;
+          window.setTimeout(() => document.getElementById(anchorId)?.scrollIntoView({ behavior: "smooth", block: "center" }), 80);
+        } else if (aiTarget.kind === "tool-definition") {
+          window.setTimeout(() => document.getElementById(`tool-definition-${aiTarget.index + 1}`)?.scrollIntoView({ behavior: "smooth", block: "center" }), 80);
         } else if (aiTarget.kind === "case") {
           window.setTimeout(() => document.querySelector(".case-inline-results")?.scrollIntoView({ behavior: "smooth", block: "start" }), 80);
         }
@@ -1201,13 +1252,13 @@ export default function Home() {
                 {tab === "conversation" ? (
                   <div className="conversation">
                     {selectedCaseInlineResults.length ? <div className="case-inline-results"><InlineAiResults results={selectedCaseInlineResults} label="整条 Case 的处理结果" onCopy={(result) => void copyAiResult(result)} onDownload={exportAiResult} /></div> : null}
-                    {(selected.messages ?? []).map((message, index) => <MessageCard message={message} index={index} results={aiResults.filter((result) => result.caseIndex === selectedPair?.index && (result.messageIndex === index || (result.messageIndex === undefined && result.target === `消息 #${index + 1}`)))} onAi={(messageIndex, task) => openAiPanel({ kind: "message", index: messageIndex }, task)} onCopyResult={(result) => void copyAiResult(result)} onDownloadResult={exportAiResult} key={index} />)}
+                    {(selected.messages ?? []).map((message, index) => <MessageCard message={message} index={index} results={aiResults.filter((result) => result.caseIndex === selectedPair?.index && !result.anchorId && (result.messageIndex === index || (result.messageIndex === undefined && result.target === `消息 #${index + 1}`)))} allResults={aiResults.filter((result) => result.caseIndex === selectedPair?.index)} onAi={(messageIndex, task) => openAiPanel({ kind: "message", index: messageIndex }, task)} onToolAi={openAiPanel} onCopyResult={(result) => void copyAiResult(result)} onDownloadResult={exportAiResult} key={index} />)}
                     {!selected.messages?.length ? <div className="empty-panel"><span>≡</span><h3>这个 Case 没有 messages</h3><p>可切到“原始 JSON”检查实际字段结构。</p></div> : null}
                   </div>
                 ) : null}
                 {tab === "tools" ? (
                   <div className="tool-definitions">
-                    {(selected.tools ?? []).map((tool, index) => <ToolDefinition tool={tool} index={index} protocol={selectedProtocol} key={index} />)}
+                    {(selected.tools ?? []).map((tool, index) => <ToolDefinition tool={tool} index={index} protocol={selectedProtocol} results={aiResults.filter((result) => result.caseIndex === selectedPair?.index && result.anchorId === `tool-definition-${index + 1}`)} onAi={(task) => openAiPanel({ kind: "tool-definition", index }, task)} onCopyResult={(result) => void copyAiResult(result)} onDownloadResult={exportAiResult} key={index} />)}
                     {!selected.tools?.length ? <div className="empty-panel"><span>⌁</span><h3>这个 Case 没有 Tools 定义</h3><p>消息中的工具调用仍会显示在对话轨迹中。</p></div> : null}
                   </div>
                 ) : null}
@@ -1286,6 +1337,8 @@ export default function Home() {
               <div className="target-switch">
                 <button className={aiTarget.kind === "case" ? "active" : ""} onClick={() => setAiTarget({ kind: "case" })}>整条 Case</button>
                 <button className={aiTarget.kind === "batch" ? "active" : ""} onClick={() => setAiTarget({ kind: "batch" })}>当前筛选结果 · {Math.min(filtered.length, batchLimit)} 条</button>
+                {aiTarget.kind === "tool-definition" ? <button className="active">Tool 定义 #{aiTarget.index + 1}</button> : null}
+                {aiTarget.kind === "message-tool" ? <button className="active">消息 #{aiTarget.messageIndex + 1} · {aiTarget.source === "content" ? "Tool Block" : "Tool Call"} #{aiTarget.itemIndex + 1}</button> : null}
                 {(selected?.messages ?? []).map((message, index) => extractText(message.content).trim() ? (
                   <button className={aiTarget.kind === "message" && aiTarget.index === index ? "active" : ""} onClick={() => setAiTarget({ kind: "message", index })} key={index}>#{index + 1} {String(message.role ?? "message")}</button>
                 ) : null)}
@@ -1365,7 +1418,7 @@ export default function Home() {
               {aiBusy ? <button className="run-button cancel" onClick={cancelAiTask}>停止任务</button> : <button className="run-button" onClick={() => void runAiTask()}>✦ 开始{aiTask === "summary" ? "总结" : aiTask === "translate" ? "翻译" : aiTask === "bilingual" ? "生成双语摘要" : "处理"}</button>}
               {aiProgress ? <span aria-live="polite">{aiProgress}</span> : null}
             </div>
-            <div className="ai-drawer-result-note"><span>结果展示</span><p>消息翻译或摘要会直接显示在对应消息 block 内；整条 Case 显示在对话轨迹顶部；批量结果进入结果历史。</p>{aiResults.length ? <button onClick={() => { setTab("ai"); setAiOpen(false); }}>查看全部 {aiResults.length} 条历史结果</button> : null}</div>
+            <div className="ai-drawer-result-note"><span>结果展示</span><p>消息与 Tool 的翻译或摘要会直接显示在对应 block 内；整条 Case 显示在对话轨迹顶部；批量结果进入结果历史。</p>{aiResults.length ? <button onClick={() => { setTab("ai"); setAiOpen(false); }}>查看全部 {aiResults.length} 条历史结果</button> : null}</div>
           </aside>
         </>
       ) : null}
