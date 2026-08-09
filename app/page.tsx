@@ -34,7 +34,7 @@ type AiResult = {
 };
 
 type AiSource = { item: LogCase; caseIndex: number; caseId: string; target: string; source: string };
-type AiPlan = { sourceTokens: number; calls: number; chunks: number; sampled: boolean };
+type AiPlan = { sourceTokens: number; calls: number; chunks: number; blocked: boolean; clipped: boolean };
 type AiContentOptions = { includeSystem: boolean; includeThinking: boolean; includeTools: boolean };
 
 const SAMPLE_CASES: LogCase[] = [
@@ -329,17 +329,44 @@ function clipTextToTokens(text: string, maxTokens: number) {
   return { text: `${prefix}\n\n[中间内容因 Token 预算省略]\n\n${suffix}`, clipped: true };
 }
 
-function sampleChunks(chunks: string[], maxChunks: number) {
-  if (chunks.length <= maxChunks) return { chunks, sampled: false };
-  const indices = Array.from({ length: maxChunks }, (_, index) =>
-    Math.round(index * (chunks.length - 1) / Math.max(1, maxChunks - 1)),
-  );
-  return {
-    chunks: indices.map((chunkIndex, index) =>
-      `[抽样片段 ${index + 1}/${maxChunks}，原始位置 ${chunkIndex + 1}/${chunks.length}]\n${chunks[chunkIndex]}`,
-    ),
-    sampled: true,
-  };
+function calculateInputBudget(contextWindow: number, outputReserve: number, task: AiTask) {
+  const promptOverhead = 700;
+  if (task === "translate") return Math.max(512, Math.floor((contextWindow - promptOverhead) * 0.36));
+  return Math.max(512, Math.floor((contextWindow - outputReserve - promptOverhead) * 0.9));
+}
+
+function calculateOutputLimit(contextWindow: number, outputReserve: number, inputBudget: number, task: AiTask) {
+  if (task !== "translate") return outputReserve;
+  return Math.max(512, Math.min(Math.floor(inputBudget * 1.5), contextWindow - inputBudget - 700));
+}
+
+function packTextGroups(texts: string[], maxTokens: number) {
+  const normalized = texts.flatMap((text) => splitTextByTokens(text, maxTokens));
+  const groups: string[][] = [];
+  let current: string[] = [];
+  for (const text of normalized) {
+    const candidate = [...current, text].join("\n\n---\n\n");
+    if (current.length && approximateTokenCount(candidate) > maxTokens) {
+      groups.push(current);
+      current = [text];
+    } else {
+      current.push(text);
+    }
+  }
+  if (current.length) groups.push(current);
+  return groups;
+}
+
+function estimateMergeCalls(chunks: number, inputBudget: number, outputReserve: number, bilingual: boolean) {
+  if (chunks <= 1) return bilingual ? 1 : 0;
+  const fanIn = Math.max(2, Math.floor(inputBudget / Math.max(256, outputReserve)));
+  let current = chunks;
+  let calls = 0;
+  while (current > 1) {
+    current = Math.ceil(current / fanIn);
+    calls += current;
+  }
+  return calls;
 }
 
 function chatEndpoint(baseUrl: string) {
@@ -365,15 +392,16 @@ function resultText(payload: unknown) {
   return "";
 }
 
-function buildAiPlan(source: string, task: AiTask, maxTokens: number, maxChunks: number): AiPlan {
+function buildAiPlan(source: string, task: AiTask, inputBudget: number, outputReserve: number, maxChunks: number): AiPlan {
   if (task === "custom") {
-    const clipped = clipTextToTokens(source, maxTokens);
-    return { sourceTokens: approximateTokenCount(source), calls: 1, chunks: 1, sampled: clipped.clipped };
+    const clipped = clipTextToTokens(source, inputBudget);
+    return { sourceTokens: approximateTokenCount(source), calls: 1, chunks: 1, blocked: false, clipped: clipped.clipped };
   }
-  const sampledPlan = sampleChunks(splitTextByTokens(source, maxTokens), maxChunks);
-  const chunks = sampledPlan.chunks.length;
-  const calls = task === "translate" ? chunks : chunks + (task === "bilingual" || chunks > 1 ? 1 : 0);
-  return { sourceTokens: approximateTokenCount(source), calls, chunks, sampled: sampledPlan.sampled };
+  const chunks = splitTextByTokens(source, inputBudget).length;
+  const calls = task === "translate"
+    ? chunks
+    : chunks + estimateMergeCalls(chunks, inputBudget, outputReserve, task === "bilingual");
+  return { sourceTokens: approximateTokenCount(source), calls, chunks, blocked: chunks > maxChunks, clipped: false };
 }
 
 function waitWithSignal(milliseconds: number, signal: AbortSignal) {
@@ -535,8 +563,11 @@ export default function Home() {
   const [apiKey, setApiKey] = useState("");
   const [targetLanguage, setTargetLanguage] = useState("自动判断：中译英、英译中");
   const [customPrompt, setCustomPrompt] = useState("");
-  const [maxTokens, setMaxTokens] = useState(12000);
-  const [maxChunks, setMaxChunks] = useState(8);
+  const [localContextWindow, setLocalContextWindow] = useState(8192);
+  const [externalContextWindow, setExternalContextWindow] = useState(128000);
+  const [localOutputReserve, setLocalOutputReserve] = useState(1024);
+  const [externalOutputReserve, setExternalOutputReserve] = useState(4096);
+  const [maxChunks, setMaxChunks] = useState(20);
   const [batchLimit, setBatchLimit] = useState(20);
   const [includeSystem, setIncludeSystem] = useState(true);
   const [includeThinking, setIncludeThinking] = useState(false);
@@ -554,6 +585,15 @@ export default function Home() {
   const deferredQuery = useDeferredValue(query);
   const aiModel = providerMode === "local" ? localModel : externalModel;
   const setAiModel = providerMode === "local" ? setLocalModel : setExternalModel;
+  const contextWindow = providerMode === "local" ? localContextWindow : externalContextWindow;
+  const setContextWindow = providerMode === "local" ? setLocalContextWindow : setExternalContextWindow;
+  const outputReserve = providerMode === "local" ? localOutputReserve : externalOutputReserve;
+  const setOutputReserve = providerMode === "local" ? setLocalOutputReserve : setExternalOutputReserve;
+  const inputBudget = calculateInputBudget(contextWindow, outputReserve, aiTask);
+  const requestOutputLimit = calculateOutputLimit(contextWindow, outputReserve, inputBudget, aiTask);
+  const contextConfigError = aiTask !== "translate" && outputReserve * 2 + 700 >= contextWindow
+    ? "输出预留过大：需要至少为两段摘要合并保留输入空间。"
+    : "";
   const aiContentOptions = useMemo(() => ({ includeSystem, includeThinking, includeTools }), [includeSystem, includeThinking, includeTools]);
 
   const models = useMemo(() => Array.from(new Set(cases.map((item) => item.model).filter(Boolean) as string[])).sort(), [cases]);
@@ -594,14 +634,18 @@ export default function Home() {
     return [{ item: selected, caseIndex: selectedPair.index, caseId, target: "整条 Case", source: caseToText(selected, aiContentOptions) }];
   }, [aiTarget, selected, selectedPair, filtered, batchLimit, aiContentOptions, includeThinking]);
   const aiPlan = useMemo(() => aiSources.reduce((total, source) => {
-    const plan = buildAiPlan(source.source, aiTask, maxTokens, maxChunks);
+    const currentContextWindow = providerMode === "local" ? localContextWindow : externalContextWindow;
+    const currentOutputReserve = providerMode === "local" ? localOutputReserve : externalOutputReserve;
+    const planInputBudget = calculateInputBudget(currentContextWindow, currentOutputReserve, aiTask);
+    const plan = buildAiPlan(source.source, aiTask, planInputBudget, currentOutputReserve, maxChunks);
     return {
       sourceTokens: total.sourceTokens + plan.sourceTokens,
       calls: total.calls + plan.calls,
       chunks: total.chunks + plan.chunks,
-      sampled: total.sampled || plan.sampled,
+      blocked: total.blocked || plan.blocked,
+      clipped: total.clipped || plan.clipped,
     };
-  }, { sourceTokens: 0, calls: 0, chunks: 0, sampled: false } as AiPlan), [aiSources, aiTask, maxTokens, maxChunks]);
+  }, { sourceTokens: 0, calls: 0, chunks: 0, blocked: false, clipped: false } as AiPlan), [aiSources, aiTask, providerMode, localContextWindow, externalContextWindow, localOutputReserve, externalOutputReserve, maxChunks]);
   const endpoint = providerMode === "local" ? localEndpoint : externalEndpoint;
   const mixedContentRisk = typeof window !== "undefined" && window.location.protocol === "https:" && endpoint.trim().startsWith("http://");
 
@@ -617,7 +661,11 @@ export default function Home() {
         if (typeof config.localModel === "string") setLocalModel(config.localModel);
         else if (typeof config.aiModel === "string") setLocalModel(config.aiModel);
         if (typeof config.externalModel === "string") setExternalModel(config.externalModel);
-        if (typeof config.maxTokens === "number") setMaxTokens(config.maxTokens);
+        if (typeof config.localContextWindow === "number") setLocalContextWindow(config.localContextWindow);
+        else if (typeof config.maxTokens === "number") setLocalContextWindow(Math.max(4096, config.maxTokens + 2048));
+        if (typeof config.externalContextWindow === "number") setExternalContextWindow(config.externalContextWindow);
+        if (typeof config.localOutputReserve === "number") setLocalOutputReserve(config.localOutputReserve);
+        if (typeof config.externalOutputReserve === "number") setExternalOutputReserve(config.externalOutputReserve);
         if (typeof config.maxChunks === "number") setMaxChunks(config.maxChunks);
         if (typeof config.batchLimit === "number") setBatchLimit(config.batchLimit);
         if (typeof config.includeSystem === "boolean") setIncludeSystem(config.includeSystem);
@@ -725,14 +773,15 @@ export default function Home() {
 
   const saveAiConfig = () => {
     window.localStorage.setItem("case-lens-ai-config", JSON.stringify({
-      providerMode, localEndpoint, externalEndpoint, localModel, externalModel, maxTokens, maxChunks, batchLimit,
+      providerMode, localEndpoint, externalEndpoint, localModel, externalModel,
+      localContextWindow, externalContextWindow, localOutputReserve, externalOutputReserve, maxChunks, batchLimit,
       includeSystem, includeThinking, includeTools,
     }));
     setNotice("模型配置已保存在当前设备；API Key 未保存");
     window.setTimeout(() => setNotice(""), 2400);
   };
 
-  const callModel = async (instruction: string, source: string, signal: AbortSignal) => {
+  const callModel = async (instruction: string, source: string, signal: AbortSignal, maxOutputTokens = outputReserve) => {
     const baseUrl = providerMode === "local" ? localEndpoint : externalEndpoint;
     if (!baseUrl.trim()) throw new Error("请填写 API Base URL");
     if (!aiModel.trim()) throw new Error("请填写模型名称");
@@ -748,6 +797,7 @@ export default function Home() {
           body: JSON.stringify({
             model: aiModel.trim(),
             temperature: 0.2,
+            max_tokens: maxOutputTokens,
             stream: false,
             messages: [
               {
@@ -800,7 +850,46 @@ export default function Home() {
     }
   };
 
+  const mergeSummaries = async (partials: string[], bilingual: boolean, casePrefix: string, signal: AbortSignal) => {
+    if (partials.length === 1 && !bilingual) return { content: partials[0], calls: 0 };
+    let current = partials;
+    let level = 0;
+    let calls = 0;
+    while (current.length > 1 || (bilingual && level === 0)) {
+      if (level >= 10) throw new Error("分层摘要未能收敛；请增大上下文窗口或减小输出预留。");
+      const groups = current.length === 1 ? [current] : packTextGroups(current, inputBudget);
+      const next: string[] = [];
+      for (let groupIndex = 0; groupIndex < groups.length; groupIndex += 1) {
+        const isFinalGroup = groups.length === 1;
+        setAiProgress(`${casePrefix}正在分层合并 L${level + 1} · ${groupIndex + 1}/${groups.length}…`);
+        next.push(await callModel(
+          isFinalGroup && bilingual
+            ? "合并并去重这些片段摘要，输出：① 中文结构化摘要；② 对应的 concise English summary。保留数字、异常、工具调用与不确定性。"
+            : "合并并压缩这些片段摘要，去重后输出中文结构化中间摘要。保留任务、关键事实、执行链路、工具调用、结果、异常与待办。不要添加原文没有的信息。",
+          groups[groupIndex].join("\n\n---\n\n"), signal,
+        ));
+        calls += 1;
+      }
+      const previousTokens = current.reduce((sum, text) => sum + approximateTokenCount(text), 0);
+      const nextTokens = next.reduce((sum, text) => sum + approximateTokenCount(text), 0);
+      if (current.length > 1 && next.length >= current.length && nextTokens >= previousTokens * 0.95) {
+        throw new Error("中间摘要没有有效压缩；请减小输出预留或换用更擅长摘要的模型。");
+      }
+      current = next;
+      level += 1;
+    }
+    return { content: current[0], calls };
+  };
+
   const runAiTask = async () => {
+    if (contextConfigError) {
+      setAiError(contextConfigError);
+      return;
+    }
+    if (aiPlan.blocked) {
+      setAiError(`完整处理需要 ${aiPlan.chunks} 个片段，超过当前上限 ${maxChunks}。请提高片段上限、增大模型上下文窗口，或减少发送字段；为避免漏信息，本工具不会自动抽样。`);
+      return;
+    }
     if (aiTask === "custom" && !customPrompt.trim()) {
       setAiError("请先填写自定义指令");
       return;
@@ -821,19 +910,19 @@ export default function Home() {
         const aiSource = aiSources[sourceIndex];
         if (!aiSource.source.trim()) continue;
         const casePrefix = aiSources.length > 1 ? `Case ${sourceIndex + 1}/${aiSources.length} · ` : "";
-        const sampledPlan = sampleChunks(splitTextByTokens(aiSource.source, maxTokens), maxChunks);
+        const chunks = splitTextByTokens(aiSource.source, inputBudget);
         let output = "";
-        let usedChunks = sampledPlan.chunks.length;
-        let sampled = sampledPlan.sampled;
+        let usedChunks = chunks.length;
+        let clipped = false;
         let calls = 0;
         try {
           if (aiTask === "translate") {
             const translated: string[] = [];
-            for (let index = 0; index < sampledPlan.chunks.length; index += 1) {
-              setAiProgress(`${casePrefix}正在翻译 ${index + 1}/${sampledPlan.chunks.length}…`);
+            for (let index = 0; index < chunks.length; index += 1) {
+              setAiProgress(`${casePrefix}正在翻译 ${index + 1}/${chunks.length}…`);
               translated.push(await callModel(
                 `将日志准确翻译为“${targetLanguage}”。保留结构、角色标签、代码、JSON、数字和专有名词；只输出译文。`,
-                sampledPlan.chunks[index], controller.signal,
+                chunks[index], controller.signal, requestOutputLimit,
               ));
               calls += 1;
             }
@@ -841,33 +930,25 @@ export default function Home() {
           } else if (aiTask === "summary" || aiTask === "bilingual") {
             const partials: string[] = [];
             const bilingual = aiTask === "bilingual";
-            for (let index = 0; index < sampledPlan.chunks.length; index += 1) {
-              setAiProgress(`${casePrefix}正在总结片段 ${index + 1}/${sampledPlan.chunks.length}…`);
+            for (let index = 0; index < chunks.length; index += 1) {
+              setAiProgress(`${casePrefix}正在总结片段 ${index + 1}/${chunks.length}…`);
               partials.push(await callModel(
                 bilingual
                   ? "提炼该日志片段的事实、任务目标、关键步骤、工具调用、结果与异常。用简洁中文输出片段摘要。"
                   : "用中文提炼该日志片段：任务目标、关键事实、执行步骤、工具调用、最终结果、异常与待解决问题。避免复述和空话。",
-                sampledPlan.chunks[index], controller.signal,
+                chunks[index], controller.signal,
               ));
               calls += 1;
             }
-            if (partials.length === 1 && !bilingual) output = partials[0];
-            else {
-              setAiProgress(`${casePrefix}正在合并分段摘要…`);
-              output = await callModel(
-                bilingual
-                  ? "合并这些分段摘要，去重并输出：① 中文结构化摘要；② 对应的 concise English summary。若存在抽样，明确指出信息缺口。"
-                  : "合并这些分段摘要并去重，输出结构化总摘要：任务、关键事实、执行链路、结果、异常、待办。若存在抽样，明确指出信息缺口。",
-                partials.join("\n\n"), controller.signal,
-              );
-              calls += 1;
-            }
+            const merged = await mergeSummaries(partials, bilingual, casePrefix, controller.signal);
+            output = merged.content;
+            calls += merged.calls;
           } else {
-            const clipped = clipTextToTokens(aiSource.source, maxTokens);
-            sampled = clipped.clipped;
+            const clippedSource = clipTextToTokens(aiSource.source, inputBudget);
+            clipped = clippedSource.clipped;
             usedChunks = 1;
             setAiProgress(`${casePrefix}正在执行自定义指令…`);
-            output = await callModel(customPrompt.trim(), clipped.text, controller.signal);
+            output = await callModel(customPrompt.trim(), clippedSource.text, controller.signal);
             calls = 1;
           }
 
@@ -875,7 +956,7 @@ export default function Home() {
             content: output, task: aiTask, target: aiSource.target, caseId: aiSource.caseId,
             caseIndex: aiSource.caseIndex, model: aiModel, provider: providerMode,
             sourceChars: aiSource.source.length, sourceTokens: approximateTokenCount(aiSource.source),
-            calls, chunks: usedChunks, sampled, createdAt: new Date().toISOString(),
+            calls, chunks: usedChunks, sampled: clipped, createdAt: new Date().toISOString(),
           };
           setAiResults((current) => [result, ...current].slice(0, 200));
           succeeded += 1;
@@ -886,7 +967,7 @@ export default function Home() {
             content: "", error: message, task: aiTask, target: aiSource.target, caseId: aiSource.caseId,
             caseIndex: aiSource.caseIndex, model: aiModel, provider: providerMode,
             sourceChars: aiSource.source.length, sourceTokens: approximateTokenCount(aiSource.source),
-            calls, chunks: usedChunks, sampled, createdAt: new Date().toISOString(),
+            calls, chunks: usedChunks, sampled: clipped, createdAt: new Date().toISOString(),
           };
           setAiResults((current) => [failedResult, ...current].slice(0, 200));
           failed += 1;
@@ -1101,15 +1182,17 @@ export default function Home() {
               <details className="advanced-settings">
                 <summary>长文本与发送内容设置</summary>
                 <div className="advanced-grid">
-                  <label><span>每段 Token 预算</span><select value={maxTokens} onChange={(event) => setMaxTokens(Number(event.target.value))}><option value={4000}>4K</option><option value={8000}>8K</option><option value={12000}>12K</option><option value={24000}>24K</option><option value={48000}>48K</option></select></label>
-                  <label><span>最多处理片段</span><select value={maxChunks} onChange={(event) => setMaxChunks(Number(event.target.value))}><option value={4}>4</option><option value={8}>8</option><option value={12}>12</option><option value={20}>20</option></select></label>
+                  <label><span>模型上下文窗口</span><select value={contextWindow} onChange={(event) => setContextWindow(Number(event.target.value))}><option value={4096}>4K</option><option value={8192}>8K</option><option value={16384}>16K</option><option value={32768}>32K</option><option value={65536}>64K</option><option value={131072}>128K</option><option value={262144}>256K</option></select></label>
+                  <label><span>摘要 / 自定义输出预留</span><select value={outputReserve} onChange={(event) => setOutputReserve(Number(event.target.value))}><option value={512}>512</option><option value={1024}>1K</option><option value={2048}>2K</option><option value={4096}>4K</option><option value={8192}>8K</option></select></label>
+                  <label><span>最多处理片段</span><select value={maxChunks} onChange={(event) => setMaxChunks(Number(event.target.value))}><option value={8}>8</option><option value={20}>20</option><option value={50}>50</option><option value={100}>100</option><option value={200}>200</option></select></label>
                 </div>
                 <div className="check-grid">
                   <label><input type="checkbox" checked={includeSystem} onChange={(event) => setIncludeSystem(event.target.checked)} />包含 System / Developer</label>
                   <label><input type="checkbox" checked={includeThinking} onChange={(event) => setIncludeThinking(event.target.checked)} />包含 Thinking</label>
                   <label><input type="checkbox" checked={includeTools} onChange={(event) => setIncludeTools(event.target.checked)} />包含 Tools 定义</label>
                 </div>
-                <p>Token 数为中英文混合文本的本地近似值；超过片段上限时会按位置均匀抽样。</p>
+                <p>当前每段安全输入预算约 {inputBudget.toLocaleString()} Tokens。{aiTask === "translate" ? `翻译会自动为等长译文预留约 ${requestOutputLimit.toLocaleString()} Tokens，并逐段按顺序拼接。` : "已扣除系统提示、输出预留和安全余量；摘要逐段提炼后分层合并。"}</p>
+                {contextConfigError ? <p className="setting-error">{contextConfigError}</p> : null}
               </details>
               <div className="config-actions"><button onClick={saveAiConfig}>保存配置</button><button onClick={() => void runConnectionTest()} disabled={aiBusy}>测试连接</button></div>
               {providerMode === "local" ? <details className="connection-help"><summary>本地连接失败怎么办？</summary><p>确认模型服务已启动并提供 OpenAI 兼容接口。Ollama 需允许当前网页来源访问；若浏览器拦截 HTTPS → HTTP 请求，建议下载仓库后本地运行查看器。</p><code>OLLAMA_ORIGINS=* ollama serve</code></details> : <p className="external-help">部分外部供应商不允许浏览器直接调用；遇到 CORS 错误时，请使用你自己的 OpenAI 兼容代理。</p>}
@@ -1117,9 +1200,10 @@ export default function Home() {
 
             {aiError ? <div className="ai-error"><strong>处理失败</strong><p>{aiError}</p>{providerMode === "local" ? <small>请检查本地服务是否启动、模型名称是否正确，以及服务是否允许浏览器跨域访问。</small> : null}</div> : null}
 
-            <div className={`ai-plan ${aiPlan.sampled ? "sampled" : ""}`}>
+            <div className={`ai-plan ${aiPlan.blocked || contextConfigError ? "blocked" : aiPlan.clipped ? "sampled" : ""}`}>
               <div><span>执行计划</span><strong>{aiSources.length} 个 Case · 约 {aiPlan.sourceTokens.toLocaleString()} Tokens · {aiPlan.calls} 次请求</strong></div>
-              <small>{aiPlan.sampled ? "会发生抽样或截断，请先调整 Token 预算/片段上限。" : `共 ${aiPlan.chunks} 个片段，不会主动抽样。`}</small>
+              <small>{aiPlan.blocked ? `需要 ${aiPlan.chunks} 个片段，超过上限 ${maxChunks}；当前配置下不会执行。` : aiPlan.clipped ? "自定义任务会按 Token 预算保留首尾内容；翻译和摘要不会抽样。" : `共 ${aiPlan.chunks} 个片段，完整处理且不会抽样。`}</small>
+              <small>上下文 {contextWindow.toLocaleString()} · 单段输入约 {inputBudget.toLocaleString()} · 单次输出上限 {requestOutputLimit.toLocaleString()}</small>
               {aiTarget.kind === "batch" && filtered.length > batchLimit ? <small>当前筛选共 {filtered.length.toLocaleString()} 条，本次只处理前 {batchLimit} 条。</small> : null}
             </div>
 
@@ -1132,7 +1216,7 @@ export default function Home() {
             {aiResults.map((result, index) => (
               <section className={`ai-result ${result.error ? "failed" : ""}`} key={`${result.createdAt}-${result.caseId}-${index}`}>
                 <header><div><span>{result.error ? "FAILED" : "RESULT"}</span><strong>{result.caseId} · {result.target} · {result.model}</strong></div>{result.content ? <button onClick={() => { void navigator.clipboard.writeText(result.content); setNotice("已复制 AI 结果"); window.setTimeout(() => setNotice(""), 1800); }}>复制</button> : null}</header>
-                <div className="result-meta"><span>约 {result.sourceTokens.toLocaleString()} Tokens</span><span>{result.chunks} 个片段</span><span>{result.calls} 次请求</span><span>{result.provider === "local" ? "本地" : "外部 API"}</span>{result.sampled ? <span className="sampled">已抽样 / 截断</span> : null}</div>
+                <div className="result-meta"><span>约 {result.sourceTokens.toLocaleString()} Tokens</span><span>{result.chunks} 个片段</span><span>{result.calls} 次请求</span><span>{result.provider === "local" ? "本地" : "外部 API"}</span>{result.sampled ? <span className="sampled">已按预算截断</span> : null}</div>
                 {result.error ? <p className="result-error">{result.error}</p> : <pre>{result.content}</pre>}
               </section>
             ))}
