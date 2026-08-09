@@ -24,6 +24,7 @@ type AiResult = {
   target: string;
   caseId: string;
   caseIndex: number;
+  messageIndex?: number;
   model: string;
   provider: ProviderMode;
   sourceChars: number;
@@ -34,7 +35,7 @@ type AiResult = {
   createdAt: string;
 };
 
-type AiSource = { item: LogCase; caseIndex: number; caseId: string; target: string; source: string };
+type AiSource = { item: LogCase; caseIndex: number; caseId: string; target: string; source: string; messageIndex?: number };
 type AiPlan = { sourceTokens: number; calls: number; chunks: number; blocked: boolean; clipped: boolean };
 type AiContentOptions = { includeSystem: boolean; includeThinking: boolean; includeTools: boolean };
 
@@ -153,6 +154,15 @@ function protocolLabel(protocol: Protocol) {
 
 function aiTaskLabel(task: AiTask) {
   return task === "summary" ? "摘要" : task === "translate" ? "翻译" : task === "bilingual" ? "双语摘要" : "自定义处理";
+}
+
+function latestResultPerTask(results: AiResult[]) {
+  const seen = new Set<AiTask>();
+  return results.filter((result) => {
+    if (seen.has(result.task)) return false;
+    seen.add(result.task);
+    return true;
+  });
 }
 
 function stringify(value: unknown, spaces = 2) {
@@ -488,7 +498,27 @@ function ContentBlock({ block }: { block: JsonObject }) {
   );
 }
 
-function MessageCard({ message, index, onAi }: { message: JsonObject; index: number; onAi: (index: number, task: AiTask) => void }) {
+function InlineAiResults({ results, label, onCopy, onDownload }: { results: AiResult[]; label: string; onCopy: (result: AiResult) => void; onDownload: (result: AiResult) => void }) {
+  const visibleResults = latestResultPerTask(results);
+  if (!visibleResults.length) return null;
+  return (
+    <section className="inline-ai-results" aria-label={label}>
+      <div className="inline-ai-label"><span>✦</span><strong>{label}</strong><small>独立结果 · 不修改原始日志</small></div>
+      {visibleResults.map((result) => (
+        <article className={`inline-ai-result ${result.error ? "failed" : ""}`} key={result.resultId}>
+          <header>
+            <div><span>{result.error ? "处理失败" : `AI ${aiTaskLabel(result.task)}`}</span><small>{result.model} · {result.chunks} 个片段 · {result.calls} 次请求</small></div>
+            <div><button onClick={() => onCopy(result)}>复制</button><button onClick={() => onDownload(result)}>下载</button></div>
+          </header>
+          {result.sampled ? <p className="inline-ai-warning">该自定义任务按 Token 预算保留了原文首尾。</p> : null}
+          <pre>{result.error || result.content}</pre>
+        </article>
+      ))}
+    </section>
+  );
+}
+
+function MessageCard({ message, index, results, onAi, onCopyResult, onDownloadResult }: { message: JsonObject; index: number; results: AiResult[]; onAi: (index: number, task: AiTask) => void; onCopyResult: (result: AiResult) => void; onDownloadResult: (result: AiResult) => void }) {
   const role = String(message.role ?? "unknown");
   const content = message.content;
   const roleNames: Record<string, string> = { system: "SYSTEM", user: "USER", assistant: "ASSISTANT", tool: "TOOL", developer: "DEVELOPER" };
@@ -496,7 +526,7 @@ function MessageCard({ message, index, onAi }: { message: JsonObject; index: num
   const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls.filter(isObject) : [];
 
   return (
-    <article className={`message-card role-${role}`}>
+    <article className={`message-card role-${role}`} id={`message-${index + 1}`}>
       <header className="message-head">
         <div className="role-wrap"><span className="role-dot" /><strong>{roleNames[role] ?? role.toUpperCase()}</strong></div>
         <div className="message-head-actions">
@@ -530,6 +560,7 @@ function MessageCard({ message, index, onAi }: { message: JsonObject; index: num
           <div className="tool-link">响应调用 <code>{String(message.tool_call_id)}</code></div>
         ) : null}
       </div>
+      <InlineAiResults results={results} label={`消息 #${index + 1} 的处理结果`} onCopy={onCopyResult} onDownload={onDownloadResult} />
     </article>
   );
 }
@@ -646,7 +677,7 @@ export default function Home() {
     const caseId = String(selected.id ?? `case-${selectedPair.index + 1}`);
     if (aiTarget.kind === "message") {
       const message = selected.messages?.[aiTarget.index];
-      return [{ item: selected, caseIndex: selectedPair.index, caseId, target: `消息 #${aiTarget.index + 1}`, source: extractTextForAi(message?.content, includeThinking) }];
+      return [{ item: selected, caseIndex: selectedPair.index, caseId, target: `消息 #${aiTarget.index + 1}`, messageIndex: aiTarget.index, source: extractTextForAi(message?.content, includeThinking) }];
     }
     return [{ item: selected, caseIndex: selectedPair.index, caseId, target: "整条 Case", source: caseToText(selected, aiContentOptions) }];
   }, [aiTarget, selected, selectedPair, filtered, batchLimit, aiContentOptions, includeThinking]);
@@ -977,7 +1008,7 @@ export default function Home() {
           const result: AiResult = {
             resultId,
             content: output, task: aiTask, target: aiSource.target, caseId: aiSource.caseId,
-            caseIndex: aiSource.caseIndex, model: aiModel, provider: providerMode,
+            caseIndex: aiSource.caseIndex, messageIndex: aiSource.messageIndex, model: aiModel, provider: providerMode,
             sourceChars: aiSource.source.length, sourceTokens: approximateTokenCount(aiSource.source),
             calls, chunks: usedChunks, sampled: clipped, createdAt,
           };
@@ -992,7 +1023,7 @@ export default function Home() {
           const failedResult: AiResult = {
             resultId,
             content: "", error: message, task: aiTask, target: aiSource.target, caseId: aiSource.caseId,
-            caseIndex: aiSource.caseIndex, model: aiModel, provider: providerMode,
+            caseIndex: aiSource.caseIndex, messageIndex: aiSource.messageIndex, model: aiModel, provider: providerMode,
             sourceChars: aiSource.source.length, sourceTokens: approximateTokenCount(aiSource.source),
             calls, chunks: usedChunks, sampled: clipped, createdAt,
           };
@@ -1005,8 +1036,13 @@ export default function Home() {
       if (succeeded > 0) {
         setAiResultScope(aiTarget.kind === "batch" ? "all" : "case");
         setActiveAiResultId(latestResultId);
-        setTab("ai");
+        setTab(aiTarget.kind === "batch" ? "ai" : "conversation");
         setAiOpen(false);
+        if (aiTarget.kind === "message") {
+          window.setTimeout(() => document.getElementById(`message-${aiTarget.index + 1}`)?.scrollIntoView({ behavior: "smooth", block: "center" }), 80);
+        } else if (aiTarget.kind === "case") {
+          window.setTimeout(() => document.querySelector(".case-inline-results")?.scrollIntoView({ behavior: "smooth", block: "start" }), 80);
+        }
       }
       setNotice(aiSources.length > 1 ? `批量处理完成：${succeeded} 成功，${failed} 失败` : "AI 处理完成");
       window.setTimeout(() => setNotice(""), 3000);
@@ -1053,6 +1089,10 @@ export default function Home() {
     anchor.click();
     URL.revokeObjectURL(url);
   };
+
+  const selectedCaseInlineResults = selectedPair
+    ? aiResults.filter((result) => result.caseIndex === selectedPair.index && result.messageIndex === undefined && result.target === "整条 Case")
+    : [];
 
   const totalMessages = cases.reduce((sum, item) => sum + (item.messages?.length ?? 0), 0);
   const totalCalls = cases.reduce((sum, item) => sum + getToolCalls(item), 0);
@@ -1154,13 +1194,14 @@ export default function Home() {
                 <button className={tab === "conversation" ? "active" : ""} onClick={() => setTab("conversation")}>对话轨迹 <span>{selected.messages?.length ?? 0}</span></button>
                 <button className={tab === "tools" ? "active" : ""} onClick={() => setTab("tools")}>Tools 定义 <span>{selected.tools?.length ?? 0}</span></button>
                 <button className={tab === "raw" ? "active" : ""} onClick={() => setTab("raw")}>原始 JSON</button>
-                <button className={tab === "ai" ? "active" : ""} onClick={() => setTab("ai")}>AI 结果 <span>{aiResults.length}</span></button>
+                <button className={tab === "ai" ? "active" : ""} onClick={() => setTab("ai")}>结果历史 <span>{aiResults.length}</span></button>
               </nav>
 
               <div className="tab-content">
                 {tab === "conversation" ? (
                   <div className="conversation">
-                    {(selected.messages ?? []).map((message, index) => <MessageCard message={message} index={index} onAi={(messageIndex, task) => openAiPanel({ kind: "message", index: messageIndex }, task)} key={index} />)}
+                    {selectedCaseInlineResults.length ? <div className="case-inline-results"><InlineAiResults results={selectedCaseInlineResults} label="整条 Case 的处理结果" onCopy={(result) => void copyAiResult(result)} onDownload={exportAiResult} /></div> : null}
+                    {(selected.messages ?? []).map((message, index) => <MessageCard message={message} index={index} results={aiResults.filter((result) => result.caseIndex === selectedPair?.index && (result.messageIndex === index || (result.messageIndex === undefined && result.target === `消息 #${index + 1}`)))} onAi={(messageIndex, task) => openAiPanel({ kind: "message", index: messageIndex }, task)} onCopyResult={(result) => void copyAiResult(result)} onDownloadResult={exportAiResult} key={index} />)}
                     {!selected.messages?.length ? <div className="empty-panel"><span>≡</span><h3>这个 Case 没有 messages</h3><p>可切到“原始 JSON”检查实际字段结构。</p></div> : null}
                   </div>
                 ) : null}
@@ -1174,7 +1215,7 @@ export default function Home() {
                 {tab === "ai" ? (
                   <section className="ai-output-page" aria-label="AI 处理结果">
                     <header className="ai-output-toolbar">
-                      <div><span>AI OUTPUT</span><h3>翻译与摘要结果</h3><p>模型输出独立展示，不会写入或修改原始 messages。</p></div>
+                      <div><span>AI OUTPUT</span><h3>结果历史与批量输出</h3><p>单条消息结果会同时就地显示在对应消息 block 内。</p></div>
                       <div className="ai-output-actions">
                         <div className="scope-switch" aria-label="结果范围">
                           <button className={aiResultScope === "case" ? "active" : ""} onClick={() => setAiResultScope("case")}>当前 Case</button>
@@ -1324,7 +1365,7 @@ export default function Home() {
               {aiBusy ? <button className="run-button cancel" onClick={cancelAiTask}>停止任务</button> : <button className="run-button" onClick={() => void runAiTask()}>✦ 开始{aiTask === "summary" ? "总结" : aiTask === "translate" ? "翻译" : aiTask === "bilingual" ? "生成双语摘要" : "处理"}</button>}
               {aiProgress ? <span aria-live="polite">{aiProgress}</span> : null}
             </div>
-            <div className="ai-drawer-result-note"><span>结果展示</span><p>任务完成后会自动关闭此面板，并在主页面的“AI 结果”标签页中打开结果。</p>{aiResults.length ? <button onClick={() => { setTab("ai"); setAiOpen(false); }}>查看已有 {aiResults.length} 条结果</button> : null}</div>
+            <div className="ai-drawer-result-note"><span>结果展示</span><p>消息翻译或摘要会直接显示在对应消息 block 内；整条 Case 显示在对话轨迹顶部；批量结果进入结果历史。</p>{aiResults.length ? <button onClick={() => { setTab("ai"); setAiOpen(false); }}>查看全部 {aiResults.length} 条历史结果</button> : null}</div>
           </aside>
         </>
       ) : null}
