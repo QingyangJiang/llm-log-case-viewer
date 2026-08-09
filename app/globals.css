@@ -149,6 +149,12 @@ kbd { display: inline-flex; min-width: 22px; height: 22px; align-items: center; 
 .tool-block-head span { padding: 3px 5px; background: #f4dfa6; color: #654917; font-family: var(--font-geist-mono), monospace; font-size: 8px; letter-spacing: .08em; }
 .tool-block.result .tool-block-head span { background: #d6e7f1; color: #315a72; }
 .tool-block-head strong { font-family: var(--font-geist-mono), monospace; font-size: 11px; }.tool-block-head code { margin-left: auto; color: var(--muted); font-size: 9px; }
+.tool-ai-wrapper { scroll-margin: 90px; }
+.tool-ai-wrapper > .inline-ai-results { border: 1px solid #b8cbbf; border-top: 0; }
+.tool-ai-actions { margin-left: auto; display: flex; align-items: center; gap: 5px; }
+.tool-block-head code + .tool-ai-actions { margin-left: 0; }
+.tool-ai-actions button { height: 23px; padding: 0 7px; border: 1px solid #b9c6be; background: white; color: #526159; cursor: pointer; font-size: 8px; }
+.tool-ai-actions button:hover { border-color: var(--ink); background: var(--accent); color: var(--ink); }
 .call-id { display: block; padding: 0 10px 9px; color: #8b7240; font-size: 9px; }
 .tool-link { margin-top: 10px; color: #72571f; font-size: 10px; }.tool-link code { font-size: 9px; }
 .json-code { margin: 0; padding: 16px; overflow: auto; color: #25342f; background: #f1f3f0; font-family: var(--font-geist-mono), monospace; font-size: 11px; line-height: 1.7; white-space: pre-wrap; tab-size: 2; }
@@ -164,6 +170,9 @@ kbd { display: inline-flex; min-width: 22px; height: 22px; align-items: center; 
 .definition-card { padding: 18px; display: grid; grid-template-columns: 42px 1fr; gap: 14px; border: 1px solid var(--line-strong); background: white; box-shadow: 3px 3px 0 #e0e4e0; }
 .definition-index { height: 42px; display: flex; align-items: center; justify-content: center; border: 1px solid var(--ink); background: var(--accent); font-family: var(--font-geist-mono), monospace; font-size: 11px; font-weight: 700; }
 .definition-title { display: flex; align-items: center; gap: 10px; }.definition-title strong { font-family: var(--font-geist-mono), monospace; font-size: 13px; }.definition-title span { padding: 3px 6px; background: #edf0ed; color: var(--muted); font-size: 8px; text-transform: uppercase; }
+.definition-title .tool-ai-actions { margin-left: auto; }
+.definition-card { scroll-margin: 90px; }
+.definition-main > .inline-ai-results { margin-top: 14px; border: 1px solid #b8cbbf; }
 .definition-main > p { margin: 8px 0 13px; color: #59635f; font-size: 12px; line-height: 1.6; }.definition-main > p.muted { color: #989f9c; font-style: italic; }
 .definition-main details { border-top: 1px solid var(--line); }.definition-main summary { padding: 10px 0 0; cursor: pointer; color: var(--muted); font-size: 10px; }
 .definition-main .json-code { margin-top: 10px; }
