@@ -12,11 +12,12 @@ type LogCase = JsonObject & {
 };
 
 type Protocol = "openai" | "anthropic" | "unknown";
-type ViewTab = "conversation" | "tools" | "raw";
+type ViewTab = "conversation" | "tools" | "raw" | "ai";
 type AiTask = "summary" | "translate" | "bilingual" | "custom";
 type AiTarget = { kind: "case" } | { kind: "message"; index: number } | { kind: "batch" };
 type ProviderMode = "local" | "external";
 type AiResult = {
+  resultId: string;
   content: string;
   error?: string;
   task: AiTask;
@@ -148,6 +149,10 @@ function detectProtocol(item: LogCase): Protocol {
 
 function protocolLabel(protocol: Protocol) {
   return protocol === "openai" ? "OpenAI" : protocol === "anthropic" ? "Anthropic" : "通用";
+}
+
+function aiTaskLabel(task: AiTask) {
+  return task === "summary" ? "摘要" : task === "translate" ? "翻译" : task === "bilingual" ? "双语摘要" : "自定义处理";
 }
 
 function stringify(value: unknown, spaces = 2) {
@@ -580,6 +585,8 @@ export default function Home() {
   const [aiProgress, setAiProgress] = useState("");
   const [aiError, setAiError] = useState("");
   const [aiResults, setAiResults] = useState<AiResult[]>([]);
+  const [aiResultScope, setAiResultScope] = useState<"case" | "all">("case");
+  const [activeAiResultId, setActiveAiResultId] = useState("");
   const [visibleLimit, setVisibleLimit] = useState(400);
   const fileInput = useRef<HTMLInputElement>(null);
   const searchInput = useRef<HTMLInputElement>(null);
@@ -621,6 +628,10 @@ export default function Home() {
   const selectedPair = filtered.find(({ index }) => String(index) === selectedKey) ?? filtered[0];
   const selected = selectedPair?.item;
   const selectedProtocol = selected ? detectProtocol(selected) : "unknown";
+  const scopedAiResults = useMemo(() => aiResultScope === "all" || !selectedPair
+    ? aiResults
+    : aiResults.filter((result) => result.caseIndex === selectedPair.index), [aiResults, aiResultScope, selectedPair]);
+  const activeAiResult = scopedAiResults.find((result) => result.resultId === activeAiResultId) ?? scopedAiResults[0];
   const aiSources = useMemo<AiSource[]>(() => {
     if (aiTarget.kind === "batch") {
       return filtered.slice(0, batchLimit).map(({ item, index }) => ({
@@ -911,6 +922,7 @@ export default function Home() {
     aiAbort.current = controller;
     let succeeded = 0;
     let failed = 0;
+    let latestResultId = "";
     try {
       for (let sourceIndex = 0; sourceIndex < aiSources.length; sourceIndex += 1) {
         const aiSource = aiSources[sourceIndex];
@@ -958,22 +970,29 @@ export default function Home() {
             calls = 1;
           }
 
+          const createdAt = new Date().toISOString();
+          const resultId = `${createdAt}-${aiSource.caseIndex}-${sourceIndex}-${aiTask}`;
           const result: AiResult = {
+            resultId,
             content: output, task: aiTask, target: aiSource.target, caseId: aiSource.caseId,
             caseIndex: aiSource.caseIndex, model: aiModel, provider: providerMode,
             sourceChars: aiSource.source.length, sourceTokens: approximateTokenCount(aiSource.source),
-            calls, chunks: usedChunks, sampled: clipped, createdAt: new Date().toISOString(),
+            calls, chunks: usedChunks, sampled: clipped, createdAt,
           };
           setAiResults((current) => [result, ...current].slice(0, 200));
+          latestResultId = resultId;
           succeeded += 1;
         } catch (error) {
           if (error instanceof DOMException && error.name === "AbortError") throw error;
           const message = error instanceof Error ? error.message : "处理失败";
+          const createdAt = new Date().toISOString();
+          const resultId = `${createdAt}-${aiSource.caseIndex}-${sourceIndex}-${aiTask}-failed`;
           const failedResult: AiResult = {
+            resultId,
             content: "", error: message, task: aiTask, target: aiSource.target, caseId: aiSource.caseId,
             caseIndex: aiSource.caseIndex, model: aiModel, provider: providerMode,
             sourceChars: aiSource.source.length, sourceTokens: approximateTokenCount(aiSource.source),
-            calls, chunks: usedChunks, sampled: clipped, createdAt: new Date().toISOString(),
+            calls, chunks: usedChunks, sampled: clipped, createdAt,
           };
           setAiResults((current) => [failedResult, ...current].slice(0, 200));
           failed += 1;
@@ -981,6 +1000,12 @@ export default function Home() {
         }
       }
       setAiProgress("");
+      if (succeeded > 0) {
+        setAiResultScope(aiTarget.kind === "batch" ? "all" : "case");
+        setActiveAiResultId(latestResultId);
+        setTab("ai");
+        setAiOpen(false);
+      }
       setNotice(aiSources.length > 1 ? `批量处理完成：${succeeded} 成功，${failed} 失败` : "AI 处理完成");
       window.setTimeout(() => setNotice(""), 3000);
     } catch (error) {
@@ -1002,6 +1027,27 @@ export default function Home() {
     const anchor = document.createElement("a");
     anchor.href = url;
     anchor.download = `case-lens-ai-results-${new Date().toISOString().slice(0, 10)}.jsonl`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const copyAiResult = async (result: AiResult) => {
+    try {
+      await navigator.clipboard.writeText(result.content || result.error || "");
+      setNotice("已复制 AI 结果");
+    } catch {
+      setNotice("复制失败，请检查浏览器剪贴板权限");
+    }
+    window.setTimeout(() => setNotice(""), 1800);
+  };
+
+  const exportAiResult = (result: AiResult) => {
+    const body = result.error || result.content;
+    const blob = new Blob([body], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `${result.caseId}-${aiTaskLabel(result.task)}.txt`.replace(/[/\\?%*:|"<>]/g, "-");
     anchor.click();
     URL.revokeObjectURL(url);
   };
@@ -1106,6 +1152,7 @@ export default function Home() {
                 <button className={tab === "conversation" ? "active" : ""} onClick={() => setTab("conversation")}>对话轨迹 <span>{selected.messages?.length ?? 0}</span></button>
                 <button className={tab === "tools" ? "active" : ""} onClick={() => setTab("tools")}>Tools 定义 <span>{selected.tools?.length ?? 0}</span></button>
                 <button className={tab === "raw" ? "active" : ""} onClick={() => setTab("raw")}>原始 JSON</button>
+                <button className={tab === "ai" ? "active" : ""} onClick={() => setTab("ai")}>AI 结果 <span>{aiResults.length}</span></button>
               </nav>
 
               <div className="tab-content">
@@ -1122,6 +1169,54 @@ export default function Home() {
                   </div>
                 ) : null}
                 {tab === "raw" ? <div className="raw-panel"><div className="raw-head"><span>CASE.JSON</span><button onClick={copySelected}>复制</button></div><JsonCode value={selected} /></div> : null}
+                {tab === "ai" ? (
+                  <section className="ai-output-page" aria-label="AI 处理结果">
+                    <header className="ai-output-toolbar">
+                      <div><span>AI OUTPUT</span><h3>翻译与摘要结果</h3><p>模型输出独立展示，不会写入或修改原始 messages。</p></div>
+                      <div className="ai-output-actions">
+                        <div className="scope-switch" aria-label="结果范围">
+                          <button className={aiResultScope === "case" ? "active" : ""} onClick={() => setAiResultScope("case")}>当前 Case</button>
+                          <button className={aiResultScope === "all" ? "active" : ""} onClick={() => setAiResultScope("all")}>全部结果</button>
+                        </div>
+                        <button onClick={exportAiResults} disabled={!aiResults.length}>导出 JSONL</button>
+                        <button onClick={() => { setAiResults([]); setActiveAiResultId(""); }} disabled={!aiResults.length}>清空</button>
+                      </div>
+                    </header>
+
+                    {scopedAiResults.length ? (
+                      <div className="ai-output-workspace">
+                        <aside className="ai-output-list" aria-label="AI 结果列表">
+                          {scopedAiResults.map((result) => (
+                            <button className={activeAiResult?.resultId === result.resultId ? "active" : ""} onClick={() => setActiveAiResultId(result.resultId)} key={result.resultId}>
+                              <span className={`result-status ${result.error ? "failed" : ""}`}>{result.error ? "失败" : aiTaskLabel(result.task)}</span>
+                              <strong>{result.caseId}</strong>
+                              <small>{result.target} · {new Date(result.createdAt).toLocaleString()}</small>
+                            </button>
+                          ))}
+                        </aside>
+
+                        {activeAiResult ? (
+                          <article className={`ai-output-document ${activeAiResult.error ? "failed" : ""}`}>
+                            <header>
+                              <div><span>{activeAiResult.error ? "PROCESSING FAILED" : aiTaskLabel(activeAiResult.task).toUpperCase()}</span><h3>{activeAiResult.caseId} · {activeAiResult.target}</h3></div>
+                              <div><button onClick={() => void copyAiResult(activeAiResult)}>复制</button><button onClick={() => exportAiResult(activeAiResult)}>下载 TXT</button></div>
+                            </header>
+                            <dl className="ai-output-meta">
+                              <div><dt>模型</dt><dd>{activeAiResult.model}</dd></div>
+                              <div><dt>来源</dt><dd>{activeAiResult.provider === "local" ? "本地模型" : "外部 API"}</dd></div>
+                              <div><dt>输入规模</dt><dd>约 {activeAiResult.sourceTokens.toLocaleString()} Tokens</dd></div>
+                              <div><dt>处理过程</dt><dd>{activeAiResult.chunks} 个片段 · {activeAiResult.calls} 次请求</dd></div>
+                            </dl>
+                            {activeAiResult.sampled ? <p className="ai-output-warning">该自定义任务按 Token 预算保留了原文首尾；翻译和摘要任务不会抽样。</p> : null}
+                            {activeAiResult.error ? <pre className="ai-output-error">{activeAiResult.error}</pre> : <pre className="ai-output-content">{activeAiResult.content}</pre>}
+                          </article>
+                        ) : null}
+                      </div>
+                    ) : (
+                      <div className="ai-output-empty"><span>✦</span><h3>{aiResultScope === "case" ? "当前 Case 还没有 AI 结果" : "还没有 AI 结果"}</h3><p>点击右上角“翻译 / 总结”配置模型并执行任务，完成后结果会自动显示在这里。</p><button onClick={() => openAiPanel({ kind: "case" }, "summary")}>开始处理</button></div>
+                    )}
+                  </section>
+                ) : null}
               </div>
             </>
           ) : <div className="empty-panel full"><span>∅</span><h3>没有可显示的 Case</h3><p>调整筛选条件，或载入新的 JSONL 文件。</p></div>}
@@ -1227,15 +1322,7 @@ export default function Home() {
               {aiBusy ? <button className="run-button cancel" onClick={cancelAiTask}>停止任务</button> : <button className="run-button" onClick={() => void runAiTask()}>✦ 开始{aiTask === "summary" ? "总结" : aiTask === "translate" ? "翻译" : aiTask === "bilingual" ? "生成双语摘要" : "处理"}</button>}
               {aiProgress ? <span aria-live="polite">{aiProgress}</span> : null}
             </div>
-
-            {aiResults.length ? <div className="result-toolbar"><strong>结果历史 · {aiResults.length}</strong><div><button onClick={exportAiResults}>导出 JSONL</button><button onClick={() => setAiResults([])}>清空</button></div></div> : null}
-            {aiResults.map((result, index) => (
-              <section className={`ai-result ${result.error ? "failed" : ""}`} key={`${result.createdAt}-${result.caseId}-${index}`}>
-                <header><div><span>{result.error ? "FAILED" : "RESULT"}</span><strong>{result.caseId} · {result.target} · {result.model}</strong></div>{result.content ? <button onClick={() => { void navigator.clipboard.writeText(result.content); setNotice("已复制 AI 结果"); window.setTimeout(() => setNotice(""), 1800); }}>复制</button> : null}</header>
-                <div className="result-meta"><span>约 {result.sourceTokens.toLocaleString()} Tokens</span><span>{result.chunks} 个片段</span><span>{result.calls} 次请求</span><span>{result.provider === "local" ? "本地" : "外部 API"}</span>{result.sampled ? <span className="sampled">已按预算截断</span> : null}</div>
-                {result.error ? <p className="result-error">{result.error}</p> : <pre>{result.content}</pre>}
-              </section>
-            ))}
+            <div className="ai-drawer-result-note"><span>结果展示</span><p>任务完成后会自动关闭此面板，并在主页面的“AI 结果”标签页中打开结果。</p>{aiResults.length ? <button onClick={() => { setTab("ai"); setAiOpen(false); }}>查看已有 {aiResults.length} 条结果</button> : null}</div>
           </aside>
         </>
       ) : null}
