@@ -732,6 +732,8 @@ export default function Home() {
       setModelFilter("all");
       setVisibleLimit(400);
       setTab("conversation");
+      setAiResults([]);
+      setActiveAiResultId("");
       setNotice(`已在本地载入 ${parsed.cases.length.toLocaleString()} 条 case`);
       window.setTimeout(() => setNotice(""), 2600);
     }
