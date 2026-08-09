@@ -312,9 +312,68 @@ function caseToText(item: LogCase, options: AiContentOptions) {
 }
 
 function approximateTokenCount(text: string) {
-  const cjk = (text.match(/[\u3400-\u9fff\uf900-\ufaff\u3040-\u30ff\uac00-\ud7af]/g) ?? []).length;
-  const remaining = Math.max(0, text.length - cjk);
-  return Math.max(1, Math.ceil(cjk * 1.05 + remaining / 3.6));
+  const sampleLimit = 24_000;
+  if (text.length <= sampleLimit) {
+    const cjk = (text.match(/[\u3400-\u9fff\uf900-\ufaff\u3040-\u30ff\uac00-\ud7af]/g) ?? []).length;
+    return Math.max(1, Math.ceil(cjk * 1.05 + Math.max(0, text.length - cjk) / 3.6));
+  }
+  const segmentCount = 12;
+  const segmentLength = Math.floor(sampleLimit / segmentCount);
+  let sampledCharacters = 0;
+  let sampledCjk = 0;
+  for (let index = 0; index < segmentCount; index += 1) {
+    const start = Math.floor((text.length - segmentLength) * index / (segmentCount - 1));
+    const segment = text.slice(start, start + segmentLength);
+    sampledCharacters += segment.length;
+    sampledCjk += (segment.match(/[\u3400-\u9fff\uf900-\ufaff\u3040-\u30ff\uac00-\ud7af]/g) ?? []).length;
+  }
+  const cjkRatio = sampledCharacters ? sampledCjk / sampledCharacters : 0;
+  return Math.max(1, Math.ceil(text.length * (cjkRatio * 1.05 + (1 - cjkRatio) / 3.6)));
+}
+
+function isCjkCode(code: number) {
+  return (code >= 0x3400 && code <= 0x9fff)
+    || (code >= 0xf900 && code <= 0xfaff)
+    || (code >= 0x3040 && code <= 0x30ff)
+    || (code >= 0xac00 && code <= 0xd7af);
+}
+
+async function splitTextByTokensWithoutBlocking(text: string, maxTokens: number, signal: AbortSignal) {
+  if (approximateTokenCount(text) <= maxTokens * 0.85) return [text];
+  const chunks: string[] = [];
+  const safeBudget = Math.max(128, maxTokens * 0.96);
+  let start = 0;
+  let estimatedTokens = 0;
+  let lastLineBreak = -1;
+  let lastDoubleBreak = -1;
+  let lastYieldAt = 0;
+
+  for (let cursor = 0; cursor < text.length; cursor += 1) {
+    if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+    const code = text.charCodeAt(cursor);
+    estimatedTokens += isCjkCode(code) ? 1.05 : 1 / 3.6;
+    if (code === 10) {
+      if (cursor > 0 && text.charCodeAt(cursor - 1) === 10) lastDoubleBreak = cursor + 1;
+      lastLineBreak = cursor + 1;
+    }
+    if (estimatedTokens >= safeBudget) {
+      let end = cursor + 1;
+      const preferredBreak = Math.max(lastDoubleBreak, lastLineBreak);
+      if (preferredBreak > start + Math.floor((end - start) * 0.55)) end = preferredBreak;
+      chunks.push(text.slice(start, end));
+      start = end;
+      cursor = end - 1;
+      estimatedTokens = 0;
+      lastLineBreak = -1;
+      lastDoubleBreak = -1;
+    }
+    if (cursor - lastYieldAt >= 50_000) {
+      lastYieldAt = cursor;
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+    }
+  }
+  if (start < text.length) chunks.push(text.slice(start));
+  return chunks.length ? chunks : [text];
 }
 
 function splitTextByTokens(text: string, maxTokens: number) {
@@ -422,11 +481,12 @@ function buildAiPlan(source: string, task: AiTask, inputBudget: number, outputRe
     const clipped = clipTextToTokens(source, inputBudget);
     return { sourceTokens: approximateTokenCount(source), calls: 1, chunks: 1, blocked: false, clipped: clipped.clipped };
   }
-  const chunks = splitTextByTokens(source, inputBudget).length;
+  const sourceTokens = approximateTokenCount(source);
+  const chunks = Math.max(1, Math.ceil(sourceTokens / Math.max(1, inputBudget * 0.96)));
   const calls = task === "translate"
     ? chunks
     : chunks + estimateMergeCalls(chunks, inputBudget, outputReserve, task === "bilingual");
-  return { sourceTokens: approximateTokenCount(source), calls, chunks, blocked: chunks > maxChunks, clipped: false };
+  return { sourceTokens, calls, chunks, blocked: chunks > maxChunks, clipped: false };
 }
 
 function waitWithSignal(milliseconds: number, signal: AbortSignal) {
@@ -777,7 +837,7 @@ export default function Home() {
         searchInput.current?.focus();
         return;
       }
-      if (event.key === "Escape" && aiOpen && !aiBusy) {
+      if (event.key === "Escape" && aiOpen) {
         setAiOpen(false);
         window.setTimeout(() => aiReturnFocus.current?.focus(), 0);
         return;
@@ -792,7 +852,7 @@ export default function Home() {
     };
     window.addEventListener("keydown", handleKeys);
     return () => window.removeEventListener("keydown", handleKeys);
-  }, [filtered, selectedKey, aiOpen, aiBusy]);
+  }, [filtered, selectedKey, aiOpen]);
 
   const loadText = async (text: string, name: string) => {
     setNotice(text.length >= 2_000_000 ? "正在分批解析大型日志…" : "正在解析日志…");
@@ -816,6 +876,7 @@ export default function Home() {
 
   const loadFile = async (file?: File) => {
     if (!file) return;
+    if (aiBusy) aiAbort.current?.abort();
     const text = await file.text();
     await loadText(text, file.name);
   };
@@ -851,6 +912,11 @@ export default function Home() {
   };
 
   const openAiPanel = (target: AiTarget, task: AiTask) => {
+    if (aiBusy) {
+      setAiOpen(true);
+      window.setTimeout(() => closeAiButton.current?.focus(), 0);
+      return;
+    }
     aiReturnFocus.current = document.activeElement as HTMLElement | null;
     setAiTarget(target);
     setAiTask(task);
@@ -860,9 +926,14 @@ export default function Home() {
   };
 
   const closeAiPanel = () => {
-    if (aiBusy) return;
     setAiOpen(false);
     window.setTimeout(() => aiReturnFocus.current?.focus(), 0);
+  };
+
+  const reopenAiPanel = () => {
+    aiReturnFocus.current = document.activeElement as HTMLElement | null;
+    setAiOpen(true);
+    window.setTimeout(() => closeAiButton.current?.focus(), 0);
   };
 
   const saveAiConfig = () => {
@@ -995,6 +1066,7 @@ export default function Home() {
 
     setAiBusy(true);
     setAiError("");
+    setAiProgress("正在准备任务…");
     const controller = new AbortController();
     aiAbort.current = controller;
     let succeeded = 0;
@@ -1005,7 +1077,12 @@ export default function Home() {
         const aiSource = aiSources[sourceIndex];
         if (!aiSource.source.trim()) continue;
         const casePrefix = aiSources.length > 1 ? `Case ${sourceIndex + 1}/${aiSources.length} · ` : "";
-        const chunks = splitTextByTokens(aiSource.source, inputBudget);
+        setAiProgress(`${casePrefix}正在分段并计算上下文…`);
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+        const chunks = await splitTextByTokensWithoutBlocking(aiSource.source, inputBudget, controller.signal);
+        if (chunks.length > maxChunks) {
+          throw new Error(`完整处理需要 ${chunks.length} 个片段，超过当前上限 ${maxChunks}。请提高片段上限、增大上下文窗口，或减少发送字段。`);
+        }
         let output = "";
         let usedChunks = chunks.length;
         let clipped = false;
@@ -1323,7 +1400,7 @@ export default function Home() {
           <aside className="ai-drawer" role="dialog" aria-modal="true" aria-label="AI 翻译与总结">
             <header className="ai-drawer-head">
               <div><span>LOCAL-FIRST AI</span><h2>翻译与总结</h2></div>
-              <button ref={closeAiButton} onClick={closeAiPanel} aria-label="关闭">×</button>
+              <button ref={closeAiButton} onClick={closeAiPanel} aria-label={aiBusy ? "隐藏面板，任务在后台继续" : "关闭"}>×</button>
             </header>
 
             <div className={`ai-privacy ${providerMode}`}>
@@ -1421,6 +1498,15 @@ export default function Home() {
             <div className="ai-drawer-result-note"><span>结果展示</span><p>消息与 Tool 的翻译或摘要会直接显示在对应 block 内；整条 Case 显示在对话轨迹顶部；批量结果进入结果历史。</p>{aiResults.length ? <button onClick={() => { setTab("ai"); setAiOpen(false); }}>查看全部 {aiResults.length} 条历史结果</button> : null}</div>
           </aside>
         </>
+      ) : null}
+
+      {aiBusy && !aiOpen ? (
+        <aside className="ai-background-task" role="status" aria-live="polite">
+          <span className="ai-background-pulse">✦</span>
+          <div><strong>AI 正在后台处理</strong><p>{aiProgress || "正在等待模型响应…"}</p></div>
+          <button onClick={reopenAiPanel}>查看进度</button>
+          <button className="stop" onClick={cancelAiTask}>停止</button>
+        </aside>
       ) : null}
 
       {dragging ? <div className="drop-overlay"><div><span>⇣</span><h2>释放以载入日志</h2><p>支持 .jsonl 与 JSON 数组 · 全程本地解析</p></div></div> : null}
