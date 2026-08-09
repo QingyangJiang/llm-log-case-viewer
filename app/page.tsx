@@ -25,6 +25,7 @@ type AiResult = {
   resultId: string;
   content: string;
   error?: string;
+  prompt?: string;
   task: AiTask;
   target: string;
   caseId: string;
@@ -160,6 +161,13 @@ function protocolLabel(protocol: Protocol) {
 
 function aiTaskLabel(task: AiTask) {
   return task === "summary" ? "摘要" : task === "translate" ? "翻译" : task === "bilingual" ? "双语摘要" : "自定义处理";
+}
+
+function aiResultText(result: AiResult) {
+  const body = result.error || result.content;
+  return result.task === "custom" && result.prompt
+    ? `[CUSTOM PROMPT]\n${result.prompt}\n\n[RESULT]\n${body}`
+    : body;
 }
 
 function latestResultPerTask(results: AiResult[]) {
@@ -523,6 +531,7 @@ function ToolAiActions({ onAi, label }: { onAi: (task: AiTask) => void; label: s
     <div className="tool-ai-actions">
       <button onClick={() => onAi("translate")} aria-label={`翻译${label}`}>翻译</button>
       <button onClick={() => onAi("summary")} aria-label={`总结${label}`}>摘要</button>
+      <button onClick={() => onAi("custom")} aria-label={`自定义处理${label}`}>自定义</button>
     </div>
   );
 }
@@ -591,8 +600,11 @@ function InlineAiResults({ results, label, onCopy, onDownload }: { results: AiRe
             <div><span>{result.error ? "处理失败" : `AI ${aiTaskLabel(result.task)}`}</span><small>{result.model} · {result.chunks} 个片段 · {result.calls} 次请求</small></div>
             <div><button onClick={() => onCopy(result)}>复制</button><button onClick={() => onDownload(result)}>下载</button></div>
           </header>
+          {result.task === "custom" && result.prompt ? (
+            <div className="inline-ai-prompt"><span>本次 Prompt</span><pre>{result.prompt}</pre></div>
+          ) : null}
           {result.sampled ? <p className="inline-ai-warning">该自定义任务按 Token 预算保留了原文首尾。</p> : null}
-          <pre>{result.error || result.content}</pre>
+          <pre className="inline-ai-content">{result.error || result.content}</pre>
         </article>
       ))}
     </section>
@@ -615,6 +627,7 @@ function MessageCard({ message, index, results, allResults, onAi, onToolAi, onCo
             <>
               <button onClick={() => onAi(index, "translate")} aria-label={`翻译消息 ${index + 1}`}>翻译</button>
               <button onClick={() => onAi(index, "summary")} aria-label={`总结消息 ${index + 1}`}>摘要</button>
+              <button onClick={() => onAi(index, "custom")} aria-label={`自定义处理消息 ${index + 1}`}>自定义</button>
             </>
           ) : null}
           <span className="message-index">#{index + 1}</span>
@@ -1128,7 +1141,7 @@ export default function Home() {
           const resultId = `${createdAt}-${aiSource.caseIndex}-${sourceIndex}-${aiTask}`;
           const result: AiResult = {
             resultId,
-            content: output, task: aiTask, target: aiSource.target, caseId: aiSource.caseId,
+            content: output, prompt: aiTask === "custom" ? customPrompt.trim() : undefined, task: aiTask, target: aiSource.target, caseId: aiSource.caseId,
             caseIndex: aiSource.caseIndex, messageIndex: aiSource.messageIndex, anchorId: aiSource.anchorId, model: aiModel, provider: providerMode,
             sourceChars: aiSource.source.length, sourceTokens: approximateTokenCount(aiSource.source),
             calls, chunks: usedChunks, sampled: clipped, createdAt,
@@ -1143,7 +1156,7 @@ export default function Home() {
           const resultId = `${createdAt}-${aiSource.caseIndex}-${sourceIndex}-${aiTask}-failed`;
           const failedResult: AiResult = {
             resultId,
-            content: "", error: message, task: aiTask, target: aiSource.target, caseId: aiSource.caseId,
+            content: "", error: message, prompt: aiTask === "custom" ? customPrompt.trim() : undefined, task: aiTask, target: aiSource.target, caseId: aiSource.caseId,
             caseIndex: aiSource.caseIndex, messageIndex: aiSource.messageIndex, anchorId: aiSource.anchorId, model: aiModel, provider: providerMode,
             sourceChars: aiSource.source.length, sourceTokens: approximateTokenCount(aiSource.source),
             calls, chunks: usedChunks, sampled: clipped, createdAt,
@@ -1199,7 +1212,7 @@ export default function Home() {
 
   const copyAiResult = async (result: AiResult) => {
     try {
-      await navigator.clipboard.writeText(result.content || result.error || "");
+      await navigator.clipboard.writeText(aiResultText(result));
       setNotice("已复制 AI 结果");
     } catch {
       setNotice("复制失败，请检查浏览器剪贴板权限");
@@ -1208,7 +1221,7 @@ export default function Home() {
   };
 
   const exportAiResult = (result: AiResult) => {
-    const body = result.error || result.content;
+    const body = aiResultText(result);
     const blob = new Blob([body], { type: "text/plain;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
@@ -1304,6 +1317,7 @@ export default function Home() {
                 </div>
                 <div className="detail-actions">
                   <button className="process-button" onClick={() => openAiPanel({ kind: "case" }, "summary")}><span>✦</span>翻译 / 总结</button>
+                  <button className="process-button secondary" onClick={() => openAiPanel({ kind: "case" }, "custom")}><span>⌁</span>自定义</button>
                   <button className="icon-button" onClick={copySelected} title="复制 JSON">⧉</button>
                   <button className="icon-button" onClick={exportSelected} title="下载当前 Case">↓</button>
                 </div>
@@ -1378,6 +1392,9 @@ export default function Home() {
                               <div><dt>输入规模</dt><dd>约 {activeAiResult.sourceTokens.toLocaleString()} Tokens</dd></div>
                               <div><dt>处理过程</dt><dd>{activeAiResult.chunks} 个片段 · {activeAiResult.calls} 次请求</dd></div>
                             </dl>
+                            {activeAiResult.task === "custom" && activeAiResult.prompt ? (
+                              <div className="ai-output-prompt"><span>CUSTOM PROMPT</span><pre>{activeAiResult.prompt}</pre></div>
+                            ) : null}
                             {activeAiResult.sampled ? <p className="ai-output-warning">该自定义任务按 Token 预算保留了原文首尾；翻译和摘要任务不会抽样。</p> : null}
                             {activeAiResult.error ? <pre className="ai-output-error">{activeAiResult.error}</pre> : <pre className="ai-output-content">{activeAiResult.content}</pre>}
                           </article>
