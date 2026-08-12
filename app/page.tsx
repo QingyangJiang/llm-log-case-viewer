@@ -3,16 +3,35 @@
 import { ChangeEvent, DragEvent, ReactNode, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 
 type JsonObject = Record<string, unknown>;
+type CandidateOutput = { id: string; model: string; label?: string; reasoning?: unknown; response?: unknown; metadata?: JsonObject };
+type AnnotationDimension = { key: string; label: string; description?: string; min?: number; max?: number; required?: boolean };
+type CaseAnnotation = {
+  annotation_id: string;
+  annotator: { id: string; name: string };
+  candidate_id: string;
+  scores: Record<string, number>;
+  badcase: boolean;
+  badcase_tags?: string[];
+  note?: string;
+  status: "draft" | "submitted";
+  created_at: string;
+  updated_at: string;
+};
+type AnnotationConfig = { dimensions?: AnnotationDimension[]; badcase_tags?: string[] };
 type LogCase = JsonObject & {
+  schema_version?: string;
   id?: string | number;
   model?: string;
   messages?: JsonObject[];
   tools?: JsonObject[];
+  candidates?: CandidateOutput[];
+  annotation_config?: AnnotationConfig;
+  annotations?: CaseAnnotation[];
   __line?: number;
 };
 
 type Protocol = "openai" | "anthropic" | "unknown";
-type ViewTab = "conversation" | "tools" | "raw" | "ai";
+type ViewTab = "conversation" | "candidates" | "tools" | "raw" | "ai";
 type AiTask = "summary" | "translate" | "bilingual" | "custom";
 type AiTarget =
   | { kind: "case" }
@@ -45,6 +64,26 @@ type AiResult = {
 type AiSource = { item: LogCase; caseIndex: number; caseId: string; target: string; source: string; messageIndex?: number; anchorId?: string };
 type AiPlan = { sourceTokens: number; calls: number; chunks: number; blocked: boolean; clipped: boolean };
 type AiContentOptions = { includeSystem: boolean; includeThinking: boolean; includeTools: boolean };
+
+const DEFAULT_DIMENSIONS: AnnotationDimension[] = [
+  { key: "correctness", label: "正确性", description: "事实、结论与工具使用是否正确", min: 1, max: 5, required: true },
+  { key: "relevance", label: "相关性", description: "是否直接解决用户任务", min: 1, max: 5, required: true },
+  { key: "completeness", label: "完整性", description: "关键信息与步骤是否完整", min: 1, max: 5, required: true },
+  { key: "clarity", label: "表达质量", description: "结构、语言和可读性", min: 1, max: 5, required: true },
+];
+const DEFAULT_BADCASE_TAGS = ["事实错误", "未遵循指令", "工具调用错误", "推理问题", "遗漏关键信息", "表达问题", "安全风险", "其他"];
+const ANNOTATION_TEMPLATE: LogCase = {
+  schema_version: "case-lens.annotation.v1",
+  id: "case-000001",
+  messages: [{ role: "system", content: "You are a helpful assistant." }, { role: "user", content: "待评测的用户问题" }],
+  tools: [],
+  candidates: [
+    { id: "model-a", model: "model-a", label: "模型 A", reasoning: "可选：模型推理过程", response: "模型最终回复", metadata: { latency_ms: 1200 } },
+    { id: "model-b", model: "model-b", label: "模型 B", reasoning: "可选：模型推理过程", response: "模型最终回复" },
+  ],
+  annotation_config: { dimensions: DEFAULT_DIMENSIONS, badcase_tags: DEFAULT_BADCASE_TAGS },
+  annotations: [],
+};
 
 const SAMPLE_CASES: LogCase[] = [
   {
@@ -85,6 +124,12 @@ const SAMPLE_CASES: LogCase[] = [
       },
       { role: "assistant", content: "根据《员工休假管理办法》，年假为 5–15 天，具体天数按累计工龄计算。" },
     ],
+    candidates: [
+      { id: "candidate-a", model: "enterprise-9b", label: "9B 企业模型", reasoning: "需要先依据检索结果回答，并保留政策出处。", response: "根据检索到的《员工休假管理办法》，年假为 5–15 天，按累计工龄确定。" },
+      { id: "candidate-b", model: "deepseek-v4-flash", label: "线上中杯", reasoning: "工具结果已经包含年假范围与计算依据。", response: "年假通常为 5–15 天，实际天数由累计工龄决定，具体以公司休假管理办法为准。" },
+    ],
+    annotation_config: { dimensions: DEFAULT_DIMENSIONS, badcase_tags: DEFAULT_BADCASE_TAGS },
+    annotations: [],
   },
   {
     id: "case-anthropic-002",
@@ -179,6 +224,53 @@ function latestResultPerTask(results: AiResult[]) {
   });
 }
 
+function caseAnnotationKey(item: LogCase, index: number) {
+  return `${index}:${String(item.id ?? `case-${index + 1}`)}`;
+}
+
+function embeddedAnnotations(items: LogCase[]) {
+  return Object.fromEntries(items.map((item, index) => [caseAnnotationKey(item, index), Array.isArray(item.annotations) ? item.annotations : []]));
+}
+
+function annotationStatus(item: LogCase, index: number, annotatorId: string, records: Record<string, CaseAnnotation[]>) {
+  const candidateIds = (item.candidates ?? []).map((candidate) => candidate.id);
+  if (!candidateIds.length) return "unlabeled" as const;
+  const mine = (records[caseAnnotationKey(item, index)] ?? []).filter((record) => record.annotator.id === annotatorId);
+  if (candidateIds.every((id) => mine.some((record) => record.candidate_id === id && record.status === "submitted"))) return "submitted" as const;
+  return mine.length ? "draft" as const : "unlabeled" as const;
+}
+
+function hasBadcase(item: LogCase, index: number, records: Record<string, CaseAnnotation[]>) {
+  return (records[caseAnnotationKey(item, index)] ?? []).some((record) => record.badcase);
+}
+
+function downloadText(content: string, name: string, type: string) {
+  const blob = new Blob([content], { type });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = name;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
+function datasetStorageKey(name: string, items: LogCase[]) {
+  const source = `${name}|${items.length}|${items.slice(0, 40).map((item) => String(item.id ?? "")).join("|")}`;
+  let hash = 2166136261;
+  for (let index = 0; index < source.length; index += 1) hash = Math.imul(hash ^ source.charCodeAt(index), 16777619);
+  return `case-lens-annotations:${(hash >>> 0).toString(16)}`;
+}
+
+function savedAnnotatorField(field: "id" | "name") {
+  if (typeof window === "undefined") return "";
+  try {
+    const value = JSON.parse(window.localStorage.getItem("case-lens-annotator") ?? "{}");
+    return typeof value[field] === "string" ? value[field] : "";
+  } catch {
+    return "";
+  }
+}
+
 function stringify(value: unknown, spaces = 2) {
   if (typeof value === "string") return value;
   if (value === null || value === undefined) return "";
@@ -240,10 +332,6 @@ function getToolCalls(item: LogCase) {
     }
   }
   return count;
-}
-
-function countCharacters(item: LogCase) {
-  return (item.messages ?? []).reduce((sum, message) => sum + extractText(message.content).length, 0);
 }
 
 function parseJsonl(text: string) {
@@ -682,6 +770,98 @@ function ToolDefinition({ tool, index, protocol, results, onAi, onCopyResult, on
   );
 }
 
+function CandidateAnnotationCard({ candidate, dimensions, badcaseTags, existing, historyCount, disabled, onSave }: {
+  candidate: CandidateOutput;
+  dimensions: AnnotationDimension[];
+  badcaseTags: string[];
+  existing?: CaseAnnotation;
+  historyCount: number;
+  disabled: boolean;
+  onSave: (value: { scores: Record<string, number>; badcase: boolean; badcaseTags: string[]; note: string }, status: "draft" | "submitted") => void;
+}) {
+  const [scores, setScores] = useState<Record<string, number>>(existing?.scores ?? {});
+  const [badcase, setBadcase] = useState(existing?.badcase ?? false);
+  const [tags, setTags] = useState<string[]>(existing?.badcase_tags ?? []);
+  const [note, setNote] = useState(existing?.note ?? "");
+  const [formError, setFormError] = useState("");
+
+  const save = (status: "draft" | "submitted") => {
+    if (status === "submitted") {
+      const missing = dimensions.filter((dimension) => dimension.required !== false && scores[dimension.key] === undefined);
+      if (missing.length) {
+        setFormError(`请完成：${missing.map((dimension) => dimension.label).join("、")}`);
+        return;
+      }
+    }
+    setFormError("");
+    onSave({ scores, badcase, badcaseTags: badcase ? tags : [], note }, status);
+  };
+
+  return (
+    <article className={`candidate-card ${existing?.status === "submitted" ? "submitted" : ""} ${badcase ? "badcase" : ""}`}>
+      <header>
+        <div><span>{candidate.label ?? candidate.model}</span><h3>{candidate.model}</h3></div>
+        <div className="candidate-badges">{historyCount ? <span>{historyCount} 人已提交</span> : null}<span className={existing?.status ?? "unlabeled"}>{existing?.status === "submitted" ? "已提交" : existing ? "草稿" : "未标注"}</span></div>
+      </header>
+      <section className="candidate-output">
+        {candidate.reasoning !== undefined ? <details className="candidate-reasoning"><summary>Reasoning / 思考过程</summary><pre>{tryPrettyJson(candidate.reasoning)}</pre></details> : <p className="candidate-empty">没有提供 reasoning</p>}
+        <div className="candidate-response"><span>FINAL RESPONSE</span><pre>{tryPrettyJson(candidate.response ?? "") || "[空回复]"}</pre></div>
+        {candidate.metadata ? <details className="candidate-metadata"><summary>模型元数据</summary><JsonCode value={candidate.metadata} compact /></details> : null}
+      </section>
+      <section className="annotation-form">
+        <div className="score-grid">
+          {dimensions.map((dimension) => {
+            const min = dimension.min ?? 1;
+            const max = dimension.max ?? 5;
+            return (
+              <fieldset key={dimension.key}>
+                <legend>{dimension.label}{dimension.required === false ? "" : " *"}<small>{dimension.description}</small></legend>
+                <div>{Array.from({ length: max - min + 1 }, (_, offset) => min + offset).map((score) => <button type="button" className={scores[dimension.key] === score ? "active" : ""} onClick={() => setScores((current) => ({ ...current, [dimension.key]: score }))} key={score}>{score}</button>)}</div>
+              </fieldset>
+            );
+          })}
+        </div>
+        <label className="badcase-switch"><input type="checkbox" checked={badcase} onChange={(event) => setBadcase(event.target.checked)} /><span>标记为 Badcase</span></label>
+        {badcase ? <div className="badcase-tags">{badcaseTags.map((tag) => <button type="button" className={tags.includes(tag) ? "active" : ""} onClick={() => setTags((current) => current.includes(tag) ? current.filter((item) => item !== tag) : [...current, tag])} key={tag}>{tag}</button>)}</div> : null}
+        <label className="annotation-note"><span>备注 / 错误说明</span><textarea value={note} onChange={(event) => setNote(event.target.value)} rows={4} placeholder="记录判断依据、具体错误位置或修改建议…" /></label>
+        {formError ? <p className="annotation-error">{formError}</p> : null}
+        <div className="annotation-actions"><button type="button" disabled={disabled} onClick={() => save("draft")}>暂存草稿</button><button type="button" className="submit" disabled={disabled} onClick={() => save("submitted")}>提交标注</button></div>
+      </section>
+    </article>
+  );
+}
+
+function CandidateWorkspace({ item, caseIndex, records, annotator, onSave }: {
+  item: LogCase;
+  caseIndex: number;
+  records: CaseAnnotation[];
+  annotator: { id: string; name: string };
+  onSave: (candidate: CandidateOutput, value: { scores: Record<string, number>; badcase: boolean; badcaseTags: string[]; note: string }, status: "draft" | "submitted") => void;
+}) {
+  const candidates = item.candidates ?? [];
+  const dimensions = item.annotation_config?.dimensions?.length ? item.annotation_config.dimensions : DEFAULT_DIMENSIONS;
+  const badcaseTags = item.annotation_config?.badcase_tags?.length ? item.annotation_config.badcase_tags : DEFAULT_BADCASE_TAGS;
+  if (!candidates.length) return <div className="empty-panel"><span>◇</span><h3>这个 Case 没有候选模型结果</h3><p>在 JSONL 中增加 candidates 数组后，即可并排查看 reasoning、response 并进行多维标注。</p></div>;
+  return (
+    <section className="candidate-workspace">
+      <header className="candidate-workspace-head"><div><span>MODEL COMPARISON</span><h3>{candidates.length} 个候选结果</h3></div><p>当前标注员：<strong>{annotator.name || annotator.id || "未设置"}</strong> · 草稿自动保存在当前浏览器</p></header>
+      <div className="candidate-grid">
+        {candidates.map((candidate) => {
+          const existing = records.find((record) => record.candidate_id === candidate.id && record.annotator.id === annotator.id);
+          const historyCount = new Set(records.filter((record) => record.candidate_id === candidate.id && record.status === "submitted").map((record) => record.annotator.id)).size;
+          return <CandidateAnnotationCard candidate={candidate} dimensions={dimensions} badcaseTags={badcaseTags} existing={existing} historyCount={historyCount} disabled={!annotator.id.trim() || !annotator.name.trim()} onSave={(value, status) => onSave(candidate, value, status)} key={`${caseAnnotationKey(item, caseIndex)}:${candidate.id}:${annotator.id}:${existing?.updated_at ?? "new"}`} />;
+        })}
+      </div>
+      {records.length ? (
+        <details className="annotation-history">
+          <summary>查看全部标注记录 · {records.length}</summary>
+          <div>{records.map((record) => <article key={record.annotation_id}><span className={record.status}>{record.status === "submitted" ? "已提交" : "草稿"}</span><strong>{record.annotator.name}</strong><code>{record.candidate_id}</code>{record.badcase ? <b>BADCASE</b> : null}<small>{Object.entries(record.scores).map(([key, score]) => `${key}:${score}`).join(" · ")} · {new Date(record.updated_at).toLocaleString()}</small>{record.note ? <p>{record.note}</p> : null}</article>)}</div>
+        </details>
+      ) : null}
+    </section>
+  );
+}
+
 export default function Home() {
   const [cases, setCases] = useState<LogCase[]>(SAMPLE_CASES);
   const [fileName, setFileName] = useState("内置示例 · sample.jsonl");
@@ -689,6 +869,11 @@ export default function Home() {
   const [query, setQuery] = useState("");
   const [protocolFilter, setProtocolFilter] = useState<"all" | Protocol>("all");
   const [modelFilter, setModelFilter] = useState("all");
+  const [annotationFilter, setAnnotationFilter] = useState<"all" | "unlabeled" | "draft" | "submitted" | "badcase">("all");
+  const [annotatorId, setAnnotatorId] = useState(() => savedAnnotatorField("id"));
+  const [annotatorName, setAnnotatorName] = useState(() => savedAnnotatorField("name"));
+  const [annotations, setAnnotations] = useState<Record<string, CaseAnnotation[]>>(() => embeddedAnnotations(SAMPLE_CASES));
+  const [datasetKey, setDatasetKey] = useState("case-lens-annotations:builtin");
   const [tab, setTab] = useState<ViewTab>("conversation");
   const [dragging, setDragging] = useState(false);
   const [parseErrors, setParseErrors] = useState<string[]>([]);
@@ -742,20 +927,22 @@ export default function Home() {
       : "";
   const aiContentOptions = useMemo(() => ({ includeSystem, includeThinking, includeTools }), [includeSystem, includeThinking, includeTools]);
 
-  const models = useMemo(() => Array.from(new Set(cases.map((item) => item.model).filter(Boolean) as string[])).sort(), [cases]);
+  const models = useMemo(() => Array.from(new Set(cases.flatMap((item) => [item.model, ...(item.candidates ?? []).map((candidate) => candidate.model)]).filter(Boolean) as string[])).sort(), [cases]);
   const indexedCases = useMemo(() => cases.map((item, index) => ({
     item,
     index,
     protocol: detectProtocol(item),
-    searchable: [item.id, item.model, ...(item.messages ?? []).map((message) => extractText(message.content))].join(" ").toLowerCase(),
+    searchable: [item.id, item.model, ...(item.candidates ?? []).flatMap((candidate) => [candidate.model, candidate.label, extractText(candidate.response), extractText(candidate.reasoning)]), ...(item.messages ?? []).map((message) => extractText(message.content))].join(" ").toLowerCase(),
   })), [cases]);
   const filtered = useMemo(() => {
     const normalized = deferredQuery.trim().toLowerCase();
     return indexedCases
       .filter(({ protocol }) => protocolFilter === "all" || protocol === protocolFilter)
-      .filter(({ item }) => modelFilter === "all" || item.model === modelFilter)
+      .filter(({ item }) => modelFilter === "all" || item.model === modelFilter || item.candidates?.some((candidate) => candidate.model === modelFilter))
+      .filter(({ item, index }) => annotationFilter === "all"
+        || (annotationFilter === "badcase" ? hasBadcase(item, index, annotations) : annotationStatus(item, index, annotatorId, annotations) === annotationFilter))
       .filter(({ searchable }) => !normalized || searchable.includes(normalized));
-  }, [indexedCases, deferredQuery, protocolFilter, modelFilter]);
+  }, [indexedCases, deferredQuery, protocolFilter, modelFilter, annotationFilter, annotations, annotatorId]);
   const visibleCases = filtered.slice(0, visibleLimit);
 
   const selectedPair = filtered.find(({ index }) => String(index) === selectedKey) ?? filtered[0];
@@ -815,6 +1002,15 @@ export default function Home() {
   const mixedContentRisk = typeof window !== "undefined" && window.location.protocol === "https:" && endpoint.trim().startsWith("http://");
 
   useEffect(() => {
+    window.localStorage.setItem("case-lens-annotator", JSON.stringify({ id: annotatorId, name: annotatorName }));
+  }, [annotatorId, annotatorName]);
+
+  useEffect(() => {
+    if (!datasetKey) return;
+    window.localStorage.setItem(datasetKey, JSON.stringify(annotations));
+  }, [annotations, datasetKey]);
+
+  useEffect(() => {
     const timer = window.setTimeout(() => {
       try {
         const saved = window.localStorage.getItem("case-lens-ai-config");
@@ -872,14 +1068,25 @@ export default function Home() {
     const parsed = await parseJsonlWithoutBlocking(text);
     setParseErrors(parsed.errors);
     if (parsed.cases.length) {
+      const nextDatasetKey = datasetStorageKey(name, parsed.cases);
+      let nextAnnotations = embeddedAnnotations(parsed.cases);
+      try {
+        const localDrafts = window.localStorage.getItem(nextDatasetKey);
+        if (localDrafts) nextAnnotations = { ...nextAnnotations, ...JSON.parse(localDrafts) };
+      } catch {
+        // Keep annotations embedded in the uploaded JSONL.
+      }
       setCases(parsed.cases);
       setFileName(name);
+      setDatasetKey(nextDatasetKey);
+      setAnnotations(nextAnnotations);
       setSelectedKey("0");
       setQuery("");
       setProtocolFilter("all");
       setModelFilter("all");
+      setAnnotationFilter("all");
       setVisibleLimit(400);
-      setTab("conversation");
+      setTab(parsed.cases.some((item) => item.candidates?.length) ? "candidates" : "conversation");
       setAiResults([]);
       setActiveAiResultId("");
       setNotice(`已在本地载入 ${parsed.cases.length.toLocaleString()} 条 case`);
@@ -923,6 +1130,53 @@ export default function Home() {
     anchor.click();
     URL.revokeObjectURL(url);
   };
+
+  const saveCandidateAnnotation = (candidate: CandidateOutput, value: { scores: Record<string, number>; badcase: boolean; badcaseTags: string[]; note: string }, status: "draft" | "submitted") => {
+    if (!selected || !selectedPair || !annotatorId.trim() || !annotatorName.trim()) {
+      setNotice("请先填写标注员 ID 和姓名");
+      window.setTimeout(() => setNotice(""), 2200);
+      return;
+    }
+    const key = caseAnnotationKey(selected, selectedPair.index);
+    const now = new Date().toISOString();
+    setAnnotations((current) => {
+      const list = current[key] ?? [];
+      const existing = list.find((record) => record.candidate_id === candidate.id && record.annotator.id === annotatorId.trim());
+      const record: CaseAnnotation = {
+        annotation_id: existing?.annotation_id ?? `${String(selected.id ?? selectedPair.index)}:${candidate.id}:${annotatorId.trim()}`,
+        annotator: { id: annotatorId.trim(), name: annotatorName.trim() },
+        candidate_id: candidate.id,
+        scores: value.scores,
+        badcase: value.badcase,
+        badcase_tags: value.badcaseTags,
+        note: value.note.trim(),
+        status,
+        created_at: existing?.created_at ?? now,
+        updated_at: now,
+      };
+      return { ...current, [key]: [record, ...list.filter((item) => item.annotation_id !== record.annotation_id)] };
+    });
+    setNotice(status === "submitted" ? `已提交 ${candidate.label ?? candidate.model} 的标注` : "草稿已暂存在当前浏览器");
+    window.setTimeout(() => setNotice(""), 2200);
+  };
+
+  const annotatedItems = () => cases.map((item, index) => {
+    const clean = { ...item, schema_version: item.schema_version ?? "case-lens.annotation.v1", annotations: annotations[caseAnnotationKey(item, index)] ?? [] };
+    delete clean.__line;
+    return clean;
+  });
+
+  const exportAnnotatedDataset = () => {
+    const lines = annotatedItems().map((item) => JSON.stringify(item)).join("\n");
+    downloadText(`${lines}\n`, `${fileName.replace(/\.(jsonl|json)$/i, "")}-annotated.jsonl`, "application/x-ndjson");
+  };
+
+  const exportAnnotationRows = () => {
+    const rows = cases.flatMap((item, index) => (annotations[caseAnnotationKey(item, index)] ?? []).map((record) => ({ case_id: String(item.id ?? `case-${index + 1}`), ...record })));
+    downloadText(`${rows.map((row) => JSON.stringify(row)).join("\n")}${rows.length ? "\n" : ""}`, `case-lens-annotation-records-${new Date().toISOString().slice(0, 10)}.jsonl`, "application/x-ndjson");
+  };
+
+  const downloadAnnotationTemplate = () => downloadText(`${JSON.stringify(ANNOTATION_TEMPLATE)}\n`, "case-lens-annotation-template.jsonl", "application/x-ndjson");
 
   const openAiPanel = (target: AiTarget, task: AiTask) => {
     if (aiBusy) {
@@ -1237,6 +1491,8 @@ export default function Home() {
 
   const totalMessages = cases.reduce((sum, item) => sum + (item.messages?.length ?? 0), 0);
   const totalCalls = cases.reduce((sum, item) => sum + getToolCalls(item), 0);
+  const submittedCases = cases.filter((item, index) => annotationStatus(item, index, annotatorId, annotations) === "submitted").length;
+  const badcaseCount = cases.filter((item, index) => hasBadcase(item, index, annotations)).length;
 
   return (
     <main
@@ -1257,6 +1513,7 @@ export default function Home() {
             <Icon>●</Icon>{providerMode === "local" ? "日志默认仅在本机处理" : "外部 API 仅在执行任务时接收文本"}
           </span>
           <button className="button ai-button" onClick={() => openAiPanel({ kind: "case" }, "summary")}><Icon>✦</Icon>AI 处理</button>
+          <button className="button" onClick={exportAnnotatedDataset}><Icon>↓</Icon>导出标注</button>
           <input ref={fileInput} type="file" accept=".jsonl,.json,application/json,text/plain" hidden onChange={(event: ChangeEvent<HTMLInputElement>) => { const file = event.target.files?.[0]; event.target.value = ""; void loadFile(file); }} />
           <button className="button primary" onClick={() => fileInput.current?.click()}><Icon>＋</Icon>载入 JSONL</button>
         </div>
@@ -1267,6 +1524,7 @@ export default function Home() {
         <div><span>CASES</span><strong>{cases.length.toLocaleString()}</strong></div>
         <div><span>MESSAGES</span><strong>{totalMessages.toLocaleString()}</strong></div>
         <div><span>TOOL CALLS</span><strong>{totalCalls.toLocaleString()}</strong></div>
+        <div><span>已完成 / BADCASE</span><strong>{submittedCases} / {badcaseCount}</strong></div>
         <div className="shortcut-hint"><kbd>↑</kbd><kbd>↓</kbd><span>切换 Case</span></div>
       </section>
 
@@ -1280,6 +1538,11 @@ export default function Home() {
       <div className="workspace">
         <aside className={`sidebar ${sidebarOpen ? "open" : ""}`}>
           <div className="sidebar-tools">
+            <div className="annotator-panel">
+              <div><span>ANNOTATOR</span><small>每位用户使用唯一 ID</small></div>
+              <div className="annotator-fields"><input value={annotatorId} onChange={(event) => setAnnotatorId(event.target.value)} placeholder="用户 ID，如 jiangqy" aria-label="标注员 ID" /><input value={annotatorName} onChange={(event) => setAnnotatorName(event.target.value)} placeholder="显示姓名" aria-label="标注员姓名" /></div>
+              <div className="annotator-actions"><button onClick={downloadAnnotationTemplate}>下载输入模板</button><button onClick={exportAnnotationRows}>仅导出标注记录</button></div>
+            </div>
             <label className="search-box"><Icon>⌕</Icon><input ref={searchInput} value={query} onChange={(event) => { setQuery(event.target.value); setVisibleLimit(400); }} placeholder="搜索 ID、模型或消息…" /><kbd>⌘K</kbd></label>
             <div className="filters">
               <select value={protocolFilter} onChange={(event) => { setProtocolFilter(event.target.value as "all" | Protocol); setVisibleLimit(400); }} aria-label="协议筛选">
@@ -1288,22 +1551,27 @@ export default function Home() {
               <select value={modelFilter} onChange={(event) => { setModelFilter(event.target.value); setVisibleLimit(400); }} aria-label="模型筛选">
                 <option value="all">全部模型</option>{models.map((model) => <option value={model} key={model}>{model}</option>)}
               </select>
+              <select className="annotation-filter" value={annotationFilter} onChange={(event) => { setAnnotationFilter(event.target.value as typeof annotationFilter); setVisibleLimit(400); }} aria-label="标注状态筛选">
+                <option value="all">全部标注状态</option><option value="unlabeled">未标注</option><option value="draft">有草稿</option><option value="submitted">已完成</option><option value="badcase">Badcase</option>
+              </select>
             </div>
             <div className="result-count"><strong>{filtered.length.toLocaleString()}</strong> 个匹配 Case</div>
           </div>
           <div className="case-list">
             {visibleCases.map(({ item, index, protocol }) => {
               const active = selectedPair?.index === index;
+              const status = annotationStatus(item, index, annotatorId, annotations);
+              const badcase = hasBadcase(item, index, annotations);
               return (
-                <button className={`case-row ${active ? "active" : ""}`} key={`${String(item.id)}-${index}`} onClick={() => { setSelectedKey(String(index)); setSidebarOpen(false); }}>
-                  <div className="case-row-top"><span className={`protocol-dot ${protocol}`} /><code>{String(item.id ?? `case-${index + 1}`)}</code><span className="row-index">{String(index + 1).padStart(3, "0")}</span></div>
+                <button className={`case-row ${active ? "active" : ""} ${badcase ? "badcase" : ""}`} key={`${String(item.id)}-${index}`} onClick={() => { setSelectedKey(String(index)); setSidebarOpen(false); }}>
+                  <div className="case-row-top"><span className={`protocol-dot ${protocol}`} /><code>{String(item.id ?? `case-${index + 1}`)}</code><span className={`annotation-status ${status}`}>{status === "submitted" ? "已完成" : status === "draft" ? "草稿" : "未标注"}</span>{badcase ? <span className="badcase-badge">BAD</span> : null}<span className="row-index">{String(index + 1).padStart(3, "0")}</span></div>
                   <p>{getCaseTitle(item, index)}</p>
-                  <div className="case-row-meta"><span>{item.model ?? "unknown model"}</span><span>{item.messages?.length ?? 0} msgs</span>{getToolCalls(item) ? <span className="call-count">⌁ {getToolCalls(item)}</span> : null}</div>
+                  <div className="case-row-meta"><span>{item.candidates?.length ? `${item.candidates.length} models` : item.model ?? "unknown model"}</span><span>{item.messages?.length ?? 0} msgs</span>{getToolCalls(item) ? <span className="call-count">⌁ {getToolCalls(item)}</span> : null}</div>
                 </button>
               );
             })}
             {visibleCases.length < filtered.length ? <button className="load-more" onClick={() => setVisibleLimit((limit) => limit + 400)}>加载更多 · 还剩 {(filtered.length - visibleCases.length).toLocaleString()} 条</button> : null}
-            {!filtered.length ? <div className="empty-list"><span>∅</span><p>没有匹配的 Case</p><button onClick={() => { setQuery(""); setProtocolFilter("all"); setModelFilter("all"); }}>清除筛选</button></div> : null}
+            {!filtered.length ? <div className="empty-list"><span>∅</span><p>没有匹配的 Case</p><button onClick={() => { setQuery(""); setProtocolFilter("all"); setModelFilter("all"); setAnnotationFilter("all"); }}>清除筛选</button></div> : null}
           </div>
         </aside>
 
@@ -1324,16 +1592,17 @@ export default function Home() {
               </div>
 
               <div className="case-facts">
-                <div><span>MODEL</span><strong>{selected.model ?? "—"}</strong></div>
+                <div><span>CANDIDATES</span><strong>{selected.candidates?.length ?? 0}</strong></div>
                 <div><span>MESSAGES</span><strong>{selected.messages?.length ?? 0}</strong></div>
                 <div><span>TOOLS</span><strong>{selected.tools?.length ?? 0}</strong></div>
-                <div><span>TOOL CALLS</span><strong>{getToolCalls(selected)}</strong></div>
-                <div><span>CHARACTERS</span><strong>{countCharacters(selected).toLocaleString()}</strong></div>
+                <div><span>ANNOTATIONS</span><strong>{annotations[caseAnnotationKey(selected, selectedPair?.index ?? 0)]?.length ?? 0}</strong></div>
+                <div><span>STATUS</span><strong>{annotationStatus(selected, selectedPair?.index ?? 0, annotatorId, annotations) === "submitted" ? "已完成" : annotationStatus(selected, selectedPair?.index ?? 0, annotatorId, annotations) === "draft" ? "草稿" : "未标注"}</strong></div>
                 <div><span>SOURCE LINE</span><strong>{selected.__line ?? "—"}</strong></div>
               </div>
 
               <nav className="tabs" aria-label="Case 视图">
                 <button className={tab === "conversation" ? "active" : ""} onClick={() => setTab("conversation")}>对话轨迹 <span>{selected.messages?.length ?? 0}</span></button>
+                <button className={tab === "candidates" ? "active" : ""} onClick={() => setTab("candidates")}>模型结果与标注 <span>{selected.candidates?.length ?? 0}</span></button>
                 <button className={tab === "tools" ? "active" : ""} onClick={() => setTab("tools")}>Tools 定义 <span>{selected.tools?.length ?? 0}</span></button>
                 <button className={tab === "raw" ? "active" : ""} onClick={() => setTab("raw")}>原始 JSON</button>
                 <button className={tab === "ai" ? "active" : ""} onClick={() => setTab("ai")}>结果历史 <span>{aiResults.length}</span></button>
@@ -1347,6 +1616,7 @@ export default function Home() {
                     {!selected.messages?.length ? <div className="empty-panel"><span>≡</span><h3>这个 Case 没有 messages</h3><p>可切到“原始 JSON”检查实际字段结构。</p></div> : null}
                   </div>
                 ) : null}
+                {tab === "candidates" ? <CandidateWorkspace item={selected} caseIndex={selectedPair?.index ?? 0} records={annotations[caseAnnotationKey(selected, selectedPair?.index ?? 0)] ?? []} annotator={{ id: annotatorId, name: annotatorName }} onSave={saveCandidateAnnotation} /> : null}
                 {tab === "tools" ? (
                   <div className="tool-definitions">
                     {(selected.tools ?? []).map((tool, index) => <ToolDefinition tool={tool} index={index} protocol={selectedProtocol} results={aiResults.filter((result) => result.caseIndex === selectedPair?.index && result.anchorId === `tool-definition-${index + 1}`)} onAi={(task) => openAiPanel({ kind: "tool-definition", index }, task)} onCopyResult={(result) => void copyAiResult(result)} onDownloadResult={exportAiResult} key={index} />)}
