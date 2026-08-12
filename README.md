@@ -1,6 +1,6 @@
 # LLM Log Case Viewer
 
-浏览器本地优先的 JSONL 日志查看与多模型人工标注工具，兼容 OpenAI 与 Anthropic 常见消息结构。
+浏览器本地优先、也可部署为内网多人平台的 JSONL 日志查看与多模型人工标注工具，兼容 OpenAI 与 Anthropic 常见消息结构。
 
 ## 主要功能
 
@@ -19,12 +19,67 @@
 - 多用户按可配置维度评分、备注、Badcase 与错误标签
 - 草稿自动暂存在浏览器；支持提交状态、左侧状态筛选和多人标注历史
 - 导出带标注的完整 JSONL，或只导出扁平标注记录
+- 内网团队模式：账号登录、管理员创建项目/用户、统一草稿与提交、项目进度和管理员导出
 
 ## 在线使用
 
 [打开 Case Viewer](https://llm-log-case-viewer.qingyangjiang-aq.chatgpt.site)
 
 日志文件在浏览器内读取和解析，不上传到本站服务端。仅当你主动执行 AI 任务时，选中的文本才会发送到配置的模型地址。
+
+在线地址是前端功能演示，不连接你的内网数据库。正式多人标注请按下文使用 Docker Compose 部署。
+
+## 内网一键部署
+
+不需要域名。只要标注用户能访问服务器内网 IP，即可通过 `http://<服务器内网IP>:8080` 使用。
+
+要求：Linux x86_64/ARM64 服务器、Docker Engine 24+、Docker Compose v2；建议至少 4 核 CPU、8 GB 内存，并为数据预留足够磁盘。
+
+```bash
+git clone https://github.com/QingyangJiang/llm-log-case-viewer.git
+cd llm-log-case-viewer
+cp .env.example .env
+```
+
+先编辑 `.env`，至少替换 `POSTGRES_PASSWORD` 和 `ADMIN_PASSWORD`。然后执行：
+
+```bash
+bash scripts/preflight-deploy.sh
+docker compose up -d --build
+docker compose ps
+curl http://127.0.0.1:8080/api/health
+```
+
+健康检查返回 `{"status":"ok"}` 后，在其他内网机器打开 `http://<服务器内网IP>:8080`。点击右上角“团队模式”，用 `.env` 中的管理员账号登录；创建项目、打开项目、上传 JSONL，再创建标注员账号。
+
+部署包含四个容器：Nginx（唯一暴露端口）、前端、FastAPI、PostgreSQL。PostgreSQL 不对外开放；数据库、上传文件和导出数据分别持久化在 `./data/postgres` 与 `./data/app`。重启容器不会丢失。
+
+常用运维命令：
+
+```bash
+# 查看状态和日志
+docker compose ps
+docker compose logs -f --tail=200
+
+# 更新代码并滚动重建
+git pull --ff-only
+docker compose up -d --build
+
+# 停止服务（保留数据）
+docker compose down
+
+# PostgreSQL 逻辑备份
+docker compose exec -T postgres pg_dump -U case_lens case_lens > data/case-lens-backup.sql
+```
+
+注意事项：
+
+- 不要执行 `docker compose down -v`，也不要删除 `data/`，除非确认要清空全部数据。
+- 若修改了 `POSTGRES_USER` / `POSTGRES_DB`，备份命令中的名称也要同步修改。
+- HTTP 内网部署请保持 `SECURE_COOKIES=false`；未来接入 HTTPS 后改为 `true`。
+- 防火墙只需向可信内网开放 `APP_PORT`。可修改 `.env` 中的 `APP_PORT`，例如 `8090`。
+- 当前是轻量账号体系：管理员可创建用户和项目，所有已登录用户均可看到全部项目；暂未包含项目级权限分配、LDAP/SSO 和密码自助重置。
+- 管理员“上传并替换”会清除该项目原有 Cases 及其标注；操作前先导出或备份。
 
 ## 数据格式
 
@@ -97,7 +152,7 @@
 - `annotations`：可同时保存多名用户对不同候选模型的记录；唯一逻辑键为 `case id + candidate_id + annotator.id`。
 - `status`：`draft` 表示暂存，`submitted` 表示完成。提交时会校验所有必填维度。
 
-页面左侧可按未标注、草稿、已完成和 Badcase 筛选。标注草稿保存在浏览器 `localStorage`；导出的完整 JSONL 会把当前设备上的标注写回每条 Case，后续重新上传即可继续或汇总多人结果。页面中的“下载输入模板”可直接获取一行示例。
+页面左侧可按未标注、草稿、已完成和 Badcase 筛选。本地模式的草稿保存在浏览器 `localStorage`；团队模式的草稿和提交均保存到 PostgreSQL，并带 revision 防止旧页面覆盖新版本。页面中的“下载输入模板”可直接获取一行示例。
 
 ## 本地运行
 

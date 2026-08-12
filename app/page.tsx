@@ -14,6 +14,7 @@ type CaseAnnotation = {
   badcase_tags?: string[];
   note?: string;
   status: "draft" | "submitted";
+  revision?: number;
   created_at: string;
   updated_at: string;
 };
@@ -27,8 +28,11 @@ type LogCase = JsonObject & {
   candidates?: CandidateOutput[];
   annotation_config?: AnnotationConfig;
   annotations?: CaseAnnotation[];
+  __server_case_id?: number;
   __line?: number;
 };
+type ServerUser = { id: string; username: string; display_name: string; role: "admin" | "annotator" };
+type ServerProject = { id: number; name: string; annotation_config?: AnnotationConfig; case_count: number; my_submitted_count: number; created_at: string };
 
 type Protocol = "openai" | "anthropic" | "unknown";
 type ViewTab = "conversation" | "candidates" | "tools" | "raw" | "ai";
@@ -84,6 +88,21 @@ const ANNOTATION_TEMPLATE: LogCase = {
   annotation_config: { dimensions: DEFAULT_DIMENSIONS, badcase_tags: DEFAULT_BADCASE_TAGS },
   annotations: [],
 };
+
+async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(path, { credentials: "same-origin", ...init, headers: { ...(init?.body instanceof FormData ? {} : { "Content-Type": "application/json" }), ...init?.headers } });
+  if (!response.ok) {
+    let detail = `请求失败 ${response.status}`;
+    try {
+      const body = await response.json();
+      detail = typeof body.detail === "string" ? body.detail : body.detail?.message ?? detail;
+    } catch {
+      // Use the status fallback.
+    }
+    throw new Error(detail);
+  }
+  return response.json() as Promise<T>;
+}
 
 const SAMPLE_CASES: LogCase[] = [
   {
@@ -874,6 +893,17 @@ export default function Home() {
   const [annotatorName, setAnnotatorName] = useState(() => savedAnnotatorField("name"));
   const [annotations, setAnnotations] = useState<Record<string, CaseAnnotation[]>>(() => embeddedAnnotations(SAMPLE_CASES));
   const [datasetKey, setDatasetKey] = useState("case-lens-annotations:builtin");
+  const [teamOpen, setTeamOpen] = useState(false);
+  const [serverAvailable, setServerAvailable] = useState(false);
+  const [serverUser, setServerUser] = useState<ServerUser | null>(null);
+  const [serverProjects, setServerProjects] = useState<ServerProject[]>([]);
+  const [activeProjectId, setActiveProjectId] = useState<number | null>(null);
+  const [teamBusy, setTeamBusy] = useState(false);
+  const [teamError, setTeamError] = useState("");
+  const [loginUsername, setLoginUsername] = useState("");
+  const [loginPassword, setLoginPassword] = useState("");
+  const [newProjectName, setNewProjectName] = useState("");
+  const [newUser, setNewUser] = useState({ username: "", display_name: "", password: "", role: "annotator" as "admin" | "annotator" });
   const [tab, setTab] = useState<ViewTab>("conversation");
   const [dragging, setDragging] = useState(false);
   const [parseErrors, setParseErrors] = useState<string[]>([]);
@@ -907,6 +937,7 @@ export default function Home() {
   const [activeAiResultId, setActiveAiResultId] = useState("");
   const [visibleLimit, setVisibleLimit] = useState(400);
   const fileInput = useRef<HTMLInputElement>(null);
+  const projectFileInput = useRef<HTMLInputElement>(null);
   const searchInput = useRef<HTMLInputElement>(null);
   const closeAiButton = useRef<HTMLButtonElement>(null);
   const aiReturnFocus = useRef<HTMLElement | null>(null);
@@ -1001,6 +1032,37 @@ export default function Home() {
   const endpoint = providerMode === "local" ? localEndpoint : externalEndpoint;
   const mixedContentRisk = typeof window !== "undefined" && window.location.protocol === "https:" && endpoint.trim().startsWith("http://");
 
+  const refreshProjects = async () => {
+    const projects = await apiRequest<ServerProject[]>("/api/projects");
+    setServerProjects(projects);
+    return projects;
+  };
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void (async () => {
+      try {
+        const response = await fetch("/api/health", { signal: controller.signal, credentials: "same-origin" });
+        const body = await response.json();
+        if (!response.ok || body.status !== "ok") return;
+        setServerAvailable(true);
+        try {
+          const me = await apiRequest<{ user: ServerUser }>("/api/auth/me", { signal: controller.signal });
+          setServerUser(me.user);
+          setAnnotatorId(me.user.id);
+          setAnnotatorName(me.user.display_name);
+          const projects = await apiRequest<ServerProject[]>("/api/projects", { signal: controller.signal });
+          setServerProjects(projects);
+        } catch {
+          // Server exists but this browser is not logged in.
+        }
+      } catch {
+        // Keep local-only mode when no API is mounted (for example the hosted demo).
+      }
+    })();
+    return () => controller.abort();
+  }, []);
+
   useEffect(() => {
     window.localStorage.setItem("case-lens-annotator", JSON.stringify({ id: annotatorId, name: annotatorName }));
   }, [annotatorId, annotatorName]);
@@ -1080,6 +1142,7 @@ export default function Home() {
       setFileName(name);
       setDatasetKey(nextDatasetKey);
       setAnnotations(nextAnnotations);
+      setActiveProjectId(null);
       setSelectedKey("0");
       setQuery("");
       setProtocolFilter("all");
@@ -1099,6 +1162,116 @@ export default function Home() {
     if (aiBusy) aiAbort.current?.abort();
     const text = await file.text();
     await loadText(text, file.name);
+  };
+
+  const loginToTeamServer = async () => {
+    setTeamBusy(true);
+    setTeamError("");
+    try {
+      const result = await apiRequest<{ user: ServerUser }>("/api/auth/login", { method: "POST", body: JSON.stringify({ username: loginUsername, password: loginPassword }) });
+      setServerUser(result.user);
+      setAnnotatorId(result.user.id);
+      setAnnotatorName(result.user.display_name);
+      setLoginPassword("");
+      await refreshProjects();
+    } catch (error) {
+      setTeamError(error instanceof Error ? error.message : "登录失败");
+    } finally {
+      setTeamBusy(false);
+    }
+  };
+
+  const logoutTeamServer = async () => {
+    try {
+      await apiRequest<{ ok: boolean }>("/api/auth/logout", { method: "POST", body: "{}" });
+    } finally {
+      setServerUser(null);
+      setServerProjects([]);
+      setActiveProjectId(null);
+    }
+  };
+
+  const loadServerProject = async (project: ServerProject) => {
+    setTeamBusy(true);
+    setTeamError("");
+    try {
+      const pageSize = 5000;
+      const first = await apiRequest<{ items: LogCase[]; total: number }>(`/api/projects/${project.id}/cases?limit=${pageSize}`);
+      const loaded = [...first.items];
+      while (loaded.length < first.total) {
+        setNotice(`正在加载团队项目… ${loaded.length.toLocaleString()} / ${first.total.toLocaleString()}`);
+        const page = await apiRequest<{ items: LogCase[]; total: number }>(`/api/projects/${project.id}/cases?offset=${loaded.length}&limit=${pageSize}`);
+        if (!page.items.length) break;
+        loaded.push(...page.items);
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+      }
+      const items = loaded.map((item, index) => ({ ...item, __line: index + 1 }));
+      setCases(items);
+      setFileName(`团队项目 · ${project.name}`);
+      setDatasetKey(`case-lens-server-project:${project.id}`);
+      setAnnotations(embeddedAnnotations(items));
+      setActiveProjectId(project.id);
+      setSelectedKey("0");
+      setQuery("");
+      setProtocolFilter("all");
+      setModelFilter("all");
+      setAnnotationFilter("all");
+      setTab(items.some((item) => item.candidates?.length) ? "candidates" : "conversation");
+      setTeamOpen(false);
+    } catch (error) {
+      setTeamError(error instanceof Error ? error.message : "项目加载失败");
+    } finally {
+      setTeamBusy(false);
+    }
+  };
+
+  const createServerProject = async () => {
+    if (!newProjectName.trim()) return;
+    setTeamBusy(true);
+    setTeamError("");
+    try {
+      await apiRequest("/api/projects", { method: "POST", body: JSON.stringify({ name: newProjectName.trim(), annotation_config: { dimensions: DEFAULT_DIMENSIONS, badcase_tags: DEFAULT_BADCASE_TAGS } }) });
+      setNewProjectName("");
+      await refreshProjects();
+    } catch (error) {
+      setTeamError(error instanceof Error ? error.message : "创建项目失败");
+    } finally {
+      setTeamBusy(false);
+    }
+  };
+
+  const uploadProjectDataset = async (file?: File) => {
+    if (!file || !activeProjectId) return;
+    setTeamBusy(true);
+    setTeamError("");
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      form.append("replace", "true");
+      const result = await apiRequest<{ inserted: number; errors: string[] }>(`/api/projects/${activeProjectId}/upload`, { method: "POST", body: form });
+      setNotice(`已导入 ${result.inserted.toLocaleString()} 条${result.errors.length ? `，${result.errors.length} 行失败` : ""}`);
+      const projects = await refreshProjects();
+      const project = projects.find((item) => item.id === activeProjectId);
+      if (project) await loadServerProject(project);
+    } catch (error) {
+      setTeamError(error instanceof Error ? error.message : "上传失败");
+    } finally {
+      setTeamBusy(false);
+    }
+  };
+
+  const createServerUser = async () => {
+    setTeamBusy(true);
+    setTeamError("");
+    try {
+      await apiRequest("/api/users", { method: "POST", body: JSON.stringify(newUser) });
+      setNewUser({ username: "", display_name: "", password: "", role: "annotator" });
+      setNotice("账号已创建");
+    } catch (error) {
+      setTeamError(error instanceof Error ? error.message : "账号创建失败");
+    } finally {
+      setTeamBusy(false);
+    }
   };
 
   const onDrop = (event: DragEvent<HTMLElement>) => {
@@ -1138,6 +1311,7 @@ export default function Home() {
       return;
     }
     const key = caseAnnotationKey(selected, selectedPair.index);
+    const existingRecord = (annotations[key] ?? []).find((record) => record.candidate_id === candidate.id && record.annotator.id === annotatorId.trim());
     const now = new Date().toISOString();
     setAnnotations((current) => {
       const list = current[key] ?? [];
@@ -1151,6 +1325,7 @@ export default function Home() {
         badcase_tags: value.badcaseTags,
         note: value.note.trim(),
         status,
+        revision: existing?.revision,
         created_at: existing?.created_at ?? now,
         updated_at: now,
       };
@@ -1158,6 +1333,21 @@ export default function Home() {
     });
     setNotice(status === "submitted" ? `已提交 ${candidate.label ?? candidate.model} 的标注` : "草稿已暂存在当前浏览器");
     window.setTimeout(() => setNotice(""), 2200);
+    if (activeProjectId && selected.__server_case_id) {
+      void apiRequest<CaseAnnotation>(`/api/cases/${selected.__server_case_id}/annotations/${encodeURIComponent(candidate.id)}`, {
+        method: "PUT",
+        body: JSON.stringify({ scores: value.scores, badcase: value.badcase, badcase_tags: value.badcaseTags, note: value.note.trim(), status, revision: existingRecord?.revision }),
+      }).then((saved) => {
+        setAnnotations((current) => {
+          const list = current[key] ?? [];
+          return { ...current, [key]: [saved, ...list.filter((record) => !(record.candidate_id === candidate.id && record.annotator.id === annotatorId.trim()))] };
+        });
+        setNotice(status === "submitted" ? "标注已保存到团队服务器" : "草稿已保存到团队服务器");
+        window.setTimeout(() => setNotice(""), 1800);
+      }).catch((error) => {
+        setNotice(`服务器保存失败：${error instanceof Error ? error.message : "未知错误"}`);
+      });
+    }
   };
 
   const annotatedItems = () => cases.map((item, index) => {
@@ -1513,7 +1703,8 @@ export default function Home() {
             <Icon>●</Icon>{providerMode === "local" ? "日志默认仅在本机处理" : "外部 API 仅在执行任务时接收文本"}
           </span>
           <button className="button ai-button" onClick={() => openAiPanel({ kind: "case" }, "summary")}><Icon>✦</Icon>AI 处理</button>
-          <button className="button" onClick={exportAnnotatedDataset}><Icon>↓</Icon>导出标注</button>
+          <button className={`button team-button ${serverUser ? "connected" : ""}`} onClick={() => setTeamOpen(true)}><Icon>{serverUser ? "●" : "◎"}</Icon>{serverUser ? serverUser.display_name : "团队模式"}</button>
+          <button className="button export-button" onClick={exportAnnotatedDataset}><Icon>↓</Icon>导出标注</button>
           <input ref={fileInput} type="file" accept=".jsonl,.json,application/json,text/plain" hidden onChange={(event: ChangeEvent<HTMLInputElement>) => { const file = event.target.files?.[0]; event.target.value = ""; void loadFile(file); }} />
           <button className="button primary" onClick={() => fileInput.current?.click()}><Icon>＋</Icon>载入 JSONL</button>
         </div>
@@ -1539,8 +1730,8 @@ export default function Home() {
         <aside className={`sidebar ${sidebarOpen ? "open" : ""}`}>
           <div className="sidebar-tools">
             <div className="annotator-panel">
-              <div><span>ANNOTATOR</span><small>每位用户使用唯一 ID</small></div>
-              <div className="annotator-fields"><input value={annotatorId} onChange={(event) => setAnnotatorId(event.target.value)} placeholder="用户 ID，如 jiangqy" aria-label="标注员 ID" /><input value={annotatorName} onChange={(event) => setAnnotatorName(event.target.value)} placeholder="显示姓名" aria-label="标注员姓名" /></div>
+              <div><span>ANNOTATOR</span><small>{serverUser ? "由团队账号锁定" : "每位用户使用唯一 ID"}</small></div>
+              <div className="annotator-fields"><input value={annotatorId} disabled={Boolean(serverUser)} onChange={(event) => setAnnotatorId(event.target.value)} placeholder="用户 ID，如 jiangqy" aria-label="标注员 ID" /><input value={annotatorName} disabled={Boolean(serverUser)} onChange={(event) => setAnnotatorName(event.target.value)} placeholder="显示姓名" aria-label="标注员姓名" /></div>
               <div className="annotator-actions"><button onClick={downloadAnnotationTemplate}>下载输入模板</button><button onClick={exportAnnotationRows}>仅导出标注记录</button></div>
             </div>
             <label className="search-box"><Icon>⌕</Icon><input ref={searchInput} value={query} onChange={(event) => { setQuery(event.target.value); setVisibleLimit(400); }} placeholder="搜索 ID、模型或消息…" /><kbd>⌘K</kbd></label>
@@ -1680,6 +1871,52 @@ export default function Home() {
           ) : <div className="empty-panel full"><span>∅</span><h3>没有可显示的 Case</h3><p>调整筛选条件，或载入新的 JSONL 文件。</p></div>}
         </section>
       </div>
+
+      {teamOpen ? (
+        <>
+          <button className="drawer-backdrop" onClick={() => setTeamOpen(false)} aria-label="关闭团队模式" />
+          <aside className="team-drawer" role="dialog" aria-modal="true" aria-label="团队标注服务">
+            <header><div><span>INTRANET TEAM MODE</span><h2>团队标注服务</h2></div><button onClick={() => setTeamOpen(false)} aria-label="关闭">×</button></header>
+            {!serverAvailable ? (
+              <div className="team-unavailable"><strong>当前页面未连接后端</strong><p>在线演示版继续使用浏览器本地模式。通过 Docker Compose 部署到内网后，请使用同一个内网地址访问，页面会自动发现 `/api` 服务并启用登录、项目上传和服务器保存。</p></div>
+            ) : !serverUser ? (
+              <section className="team-section login-section">
+                <div className="team-section-title"><span>01</span><strong>登录标注平台</strong></div>
+                <label><span>用户名</span><input value={loginUsername} onChange={(event) => setLoginUsername(event.target.value)} autoComplete="username" /></label>
+                <label><span>密码</span><input type="password" value={loginPassword} onChange={(event) => setLoginPassword(event.target.value)} autoComplete="current-password" onKeyDown={(event) => { if (event.key === "Enter") void loginToTeamServer(); }} /></label>
+                <button className="team-primary" disabled={teamBusy || !loginUsername || !loginPassword} onClick={() => void loginToTeamServer()}>{teamBusy ? "登录中…" : "登录"}</button>
+              </section>
+            ) : (
+              <>
+                <section className="team-account"><div><span>{serverUser.role === "admin" ? "管理员" : "标注员"}</span><strong>{serverUser.display_name}</strong><small>@{serverUser.username}</small></div><button onClick={() => void logoutTeamServer()}>退出</button></section>
+                <section className="team-section">
+                  <div className="team-section-title"><span>01</span><strong>选择标注项目</strong></div>
+                  <div className="project-list">{serverProjects.map((project) => <article className={activeProjectId === project.id ? "active" : ""} key={project.id}><div><strong>{project.name}</strong><small>{project.case_count} Cases · 我已提交 {project.my_submitted_count}</small></div><button disabled={teamBusy} onClick={() => void loadServerProject(project)}>打开</button></article>)}</div>
+                  {!serverProjects.length ? <p className="team-empty">还没有项目{serverUser.role === "admin" ? "，请先创建" : "，请联系管理员"}。</p> : null}
+                </section>
+                {serverUser.role === "admin" ? (
+                  <>
+                    <section className="team-section">
+                      <div className="team-section-title"><span>02</span><strong>管理员：项目与数据</strong></div>
+                      <div className="team-inline"><input value={newProjectName} onChange={(event) => setNewProjectName(event.target.value)} placeholder="新项目名称" /><button disabled={teamBusy || !newProjectName.trim()} onClick={() => void createServerProject()}>创建项目</button></div>
+                      <input ref={projectFileInput} type="file" accept=".jsonl,application/x-ndjson,text/plain" hidden onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; void uploadProjectDataset(file); }} />
+                      <button className="upload-project" disabled={teamBusy || !activeProjectId} onClick={() => projectFileInput.current?.click()}>上传并替换当前项目 JSONL</button>
+                      <small className="team-help">先“打开”项目，再上传数据。原始文件与标注均保存在内网服务器。</small>
+                    </section>
+                    <section className="team-section">
+                      <div className="team-section-title"><span>03</span><strong>管理员：创建账号</strong></div>
+                      <div className="user-form"><input value={newUser.username} onChange={(event) => setNewUser((current) => ({ ...current, username: event.target.value }))} placeholder="用户名" /><input value={newUser.display_name} onChange={(event) => setNewUser((current) => ({ ...current, display_name: event.target.value }))} placeholder="显示姓名" /><input type="password" value={newUser.password} onChange={(event) => setNewUser((current) => ({ ...current, password: event.target.value }))} placeholder="初始密码（至少 8 位）" /><select value={newUser.role} onChange={(event) => setNewUser((current) => ({ ...current, role: event.target.value as "admin" | "annotator" }))}><option value="annotator">标注员</option><option value="admin">管理员</option></select></div>
+                      <button className="team-primary" disabled={teamBusy || !newUser.username || !newUser.display_name || newUser.password.length < 8} onClick={() => void createServerUser()}>创建账号</button>
+                    </section>
+                  </>
+                ) : null}
+                {activeProjectId && serverUser.role === "admin" ? <a className="team-export" href={`/api/projects/${activeProjectId}/export`}>导出当前项目完整标注 JSONL</a> : null}
+              </>
+            )}
+            {teamError ? <p className="team-error">{teamError}</p> : null}
+          </aside>
+        </>
+      ) : null}
 
       {aiOpen ? (
         <>
