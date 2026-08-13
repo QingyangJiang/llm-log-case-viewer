@@ -29,5 +29,9 @@ test("renders development preview metadata", async () => {
     response.headers.get("content-type") ?? "",
     /^text\/html\b/i,
   );
-  assert.match(await response.text(), developmentPreviewMeta);
+  const html = await response.text();
+  assert.match(html, developmentPreviewMeta);
+  for (const requiredUi of ["Case Lens", "团队模式", "模型结果与标注", "标注搭子"]) {
+    assert.match(html, new RegExp(requiredUi), `missing core UI: ${requiredUi}`);
+  }
 });

@@ -15,10 +15,11 @@ type CaseAnnotation = {
   note?: string;
   status: "draft" | "submitted";
   revision?: number;
+  sync_state?: "pending" | "error";
   created_at: string;
   updated_at: string;
 };
-type AnnotationConfig = { dimensions?: AnnotationDimension[]; badcase_tags?: string[] };
+type AnnotationConfig = { dimensions?: AnnotationDimension[]; badcase_tags?: string[]; blind_mode?: boolean; lock_submitted?: boolean };
 type LogCase = JsonObject & {
   schema_version?: string;
   id?: string | number;
@@ -29,10 +30,15 @@ type LogCase = JsonObject & {
   annotation_config?: AnnotationConfig;
   annotations?: CaseAnnotation[];
   __server_case_id?: number;
+  __assigned_user_ids?: string[];
   __line?: number;
 };
-type ServerUser = { id: string; username: string; display_name: string; role: "admin" | "annotator" };
-type ServerProject = { id: number; name: string; annotation_config?: AnnotationConfig; case_count: number; my_submitted_count: number; created_at: string };
+type ServerUser = { id: string; username: string; display_name: string; role: "admin" | "annotator"; active: boolean };
+type ServerProject = { id: number; name: string; archived?: boolean; annotation_config?: AnnotationConfig; case_count: number; my_submitted_count: number; created_at: string };
+type ProjectMemberOption = ServerUser & { member: boolean };
+type AssignmentMember = { id: string; username: string; display_name: string; assigned_count: number; submitted_count: number; draft_count: number; external_ids: string[] };
+type AssignmentOverview = { total_cases: number; assigned_cases: number; unassigned_cases: number; submitted_annotations: number; draft_annotations: number; members: AssignmentMember[]; settings: AnnotationConfig };
+type SaveState = "idle" | "dirty" | "saving" | "saved" | "error";
 
 type Protocol = "openai" | "anthropic" | "unknown";
 type ViewTab = "conversation" | "candidates" | "tools" | "raw" | "ai";
@@ -44,6 +50,7 @@ type AiTarget =
   | { kind: "tool-definition"; index: number }
   | { kind: "message-tool"; messageIndex: number; itemIndex: number; source: "content" | "tool_call" };
 type ProviderMode = "local" | "external";
+type PetMood = "idle" | "happy" | "proud" | "curious" | "worried";
 type AiResult = {
   resultId: string;
   content: string;
@@ -76,6 +83,25 @@ const DEFAULT_DIMENSIONS: AnnotationDimension[] = [
   { key: "clarity", label: "表达质量", description: "结构、语言和可读性", min: 1, max: 5, required: true },
 ];
 const DEFAULT_BADCASE_TAGS = ["事实错误", "未遵循指令", "工具调用错误", "推理问题", "遗漏关键信息", "表达问题", "安全风险", "其他"];
+const dimensionsToText = (dimensions?: AnnotationDimension[]) => (dimensions?.length ? dimensions : DEFAULT_DIMENSIONS)
+  .map((item) => [item.key, item.label, item.description ?? "", item.min ?? 1, item.max ?? 5, item.required === false ? "false" : "true"].join(" | "))
+  .join("\n");
+
+function parseDimensionsText(value: string): AnnotationDimension[] {
+  const rows = value.split("\n").map((line) => line.trim()).filter(Boolean);
+  if (!rows.length) throw new Error("至少保留一个评分维度");
+  const seen = new Set<string>();
+  return rows.map((row, index) => {
+    const [key = "", label = "", description = "", minText = "1", maxText = "5", requiredText = "true"] = row.split("|").map((part) => part.trim());
+    const min = Number(minText);
+    const max = Number(maxText);
+    if (!key || !label) throw new Error(`第 ${index + 1} 行缺少 key 或名称`);
+    if (seen.has(key)) throw new Error(`维度 key 重复：${key}`);
+    if (!Number.isInteger(min) || !Number.isInteger(max) || min < 0 || max <= min || max - min > 10) throw new Error(`第 ${index + 1} 行的分数范围不正确`);
+    seen.add(key);
+    return { key, label, description, min, max, required: requiredText.toLowerCase() !== "false" };
+  });
+}
 const ANNOTATION_TEMPLATE: LogCase = {
   schema_version: "case-lens.annotation.v1",
   id: "case-000001",
@@ -89,17 +115,33 @@ const ANNOTATION_TEMPLATE: LogCase = {
   annotations: [],
 };
 
+class ApiError extends Error {
+  status: number;
+  detail: unknown;
+
+  constructor(status: number, message: string, detail: unknown) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.detail = detail;
+  }
+}
+
 async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, { credentials: "same-origin", ...init, headers: { ...(init?.body instanceof FormData ? {} : { "Content-Type": "application/json" }), ...init?.headers } });
   if (!response.ok) {
     let detail = `请求失败 ${response.status}`;
+    let rawDetail: unknown;
     try {
-      const body = await response.json();
-      detail = typeof body.detail === "string" ? body.detail : body.detail?.message ?? detail;
+      const body = await response.json() as { detail?: unknown };
+      rawDetail = body.detail;
+      if (typeof body.detail === "string") detail = body.detail;
+      else if (isObject(body.detail) && typeof body.detail.message === "string") detail = `${body.detail.message}${Array.isArray(body.detail.errors) && body.detail.errors.length ? `：${body.detail.errors.slice(0, 3).join("；")}` : ""}`;
+      else if (Array.isArray(body.detail)) detail = body.detail.map((item: { loc?: unknown[]; msg?: string }) => `${item.loc?.slice(-1)[0] ?? "字段"}：${item.msg ?? "格式不正确"}`).join("；") || detail;
     } catch {
       // Use the status fallback.
     }
-    throw new Error(detail);
+    throw new ApiError(response.status, detail, rawDetail);
   }
   return response.json() as Promise<T>;
 }
@@ -249,6 +291,98 @@ function caseAnnotationKey(item: LogCase, index: number) {
 
 function embeddedAnnotations(items: LogCase[]) {
   return Object.fromEntries(items.map((item, index) => [caseAnnotationKey(item, index), Array.isArray(item.annotations) ? item.annotations : []]));
+}
+
+function mergePendingAnnotations(serverRecords: Record<string, CaseAnnotation[]>, localRecords: Record<string, CaseAnnotation[]>) {
+  const merged = { ...serverRecords };
+  for (const [key, records] of Object.entries(localRecords)) {
+    const pending = records.filter((record) => record.sync_state === "pending" || record.sync_state === "error");
+    if (!pending.length) continue;
+    const current = [...(merged[key] ?? [])];
+    for (const record of pending) {
+      const match = current.findIndex((item) => item.candidate_id === record.candidate_id && item.annotator.id === record.annotator.id);
+      if (match >= 0) current.splice(match, 1);
+      current.unshift(record);
+    }
+    merged[key] = current;
+  }
+  return merged;
+}
+
+function cleanAnnotation(record: CaseAnnotation): Omit<CaseAnnotation, "sync_state"> {
+  const clean = { ...record };
+  delete clean.sync_state;
+  return clean;
+}
+
+function safeStorageGet<T>(key: string, fallback: T): T {
+  try {
+    const saved = window.localStorage.getItem(key);
+    return saved ? JSON.parse(saved) as T : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function safeStorageSet(key: string, value: unknown) {
+  try {
+    window.localStorage.setItem(key, typeof value === "string" ? value : JSON.stringify(value));
+    return true;
+  } catch (error) {
+    console.warn(`Unable to persist ${key}`, error);
+    return false;
+  }
+}
+
+const AI_CACHE_DB = "case-lens-local-cache";
+const AI_CACHE_STORE = "ai-results";
+
+function openAiCache(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const request = window.indexedDB.open(AI_CACHE_DB, 1);
+    request.onupgradeneeded = () => {
+      if (!request.result.objectStoreNames.contains(AI_CACHE_STORE)) request.result.createObjectStore(AI_CACHE_STORE);
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error ?? new Error("无法打开本地 AI 缓存"));
+  });
+}
+
+async function loadCachedAiResults(datasetKey: string): Promise<AiResult[]> {
+  if (!("indexedDB" in window)) return safeStorageGet<AiResult[]>(`${datasetKey}:ai-results`, []);
+  try {
+    const db = await openAiCache();
+    const result = await new Promise<unknown>((resolve, reject) => {
+      const request = db.transaction(AI_CACHE_STORE, "readonly").objectStore(AI_CACHE_STORE).get(datasetKey);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    db.close();
+    if (Array.isArray(result)) return result as AiResult[];
+    const legacy = safeStorageGet<AiResult[]>(`${datasetKey}:ai-results`, []);
+    if (legacy.length) void saveCachedAiResults(datasetKey, legacy);
+    return legacy;
+  } catch (error) {
+    console.warn("Unable to load AI result cache", error);
+    return safeStorageGet<AiResult[]>(`${datasetKey}:ai-results`, []);
+  }
+}
+
+async function saveCachedAiResults(datasetKey: string, results: AiResult[]) {
+  if (!("indexedDB" in window)) {
+    if (!safeStorageSet(`${datasetKey}:ai-results`, results)) throw new Error("浏览器本地空间不足");
+    return;
+  }
+  const db = await openAiCache();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const request = db.transaction(AI_CACHE_STORE, "readwrite").objectStore(AI_CACHE_STORE).put(results, datasetKey);
+      request.onsuccess = () => resolve();
+      request.onerror = () => reject(request.error);
+    });
+  } finally {
+    db.close();
+  }
 }
 
 function annotationStatus(item: LogCase, index: number, annotatorId: string, records: Record<string, CaseAnnotation[]>) {
@@ -629,6 +763,39 @@ function Icon({ children }: { children: ReactNode }) {
   return <span className="icon" aria-hidden="true">{children}</span>;
 }
 
+function CompanionPet({ visible, message, mood, completed, total, pulse, hasNext, onPet, onNext, onHide, onShow }: {
+  visible: boolean;
+  message: string;
+  mood: PetMood;
+  completed: number;
+  total: number;
+  pulse: number;
+  hasNext: boolean;
+  onPet: () => void;
+  onNext: () => void;
+  onHide: () => void;
+  onShow: () => void;
+}) {
+  if (!visible) return <button className="pet-summon" type="button" onClick={onShow}><span aria-hidden="true">◉ᴗ◉</span> 唤回小镜</button>;
+  const progress = total ? Math.min(100, Math.round(completed / total * 100)) : 0;
+  return (
+    <section className={`companion-card mood-${mood}`} aria-label="标注搭子小镜">
+      <header><span>CASE BUDDY · 小镜</span><button type="button" onClick={onHide} aria-label="收起标注搭子">×</button></header>
+      <div className="companion-main">
+        <button className="pet-stage" type="button" onClick={onPet} aria-label="摸摸小镜" key={pulse}>
+          <span className="pet-spark spark-one" aria-hidden="true">✦</span><span className="pet-spark spark-two" aria-hidden="true">·</span>
+          <span className="pet-creature" aria-hidden="true"><i className="pet-ear left" /><i className="pet-ear right" /><b className="pet-eye left" /><b className="pet-eye right" /><em /><span className="pet-tail" /></span>
+        </button>
+        <div className="pet-dialog">
+          <p aria-live="polite">{message}</p>
+          <div><button type="button" onClick={onPet}>摸摸</button><button type="button" onClick={onNext} disabled={!hasNext}>下一条未完成</button></div>
+        </div>
+      </div>
+      <footer><span><strong>{completed}</strong> / {total || 0} 完成</span><i><b style={{ width: `${progress}%` }} /></i></footer>
+    </section>
+  );
+}
+
 function JsonCode({ value, compact = false }: { value: unknown; compact?: boolean }) {
   return <pre className={compact ? "json-code compact" : "json-code"}>{tryPrettyJson(value)}</pre>;
 }
@@ -789,22 +956,35 @@ function ToolDefinition({ tool, index, protocol, results, onAi, onCopyResult, on
   );
 }
 
-function CandidateAnnotationCard({ candidate, dimensions, badcaseTags, existing, historyCount, disabled, onSave }: {
+function CandidateAnnotationCard({ candidate, dimensions, badcaseTags, existing, historyCount, disabled, locked, onSave }: {
   candidate: CandidateOutput;
   dimensions: AnnotationDimension[];
   badcaseTags: string[];
   existing?: CaseAnnotation;
   historyCount: number;
   disabled: boolean;
-  onSave: (value: { scores: Record<string, number>; badcase: boolean; badcaseTags: string[]; note: string }, status: "draft" | "submitted") => void;
+  locked: boolean;
+  onSave: (value: { scores: Record<string, number>; badcase: boolean; badcaseTags: string[]; note: string }, status: "draft" | "submitted", silent?: boolean) => Promise<boolean>;
 }) {
   const [scores, setScores] = useState<Record<string, number>>(existing?.scores ?? {});
   const [badcase, setBadcase] = useState(existing?.badcase ?? false);
   const [tags, setTags] = useState<string[]>(existing?.badcase_tags ?? []);
   const [note, setNote] = useState(existing?.note ?? "");
   const [formError, setFormError] = useState("");
+  const [saveState, setSaveState] = useState<SaveState>("idle");
+  const initialized = useRef(false);
+  const autosaveTimer = useRef<number | null>(null);
 
-  const save = (status: "draft" | "submitted") => {
+  const markDirty = () => {
+    if (!disabled && !locked) setSaveState("dirty");
+  };
+
+  const save = async (status: "draft" | "submitted", silent = false) => {
+    if (locked) return;
+    if (autosaveTimer.current !== null) {
+      window.clearTimeout(autosaveTimer.current);
+      autosaveTimer.current = null;
+    }
     if (status === "submitted") {
       const missing = dimensions.filter((dimension) => dimension.required !== false && scores[dimension.key] === undefined);
       if (missing.length) {
@@ -813,14 +993,40 @@ function CandidateAnnotationCard({ candidate, dimensions, badcaseTags, existing,
       }
     }
     setFormError("");
-    onSave({ scores, badcase, badcaseTags: badcase ? tags : [], note }, status);
+    setSaveState("saving");
+    const ok = await onSave({ scores, badcase, badcaseTags: badcase ? tags : [], note }, status, silent);
+    setSaveState(ok ? "saved" : "error");
+  };
+
+  useEffect(() => {
+    if (!initialized.current) {
+      initialized.current = true;
+      return;
+    }
+    if (disabled || locked) return;
+    autosaveTimer.current = window.setTimeout(() => {
+      autosaveTimer.current = null;
+      void save("draft", true);
+    }, 1000);
+    return () => {
+      if (autosaveTimer.current !== null) window.clearTimeout(autosaveTimer.current);
+    };
+    // Save the current editor state after the user pauses; the card remounts after a server revision update.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scores, badcase, tags, note, disabled, locked]);
+
+  const markDataIssue = (tag: string) => {
+    markDirty();
+    setBadcase(true);
+    setTags((current) => current.includes(tag) ? current : [...current, tag]);
+    setNote((current) => current || `${tag}：`);
   };
 
   return (
-    <article className={`candidate-card ${existing?.status === "submitted" ? "submitted" : ""} ${badcase ? "badcase" : ""}`}>
+    <article className={`candidate-card ${existing?.status === "submitted" ? "submitted" : ""} ${badcase ? "badcase" : ""} ${locked ? "locked" : ""}`}>
       <header>
         <div><span>{candidate.label ?? candidate.model}</span><h3>{candidate.model}</h3></div>
-        <div className="candidate-badges">{historyCount ? <span>{historyCount} 人已提交</span> : null}<span className={existing?.status ?? "unlabeled"}>{existing?.status === "submitted" ? "已提交" : existing ? "草稿" : "未标注"}</span></div>
+        <div className="candidate-badges">{historyCount ? <span>{historyCount} 人已提交</span> : null}{existing?.sync_state ? <span className="sync-error">{existing.sync_state === "pending" ? "待同步" : "同步失败"}</span> : null}<span className={existing?.status ?? "unlabeled"}>{existing?.status === "submitted" ? "已提交" : existing ? "草稿" : "未标注"}</span></div>
       </header>
       <section className="candidate-output">
         {candidate.reasoning !== undefined ? <details className="candidate-reasoning"><summary>Reasoning / 思考过程</summary><pre>{tryPrettyJson(candidate.reasoning)}</pre></details> : <p className="candidate-empty">没有提供 reasoning</p>}
@@ -833,29 +1039,34 @@ function CandidateAnnotationCard({ candidate, dimensions, badcaseTags, existing,
             const min = dimension.min ?? 1;
             const max = dimension.max ?? 5;
             return (
-              <fieldset key={dimension.key}>
+              <fieldset disabled={disabled || locked} key={dimension.key}>
                 <legend>{dimension.label}{dimension.required === false ? "" : " *"}<small>{dimension.description}</small></legend>
-                <div>{Array.from({ length: max - min + 1 }, (_, offset) => min + offset).map((score) => <button type="button" className={scores[dimension.key] === score ? "active" : ""} onClick={() => setScores((current) => ({ ...current, [dimension.key]: score }))} key={score}>{score}</button>)}</div>
+                <div>{Array.from({ length: max - min + 1 }, (_, offset) => min + offset).map((score) => <button type="button" className={scores[dimension.key] === score ? "active" : ""} onClick={() => { markDirty(); setScores((current) => ({ ...current, [dimension.key]: score })); }} key={score}>{score}</button>)}</div>
               </fieldset>
             );
           })}
         </div>
-        <label className="badcase-switch"><input type="checkbox" checked={badcase} onChange={(event) => setBadcase(event.target.checked)} /><span>标记为 Badcase</span></label>
-        {badcase ? <div className="badcase-tags">{badcaseTags.map((tag) => <button type="button" className={tags.includes(tag) ? "active" : ""} onClick={() => setTags((current) => current.includes(tag) ? current.filter((item) => item !== tag) : [...current, tag])} key={tag}>{tag}</button>)}</div> : null}
-        <label className="annotation-note"><span>备注 / 错误说明</span><textarea value={note} onChange={(event) => setNote(event.target.value)} rows={4} placeholder="记录判断依据、具体错误位置或修改建议…" /></label>
+        <label className="badcase-switch"><input type="checkbox" checked={badcase} disabled={disabled || locked} onChange={(event) => { markDirty(); setBadcase(event.target.checked); }} /><span>标记为 Badcase</span></label>
+        {badcase ? <div className="badcase-tags">{badcaseTags.map((tag) => <button type="button" disabled={disabled || locked} className={tags.includes(tag) ? "active" : ""} onClick={() => { markDirty(); setTags((current) => current.includes(tag) ? current.filter((item) => item !== tag) : [...current, tag]); }} key={tag}>{tag}</button>)}</div> : null}
+        <div className="annotation-quick-flags"><span>快速标记</span><button type="button" disabled={disabled || locked} onClick={() => markDataIssue("无法判断")}>无法判断</button><button type="button" disabled={disabled || locked} onClick={() => markDataIssue("数据问题")}>数据问题</button></div>
+        <label className="annotation-note"><span>备注 / 错误说明</span><textarea value={note} disabled={disabled || locked} onChange={(event) => { markDirty(); setNote(event.target.value); }} rows={4} placeholder="记录判断依据、具体错误位置或修改建议…" /></label>
+        {locked ? <p className="annotation-lock">该标注已提交并锁定，请联系管理员退回后修改。</p> : null}
         {formError ? <p className="annotation-error">{formError}</p> : null}
-        <div className="annotation-actions"><button type="button" disabled={disabled} onClick={() => save("draft")}>暂存草稿</button><button type="button" className="submit" disabled={disabled} onClick={() => save("submitted")}>提交标注</button></div>
+        <div className={`annotation-save-state ${saveState}`} aria-live="polite">{saveState === "dirty" ? "有修改，等待自动保存" : saveState === "saving" ? "保存中…" : saveState === "saved" ? "✓ 已保存" : saveState === "error" ? "保存失败，请重试" : existing ? `上次保存 ${new Date(existing.updated_at).toLocaleTimeString()}` : "修改后自动暂存"}</div>
+        <div className="annotation-actions"><button type="button" disabled={disabled || locked || saveState === "saving"} onClick={() => void save("draft")}>立即暂存</button><button type="button" className="submit" disabled={disabled || locked || saveState === "saving"} onClick={() => void save("submitted")}>提交标注</button></div>
       </section>
     </article>
   );
 }
 
-function CandidateWorkspace({ item, caseIndex, records, annotator, onSave }: {
+function CandidateWorkspace({ item, caseIndex, records, annotator, onSave, canReturn = false, onReturn }: {
   item: LogCase;
   caseIndex: number;
   records: CaseAnnotation[];
   annotator: { id: string; name: string };
-  onSave: (candidate: CandidateOutput, value: { scores: Record<string, number>; badcase: boolean; badcaseTags: string[]; note: string }, status: "draft" | "submitted") => void;
+  onSave: (candidate: CandidateOutput, value: { scores: Record<string, number>; badcase: boolean; badcaseTags: string[]; note: string }, status: "draft" | "submitted", silent?: boolean) => Promise<boolean>;
+  canReturn?: boolean;
+  onReturn?: (annotationId: string) => void;
 }) {
   const candidates = item.candidates ?? [];
   const dimensions = item.annotation_config?.dimensions?.length ? item.annotation_config.dimensions : DEFAULT_DIMENSIONS;
@@ -863,18 +1074,19 @@ function CandidateWorkspace({ item, caseIndex, records, annotator, onSave }: {
   if (!candidates.length) return <div className="empty-panel"><span>◇</span><h3>这个 Case 没有候选模型结果</h3><p>在 JSONL 中增加 candidates 数组后，即可并排查看 reasoning、response 并进行多维标注。</p></div>;
   return (
     <section className="candidate-workspace">
-      <header className="candidate-workspace-head"><div><span>MODEL COMPARISON</span><h3>{candidates.length} 个候选结果</h3></div><p>当前标注员：<strong>{annotator.name || annotator.id || "未设置"}</strong> · 草稿自动保存在当前浏览器</p></header>
+      <header className="candidate-workspace-head"><div><span>MODEL COMPARISON</span><h3>{candidates.length} 个候选结果</h3></div><p>当前标注员：<strong>{annotator.name || annotator.id || "未设置"}</strong> · 可暂存草稿后继续</p></header>
       <div className="candidate-grid">
         {candidates.map((candidate) => {
           const existing = records.find((record) => record.candidate_id === candidate.id && record.annotator.id === annotator.id);
           const historyCount = new Set(records.filter((record) => record.candidate_id === candidate.id && record.status === "submitted").map((record) => record.annotator.id)).size;
-          return <CandidateAnnotationCard candidate={candidate} dimensions={dimensions} badcaseTags={badcaseTags} existing={existing} historyCount={historyCount} disabled={!annotator.id.trim() || !annotator.name.trim()} onSave={(value, status) => onSave(candidate, value, status)} key={`${caseAnnotationKey(item, caseIndex)}:${candidate.id}:${annotator.id}:${existing?.updated_at ?? "new"}`} />;
+          const locked = Boolean(existing?.status === "submitted" && !existing.sync_state && item.annotation_config?.lock_submitted && !canReturn);
+          return <CandidateAnnotationCard candidate={candidate} dimensions={dimensions} badcaseTags={badcaseTags} existing={existing} historyCount={historyCount} disabled={!annotator.id.trim() || !annotator.name.trim()} locked={locked} onSave={(value, status, silent) => onSave(candidate, value, status, silent)} key={`${caseAnnotationKey(item, caseIndex)}:${candidate.id}:${annotator.id}`} />;
         })}
       </div>
       {records.length ? (
         <details className="annotation-history">
           <summary>查看全部标注记录 · {records.length}</summary>
-          <div>{records.map((record) => <article key={record.annotation_id}><span className={record.status}>{record.status === "submitted" ? "已提交" : "草稿"}</span><strong>{record.annotator.name}</strong><code>{record.candidate_id}</code>{record.badcase ? <b>BADCASE</b> : null}<small>{Object.entries(record.scores).map(([key, score]) => `${key}:${score}`).join(" · ")} · {new Date(record.updated_at).toLocaleString()}</small>{record.note ? <p>{record.note}</p> : null}</article>)}</div>
+          <div>{records.map((record) => <article key={record.annotation_id}><span className={record.status}>{record.status === "submitted" ? "已提交" : "草稿"}</span><strong>{record.annotator.name}</strong><code>{record.candidate_id}</code>{record.badcase ? <b>BADCASE</b> : null}<small>{Object.entries(record.scores).map(([key, score]) => `${key}:${score}`).join(" · ")} · {new Date(record.updated_at).toLocaleString()}</small>{canReturn && record.status === "submitted" ? <button onClick={() => onReturn?.(record.annotation_id)}>退回修改</button> : null}{record.note ? <p>{record.note}</p> : null}</article>)}</div>
         </details>
       ) : null}
     </section>
@@ -903,7 +1115,22 @@ export default function Home() {
   const [loginUsername, setLoginUsername] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
   const [newProjectName, setNewProjectName] = useState("");
+  const [projectNameEdit, setProjectNameEdit] = useState("");
+  const [serverUsers, setServerUsers] = useState<ServerUser[]>([]);
   const [newUser, setNewUser] = useState({ username: "", display_name: "", password: "", role: "annotator" as "admin" | "annotator" });
+  const [projectMembers, setProjectMembers] = useState<ProjectMemberOption[]>([]);
+  const [selectedMemberIds, setSelectedMemberIds] = useState<string[]>([]);
+  const [assignmentOverview, setAssignmentOverview] = useState<AssignmentOverview | null>(null);
+  const [assignmentUserId, setAssignmentUserId] = useState("");
+  const [randomQuantity, setRandomQuantity] = useState(20);
+  const [allowAssignmentOverlap, setAllowAssignmentOverlap] = useState(false);
+  const [replaceUserAssignments, setReplaceUserAssignments] = useState(false);
+  const [explicitCaseIds, setExplicitCaseIds] = useState("");
+  const [removeCaseIds, setRemoveCaseIds] = useState("");
+  const [deleteRemovedAnnotations, setDeleteRemovedAnnotations] = useState(false);
+  const [dimensionConfigText, setDimensionConfigText] = useState(dimensionsToText(DEFAULT_DIMENSIONS));
+  const [badcaseTagText, setBadcaseTagText] = useState(DEFAULT_BADCASE_TAGS.join("，"));
+  const [exportIncludeDrafts, setExportIncludeDrafts] = useState(true);
   const [tab, setTab] = useState<ViewTab>("conversation");
   const [dragging, setDragging] = useState(false);
   const [parseErrors, setParseErrors] = useState<string[]>([]);
@@ -936,12 +1163,22 @@ export default function Home() {
   const [aiResultScope, setAiResultScope] = useState<"case" | "all">("case");
   const [activeAiResultId, setActiveAiResultId] = useState("");
   const [visibleLimit, setVisibleLimit] = useState(400);
+  const [petVisible, setPetVisible] = useState(() => {
+    if (typeof window === "undefined") return true;
+    return window.localStorage.getItem("case-lens-pet-visible") !== "false";
+  });
+  const [petMessage, setPetMessage] = useState("");
+  const [petMood, setPetMood] = useState<PetMood>("idle");
+  const [petPulse, setPetPulse] = useState(0);
   const fileInput = useRef<HTMLInputElement>(null);
   const projectFileInput = useRef<HTMLInputElement>(null);
   const searchInput = useRef<HTMLInputElement>(null);
   const closeAiButton = useRef<HTMLButtonElement>(null);
   const aiReturnFocus = useRef<HTMLElement | null>(null);
   const aiAbort = useRef<AbortController | null>(null);
+  const petTimer = useRef<number | null>(null);
+  const serverRevisions = useRef<Record<string, number | undefined>>({});
+  const saveQueues = useRef<Record<string, Promise<CaseAnnotation | null>>>({});
   const deferredQuery = useDeferredValue(query);
   const aiModel = providerMode === "local" ? localModel : externalModel;
   const setAiModel = providerMode === "local" ? setLocalModel : setExternalModel;
@@ -1038,12 +1275,26 @@ export default function Home() {
     return projects;
   };
 
+  const refreshAssignmentAdmin = async (projectId: number) => {
+    const [members, overview, users] = await Promise.all([
+      apiRequest<ProjectMemberOption[]>(`/api/projects/${projectId}/members`),
+      apiRequest<AssignmentOverview>(`/api/projects/${projectId}/assignment-overview`),
+      apiRequest<ServerUser[]>("/api/users"),
+    ]);
+    setServerUsers(users);
+    setProjectMembers(members);
+    setSelectedMemberIds(members.filter((item) => item.member).map((item) => item.id));
+    setAssignmentOverview(overview);
+    setAssignmentUserId((current) => overview.members.some((item) => item.id === current) ? current : overview.members[0]?.id ?? "");
+    return overview;
+  };
+
   useEffect(() => {
     const controller = new AbortController();
     void (async () => {
       try {
         const response = await fetch("/api/health", { signal: controller.signal, credentials: "same-origin" });
-        const body = await response.json();
+        const body = await response.json() as { status?: string };
         if (!response.ok || body.status !== "ok") return;
         setServerAvailable(true);
         try {
@@ -1064,13 +1315,26 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    window.localStorage.setItem("case-lens-annotator", JSON.stringify({ id: annotatorId, name: annotatorName }));
+    safeStorageSet("case-lens-annotator", { id: annotatorId, name: annotatorName });
   }, [annotatorId, annotatorName]);
 
   useEffect(() => {
     if (!datasetKey) return;
-    window.localStorage.setItem(datasetKey, JSON.stringify(annotations));
+    safeStorageSet(datasetKey, annotations);
   }, [annotations, datasetKey]);
+
+  useEffect(() => {
+    if (!datasetKey) return;
+    void saveCachedAiResults(datasetKey, aiResults).catch((error) => console.warn("Unable to persist AI results", error));
+  }, [aiResults, datasetKey]);
+
+  useEffect(() => {
+    safeStorageSet("case-lens-pet-visible", String(petVisible));
+  }, [petVisible]);
+
+  useEffect(() => () => {
+    if (petTimer.current !== null) window.clearTimeout(petTimer.current);
+  }, []);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -1131,6 +1395,7 @@ export default function Home() {
     setParseErrors(parsed.errors);
     if (parsed.cases.length) {
       const nextDatasetKey = datasetStorageKey(name, parsed.cases);
+      const cachedAiResults = await loadCachedAiResults(nextDatasetKey);
       let nextAnnotations = embeddedAnnotations(parsed.cases);
       try {
         const localDrafts = window.localStorage.getItem(nextDatasetKey);
@@ -1150,7 +1415,7 @@ export default function Home() {
       setAnnotationFilter("all");
       setVisibleLimit(400);
       setTab(parsed.cases.some((item) => item.candidates?.length) ? "candidates" : "conversation");
-      setAiResults([]);
+      setAiResults(cachedAiResults);
       setActiveAiResultId("");
       setNotice(`已在本地载入 ${parsed.cases.length.toLocaleString()} 条 case`);
       window.setTimeout(() => setNotice(""), 2600);
@@ -1174,6 +1439,7 @@ export default function Home() {
       setAnnotatorName(result.user.display_name);
       setLoginPassword("");
       await refreshProjects();
+      if (result.user.role === "admin") setServerUsers(await apiRequest<ServerUser[]>("/api/users"));
     } catch (error) {
       setTeamError(error instanceof Error ? error.message : "登录失败");
     } finally {
@@ -1188,6 +1454,8 @@ export default function Home() {
       setServerUser(null);
       setServerProjects([]);
       setActiveProjectId(null);
+      setProjectMembers([]);
+      setAssignmentOverview(null);
     }
   };
 
@@ -1206,17 +1474,32 @@ export default function Home() {
         await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
       }
       const items = loaded.map((item, index) => ({ ...item, __line: index + 1 }));
+      const nextDatasetKey = `case-lens-server-project:${project.id}`;
+      const cachedAiResults = await loadCachedAiResults(nextDatasetKey);
       setCases(items);
       setFileName(`团队项目 · ${project.name}`);
-      setDatasetKey(`case-lens-server-project:${project.id}`);
-      setAnnotations(embeddedAnnotations(items));
+      setDatasetKey(nextDatasetKey);
+      const serverAnnotations = embeddedAnnotations(items);
+      const localAnnotations = safeStorageGet<Record<string, CaseAnnotation[]>>(nextDatasetKey, {});
+      setAnnotations(mergePendingAnnotations(serverAnnotations, localAnnotations));
+      serverRevisions.current = {};
+      items.forEach((item, index) => {
+        for (const record of serverAnnotations[caseAnnotationKey(item, index)] ?? []) {
+          if (item.__server_case_id) serverRevisions.current[`${item.__server_case_id}:${record.candidate_id}:${record.annotator.id}`] = record.revision;
+        }
+      });
       setActiveProjectId(project.id);
+      setProjectNameEdit(project.name);
+      setDimensionConfigText(dimensionsToText(project.annotation_config?.dimensions));
+      setBadcaseTagText((project.annotation_config?.badcase_tags?.length ? project.annotation_config.badcase_tags : DEFAULT_BADCASE_TAGS).join("，"));
+      setAiResults(cachedAiResults);
       setSelectedKey("0");
       setQuery("");
       setProtocolFilter("all");
       setModelFilter("all");
       setAnnotationFilter("all");
       setTab(items.some((item) => item.candidates?.length) ? "candidates" : "conversation");
+      if (serverUser?.role === "admin") await refreshAssignmentAdmin(project.id);
       setTeamOpen(false);
     } catch (error) {
       setTeamError(error instanceof Error ? error.message : "项目加载失败");
@@ -1242,6 +1525,7 @@ export default function Home() {
 
   const uploadProjectDataset = async (file?: File) => {
     if (!file || !activeProjectId) return;
+    if (!window.confirm(`将用 ${file.name} 替换当前项目的全部 Case。已有标注会被删除，是否继续？`)) return;
     setTeamBusy(true);
     setTeamError("");
     try {
@@ -1267,8 +1551,191 @@ export default function Home() {
       await apiRequest("/api/users", { method: "POST", body: JSON.stringify(newUser) });
       setNewUser({ username: "", display_name: "", password: "", role: "annotator" });
       setNotice("账号已创建");
+      if (activeProjectId) await refreshAssignmentAdmin(activeProjectId);
+      else setServerUsers(await apiRequest<ServerUser[]>("/api/users"));
     } catch (error) {
       setTeamError(error instanceof Error ? error.message : "账号创建失败");
+    } finally {
+      setTeamBusy(false);
+    }
+  };
+
+  const updateServerUser = async (user: ServerUser, patch: { active?: boolean; password?: string; display_name?: string }) => {
+    setTeamBusy(true);
+    setTeamError("");
+    try {
+      await apiRequest(`/api/users/${user.id}`, { method: "PATCH", body: JSON.stringify(patch) });
+      setServerUsers(await apiRequest<ServerUser[]>("/api/users"));
+      if (activeProjectId) await refreshAssignmentAdmin(activeProjectId);
+      setNotice(patch.password ? `已重置 @${user.username} 的密码` : patch.active === false ? `已停用 @${user.username}` : `已启用 @${user.username}`);
+    } catch (error) {
+      setTeamError(error instanceof Error ? error.message : "账号更新失败");
+    } finally {
+      setTeamBusy(false);
+    }
+  };
+
+  const resetServerUserPassword = async (user: ServerUser) => {
+    const password = window.prompt(`为 @${user.username} 设置新密码（至少 8 位）`);
+    if (password === null) return;
+    if (password.length < 8) {
+      setTeamError("新密码至少 8 位");
+      return;
+    }
+    await updateServerUser(user, { password });
+  };
+
+  const updateServerProject = async (project: ServerProject, patch: { name?: string; archived?: boolean }) => {
+    setTeamBusy(true);
+    setTeamError("");
+    try {
+      await apiRequest(`/api/projects/${project.id}`, { method: "PATCH", body: JSON.stringify(patch) });
+      await refreshProjects();
+      if (patch.name && activeProjectId === project.id) setFileName(`团队项目 · ${patch.name}`);
+      setNotice(patch.name ? "项目名称已更新" : patch.archived ? "项目已归档" : "项目已恢复");
+    } catch (error) {
+      setTeamError(error instanceof Error ? error.message : "项目更新失败");
+    } finally {
+      setTeamBusy(false);
+    }
+  };
+
+  const deleteServerProject = async (project: ServerProject) => {
+    const confirmation = window.prompt(`删除项目会永久删除 Case、分配与标注。请输入项目名“${project.name}”确认：`);
+    if (confirmation !== project.name) {
+      if (confirmation !== null) setTeamError("项目名不匹配，未删除");
+      return;
+    }
+    setTeamBusy(true);
+    setTeamError("");
+    try {
+      await apiRequest(`/api/projects/${project.id}?confirm_name=${encodeURIComponent(confirmation)}`, { method: "DELETE" });
+      if (activeProjectId === project.id) {
+        setActiveProjectId(null);
+        setAssignmentOverview(null);
+      }
+      await refreshProjects();
+      setNotice("项目已删除");
+    } catch (error) {
+      setTeamError(error instanceof Error ? error.message : "项目删除失败");
+    } finally {
+      setTeamBusy(false);
+    }
+  };
+
+  const saveProjectMembers = async () => {
+    if (!activeProjectId) return;
+    setTeamBusy(true);
+    setTeamError("");
+    try {
+      await apiRequest(`/api/projects/${activeProjectId}/members`, { method: "PUT", body: JSON.stringify({ user_ids: selectedMemberIds.map(Number) }) });
+      await refreshAssignmentAdmin(activeProjectId);
+      await refreshProjects();
+      setNotice("项目成员已更新；被移除成员的任务分配已撤销");
+    } catch (error) {
+      setTeamError(error instanceof Error ? error.message : "成员保存失败");
+    } finally {
+      setTeamBusy(false);
+    }
+  };
+
+  const updateProjectSettings = async (overrides: Partial<AnnotationConfig> = {}) => {
+    if (!activeProjectId) return;
+    setTeamBusy(true);
+    setTeamError("");
+    try {
+      const settings: AnnotationConfig = {
+        blind_mode: assignmentOverview?.settings.blind_mode !== false,
+        lock_submitted: assignmentOverview?.settings.lock_submitted === true,
+        dimensions: assignmentOverview?.settings.dimensions?.length ? assignmentOverview.settings.dimensions : DEFAULT_DIMENSIONS,
+        badcase_tags: assignmentOverview?.settings.badcase_tags?.length ? assignmentOverview.settings.badcase_tags : DEFAULT_BADCASE_TAGS,
+        ...overrides,
+      };
+      await apiRequest(`/api/projects/${activeProjectId}/settings`, { method: "PATCH", body: JSON.stringify(settings) });
+      await refreshAssignmentAdmin(activeProjectId);
+      const projects = await refreshProjects();
+      const project = projects.find((item) => item.id === activeProjectId);
+      if (project) setCases((current) => current.map((item) => ({ ...item, annotation_config: { ...(item.annotation_config ?? {}), ...project.annotation_config } })));
+      setNotice("项目标注策略已保存");
+    } catch (error) {
+      setTeamError(error instanceof Error ? error.message : "项目设置保存失败");
+    } finally {
+      setTeamBusy(false);
+    }
+  };
+
+  const saveAnnotationConfig = async () => {
+    try {
+      const dimensions = parseDimensionsText(dimensionConfigText);
+      const badcaseTags = badcaseTagText.split(/[，,\n]+/).map((item) => item.trim()).filter(Boolean);
+      if (!badcaseTags.length) throw new Error("至少保留一个 Badcase 标签");
+      await updateProjectSettings({ dimensions, badcase_tags: Array.from(new Set(badcaseTags)) });
+    } catch (error) {
+      setTeamError(error instanceof Error ? error.message : "标注配置不正确");
+    }
+  };
+
+  const assignRandomCases = async () => {
+    if (!activeProjectId || !assignmentUserId) return;
+    setTeamBusy(true);
+    setTeamError("");
+    try {
+      const result = await apiRequest<{ added_count: number; available_shortfall: number }>(`/api/projects/${activeProjectId}/assignments/random`, {
+        method: "POST",
+        body: JSON.stringify({ user_id: Number(assignmentUserId), quantity: randomQuantity, allow_overlap: allowAssignmentOverlap, replace_existing: replaceUserAssignments }),
+      });
+      await refreshAssignmentAdmin(activeProjectId);
+      await refreshProjects();
+      setNotice(`已随机分配 ${result.added_count} 条${result.available_shortfall ? `，可用 Case 少 ${result.available_shortfall} 条` : ""}`);
+    } catch (error) {
+      setTeamError(error instanceof Error ? error.message : "随机分配失败");
+    } finally {
+      setTeamBusy(false);
+    }
+  };
+
+  const assignExplicitCases = async () => {
+    if (!activeProjectId || !assignmentUserId) return;
+    const externalIds = explicitCaseIds.split(/[\s,，]+/).map((value) => value.trim()).filter(Boolean);
+    if (!externalIds.length) return;
+    setTeamBusy(true);
+    setTeamError("");
+    try {
+      const result = await apiRequest<{ added_count: number; missing_external_ids: string[] }>(`/api/projects/${activeProjectId}/assignments/explicit`, {
+        method: "POST",
+        body: JSON.stringify({ user_id: Number(assignmentUserId), external_ids: externalIds, replace_existing: replaceUserAssignments }),
+      });
+      await refreshAssignmentAdmin(activeProjectId);
+      await refreshProjects();
+      setExplicitCaseIds("");
+      setNotice(`已指定分配 ${result.added_count} 条${result.missing_external_ids.length ? `，未找到 ${result.missing_external_ids.length} 个 ID` : ""}`);
+    } catch (error) {
+      setTeamError(error instanceof Error ? error.message : "指定分配失败");
+    } finally {
+      setTeamBusy(false);
+    }
+  };
+
+  const removeAssignments = async (scope: "ids" | "user" | "project") => {
+    if (!activeProjectId || (scope !== "project" && !assignmentUserId)) return;
+    const externalIds = scope === "ids" ? removeCaseIds.split(/[\s,，]+/).map((value) => value.trim()).filter(Boolean) : [];
+    if (scope === "ids" && !externalIds.length) return;
+    const selectedMember = assignmentOverview?.members.find((member) => member.id === assignmentUserId);
+    const label = scope === "project" ? "整个项目的全部分配" : scope === "user" ? `${selectedMember?.display_name ?? "该用户"}的全部分配` : `${externalIds.length} 条指定分配`;
+    if (!window.confirm(`确认取消${label}？${deleteRemovedAnnotations ? "同时会删除相关标注记录。" : "已有标注记录会保留。"}`)) return;
+    setTeamBusy(true);
+    setTeamError("");
+    try {
+      const result = await apiRequest<{ removed_assignments: number; deleted_annotations: number }>(`/api/projects/${activeProjectId}/assignments/remove`, {
+        method: "POST",
+        body: JSON.stringify({ user_id: scope === "project" ? null : Number(assignmentUserId), external_ids: externalIds, delete_annotations: deleteRemovedAnnotations }),
+      });
+      setRemoveCaseIds("");
+      await refreshAssignmentAdmin(activeProjectId);
+      await refreshProjects();
+      setNotice(`已取消 ${result.removed_assignments} 条分配${result.deleted_annotations ? `，删除 ${result.deleted_annotations} 条标注` : ""}`);
+    } catch (error) {
+      setTeamError(error instanceof Error ? error.message : "取消分配失败");
     } finally {
       setTeamBusy(false);
     }
@@ -1278,6 +1745,49 @@ export default function Home() {
     event.preventDefault();
     setDragging(false);
     void loadFile(event.dataTransfer.files?.[0]);
+  };
+
+  const wakePet = (message: string, mood: PetMood = "happy") => {
+    if (petTimer.current !== null) window.clearTimeout(petTimer.current);
+    setPetMessage(message);
+    setPetMood(mood);
+    setPetPulse((current) => current + 1);
+    petTimer.current = window.setTimeout(() => {
+      setPetMessage("");
+      setPetMood("idle");
+      petTimer.current = null;
+    }, 3200);
+  };
+
+  const petTheCompanion = () => {
+    const reactions = ["嘿嘿，再摸一下！", "今天也要稳稳地标完。", "我会帮你盯着草稿。", "发现 Badcase 就告诉我！", "进度条正在长大～"];
+    wakePet(reactions[petPulse % reactions.length], "happy");
+  };
+
+  const goToNextPendingCase = (skipCurrent = false) => {
+    const currentIndex = selectedPair?.index ?? -1;
+    const pending = cases
+      .map((item, index) => ({ item, index }))
+      .filter(({ item, index }) => Boolean(item.candidates?.length) && (!skipCurrent || index !== currentIndex) && annotationStatus(item, index, annotatorId, annotations) !== "submitted");
+    const next = pending.find(({ index }) => index > currentIndex) ?? pending[0];
+    if (!next) {
+      wakePet("全部标完啦，去喝口水吧！", "proud");
+      return;
+    }
+    setSelectedKey(String(next.index));
+    setTab("candidates");
+    setSidebarOpen(false);
+    wakePet(`出发！下一条是 ${String(next.item.id ?? `Case ${next.index + 1}`)}`, "curious");
+  };
+
+  const goRelativeCase = (offset: -1 | 1) => {
+    if (!filtered.length) return;
+    const position = Math.max(0, filtered.findIndex(({ index }) => index === selectedPair?.index));
+    const next = filtered[Math.min(filtered.length - 1, Math.max(0, position + offset))];
+    if (next) {
+      setSelectedKey(String(next.index));
+      setSidebarOpen(false);
+    }
   };
 
   const copySelected = async () => {
@@ -1304,15 +1814,19 @@ export default function Home() {
     URL.revokeObjectURL(url);
   };
 
-  const saveCandidateAnnotation = (candidate: CandidateOutput, value: { scores: Record<string, number>; badcase: boolean; badcaseTags: string[]; note: string }, status: "draft" | "submitted") => {
+  const saveCandidateAnnotation = async (candidate: CandidateOutput, value: { scores: Record<string, number>; badcase: boolean; badcaseTags: string[]; note: string }, status: "draft" | "submitted", silent = false): Promise<boolean> => {
     if (!selected || !selectedPair || !annotatorId.trim() || !annotatorName.trim()) {
-      setNotice("请先填写标注员 ID 和姓名");
-      window.setTimeout(() => setNotice(""), 2200);
-      return;
+      if (!silent) {
+        setNotice("请先填写标注员 ID 和姓名");
+        window.setTimeout(() => setNotice(""), 2200);
+      }
+      return false;
     }
     const key = caseAnnotationKey(selected, selectedPair.index);
+    const queueKey = `${selected.__server_case_id ?? key}:${candidate.id}:${annotatorId.trim()}`;
     const existingRecord = (annotations[key] ?? []).find((record) => record.candidate_id === candidate.id && record.annotator.id === annotatorId.trim());
     const now = new Date().toISOString();
+    const isTeamSave = Boolean(activeProjectId && selected.__server_case_id);
     setAnnotations((current) => {
       const list = current[key] ?? [];
       const existing = list.find((record) => record.candidate_id === candidate.id && record.annotator.id === annotatorId.trim());
@@ -1326,32 +1840,77 @@ export default function Home() {
         note: value.note.trim(),
         status,
         revision: existing?.revision,
+        sync_state: isTeamSave ? "pending" : undefined,
         created_at: existing?.created_at ?? now,
         updated_at: now,
       };
       return { ...current, [key]: [record, ...list.filter((item) => item.annotation_id !== record.annotation_id)] };
     });
-    setNotice(status === "submitted" ? `已提交 ${candidate.label ?? candidate.model} 的标注` : "草稿已暂存在当前浏览器");
-    window.setTimeout(() => setNotice(""), 2200);
-    if (activeProjectId && selected.__server_case_id) {
-      void apiRequest<CaseAnnotation>(`/api/cases/${selected.__server_case_id}/annotations/${encodeURIComponent(candidate.id)}`, {
-        method: "PUT",
-        body: JSON.stringify({ scores: value.scores, badcase: value.badcase, badcase_tags: value.badcaseTags, note: value.note.trim(), status, revision: existingRecord?.revision }),
-      }).then((saved) => {
+    if (!silent) {
+      setNotice(isTeamSave ? "已在本机暂存，正在同步团队服务器…" : status === "submitted" ? `已提交 ${candidate.label ?? candidate.model} 的标注` : "草稿已暂存在当前浏览器");
+      if (!isTeamSave) wakePet(value.badcase ? "Badcase 已抓住，我帮你记好了！" : status === "submitted" ? "提交成功，漂亮！" : "草稿交给我守着吧。", value.badcase ? "curious" : status === "submitted" ? "proud" : "happy");
+      window.setTimeout(() => setNotice(""), 2200);
+    }
+    if (isTeamSave && selected.__server_case_id) {
+      const previous = saveQueues.current[queueKey] ?? Promise.resolve(null);
+      const request = previous.catch(() => null).then(() => apiRequest<CaseAnnotation>(`/api/cases/${selected.__server_case_id}/annotations/${encodeURIComponent(candidate.id)}`, {
+          method: "PUT",
+          body: JSON.stringify({ scores: value.scores, badcase: value.badcase, badcase_tags: value.badcaseTags, note: value.note.trim(), status, revision: serverRevisions.current[queueKey] ?? existingRecord?.revision }),
+        }));
+      saveQueues.current[queueKey] = request;
+      try {
+        const saved = await request;
+        serverRevisions.current[queueKey] = saved.revision;
         setAnnotations((current) => {
           const list = current[key] ?? [];
           return { ...current, [key]: [saved, ...list.filter((record) => !(record.candidate_id === candidate.id && record.annotator.id === annotatorId.trim()))] };
         });
-        setNotice(status === "submitted" ? "标注已保存到团队服务器" : "草稿已保存到团队服务器");
-        window.setTimeout(() => setNotice(""), 1800);
-      }).catch((error) => {
-        setNotice(`服务器保存失败：${error instanceof Error ? error.message : "未知错误"}`);
-      });
+        if (!silent) {
+          setNotice(status === "submitted" ? "标注已保存到团队服务器" : "草稿已保存到团队服务器");
+          wakePet(value.badcase ? "Badcase 已抓住，我帮你记好了！" : status === "submitted" ? "提交成功，漂亮！" : "草稿交给我守着吧。", value.badcase ? "curious" : status === "submitted" ? "proud" : "happy");
+          window.setTimeout(() => setNotice(""), 1800);
+        }
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 409 && isObject(error.detail) && isObject(error.detail.current)) {
+          const latest = error.detail.current as unknown as CaseAnnotation;
+          serverRevisions.current[queueKey] = latest.revision;
+          setNotice("其他页面更新过该标注；本机修改已保留，请检查后再次保存");
+        } else {
+          setNotice(`服务器保存失败，本机草稿已保留：${error instanceof Error ? error.message : "未知错误"}`);
+        }
+        setAnnotations((current) => ({
+          ...current,
+          [key]: (current[key] ?? []).map((record) => record.candidate_id === candidate.id && record.annotator.id === annotatorId.trim() ? { ...record, sync_state: "error" } : record),
+        }));
+        wakePet("服务器没接住这次保存，再试一下吧。", "worried");
+        return false;
+      } finally {
+        if (saveQueues.current[queueKey] === request) delete saveQueues.current[queueKey];
+      }
+    }
+    if (status === "submitted") {
+      const allCandidatesSubmitted = (selected.candidates ?? []).every((item) => item.id === candidate.id || (annotations[key] ?? []).some((record) => record.candidate_id === item.id && record.annotator.id === annotatorId.trim() && record.status === "submitted"));
+      if (allCandidatesSubmitted) window.setTimeout(() => goToNextPendingCase(true), 450);
+    }
+    return true;
+  };
+
+  const returnServerAnnotation = async (annotationId: string) => {
+    setTeamError("");
+    try {
+      const saved = await apiRequest<CaseAnnotation>(`/api/annotations/${encodeURIComponent(annotationId)}/return`, { method: "POST", body: "{}" });
+      if (!selected || !selectedPair) return;
+      const key = caseAnnotationKey(selected, selectedPair.index);
+      setAnnotations((current) => ({ ...current, [key]: (current[key] ?? []).map((record) => record.annotation_id === saved.annotation_id ? saved : record) }));
+      if (activeProjectId) await refreshAssignmentAdmin(activeProjectId);
+      setNotice("标注已退回为草稿");
+    } catch (error) {
+      setNotice(`退回失败：${error instanceof Error ? error.message : "未知错误"}`);
     }
   };
 
   const annotatedItems = () => cases.map((item, index) => {
-    const clean = { ...item, schema_version: item.schema_version ?? "case-lens.annotation.v1", annotations: annotations[caseAnnotationKey(item, index)] ?? [] };
+    const clean = { ...item, schema_version: item.schema_version ?? "case-lens.annotation.v1", annotations: (annotations[caseAnnotationKey(item, index)] ?? []).map(cleanAnnotation) };
     delete clean.__line;
     return clean;
   });
@@ -1362,7 +1921,7 @@ export default function Home() {
   };
 
   const exportAnnotationRows = () => {
-    const rows = cases.flatMap((item, index) => (annotations[caseAnnotationKey(item, index)] ?? []).map((record) => ({ case_id: String(item.id ?? `case-${index + 1}`), ...record })));
+    const rows = cases.flatMap((item, index) => (annotations[caseAnnotationKey(item, index)] ?? []).map((record) => ({ case_id: String(item.id ?? `case-${index + 1}`), ...cleanAnnotation(record) })));
     downloadText(`${rows.map((row) => JSON.stringify(row)).join("\n")}${rows.length ? "\n" : ""}`, `case-lens-annotation-records-${new Date().toISOString().slice(0, 10)}.jsonl`, "application/x-ndjson");
   };
 
@@ -1394,12 +1953,12 @@ export default function Home() {
   };
 
   const saveAiConfig = () => {
-    window.localStorage.setItem("case-lens-ai-config", JSON.stringify({
+    const saved = safeStorageSet("case-lens-ai-config", {
       providerMode, localEndpoint, externalEndpoint, localModel, externalModel,
       localContextWindow, externalContextWindow, localOutputReserve, externalOutputReserve, maxChunks, batchLimit,
       includeSystem, includeThinking, includeTools,
-    }));
-    setNotice("模型配置已保存在当前设备；API Key 未保存");
+    });
+    setNotice(saved ? "模型配置已保存在当前设备；API Key 未保存" : "保存失败：浏览器本地空间不足或被禁用");
     window.setTimeout(() => setNotice(""), 2400);
   };
 
@@ -1683,6 +2242,22 @@ export default function Home() {
   const totalCalls = cases.reduce((sum, item) => sum + getToolCalls(item), 0);
   const submittedCases = cases.filter((item, index) => annotationStatus(item, index, annotatorId, annotations) === "submitted").length;
   const badcaseCount = cases.filter((item, index) => hasBadcase(item, index, annotations)).length;
+  const annotatableCases = cases.filter((item) => Boolean(item.candidates?.length)).length;
+  const pendingCases = cases.filter((item, index) => Boolean(item.candidates?.length) && annotationStatus(item, index, annotatorId, annotations) !== "submitted").length;
+  const selectedStatus = selected && selectedPair ? annotationStatus(selected, selectedPair.index, annotatorId, annotations) : "unlabeled";
+  const selectedIsBadcase = selected && selectedPair ? hasBadcase(selected, selectedPair.index, annotations) : false;
+  const defaultPetMessage = aiBusy
+    ? "模型在工作，我陪你等结果。"
+    : !annotatableCases
+      ? "投喂一份带 candidates 的 JSONL 吧。"
+      : submittedCases >= annotatableCases
+        ? "全部标完啦，今天超棒！"
+        : selectedIsBadcase
+          ? "这条有 Badcase 气味，我闻到了。"
+          : selectedStatus === "draft"
+            ? "这条有草稿，记得完成提交。"
+            : `还有 ${pendingCases} 条未完成，我陪你。`;
+  const defaultPetMood: PetMood = aiBusy ? "curious" : submittedCases >= annotatableCases && annotatableCases > 0 ? "proud" : selectedIsBadcase ? "curious" : "idle";
 
   return (
     <main
@@ -1734,6 +2309,7 @@ export default function Home() {
               <div className="annotator-fields"><input value={annotatorId} disabled={Boolean(serverUser)} onChange={(event) => setAnnotatorId(event.target.value)} placeholder="用户 ID，如 jiangqy" aria-label="标注员 ID" /><input value={annotatorName} disabled={Boolean(serverUser)} onChange={(event) => setAnnotatorName(event.target.value)} placeholder="显示姓名" aria-label="标注员姓名" /></div>
               <div className="annotator-actions"><button onClick={downloadAnnotationTemplate}>下载输入模板</button><button onClick={exportAnnotationRows}>仅导出标注记录</button></div>
             </div>
+            <CompanionPet visible={petVisible} message={petMessage || defaultPetMessage} mood={petMessage ? petMood : defaultPetMood} completed={Math.min(submittedCases, annotatableCases)} total={annotatableCases} pulse={petPulse} hasNext={pendingCases > 0} onPet={petTheCompanion} onNext={goToNextPendingCase} onHide={() => setPetVisible(false)} onShow={() => { setPetVisible(true); wakePet("我回来啦，继续一起标！", "happy"); }} />
             <label className="search-box"><Icon>⌕</Icon><input ref={searchInput} value={query} onChange={(event) => { setQuery(event.target.value); setVisibleLimit(400); }} placeholder="搜索 ID、模型或消息…" /><kbd>⌘K</kbd></label>
             <div className="filters">
               <select value={protocolFilter} onChange={(event) => { setProtocolFilter(event.target.value as "all" | Protocol); setVisibleLimit(400); }} aria-label="协议筛选">
@@ -1775,6 +2351,8 @@ export default function Home() {
                   <h2>{getCaseTitle(selected, selectedPair?.index ?? 0)}</h2>
                 </div>
                 <div className="detail-actions">
+                  <button className="icon-button" onClick={() => goRelativeCase(-1)} disabled={filtered.findIndex(({ index }) => index === selectedPair?.index) <= 0} title="上一条">←</button>
+                  <button className="icon-button" onClick={() => goRelativeCase(1)} disabled={filtered.findIndex(({ index }) => index === selectedPair?.index) >= filtered.length - 1} title="下一条">→</button>
                   <button className="process-button" onClick={() => openAiPanel({ kind: "case" }, "summary")}><span>✦</span>翻译 / 总结</button>
                   <button className="process-button secondary" onClick={() => openAiPanel({ kind: "case" }, "custom")}><span>⌁</span>自定义</button>
                   <button className="icon-button" onClick={copySelected} title="复制 JSON">⧉</button>
@@ -1807,7 +2385,7 @@ export default function Home() {
                     {!selected.messages?.length ? <div className="empty-panel"><span>≡</span><h3>这个 Case 没有 messages</h3><p>可切到“原始 JSON”检查实际字段结构。</p></div> : null}
                   </div>
                 ) : null}
-                {tab === "candidates" ? <CandidateWorkspace item={selected} caseIndex={selectedPair?.index ?? 0} records={annotations[caseAnnotationKey(selected, selectedPair?.index ?? 0)] ?? []} annotator={{ id: annotatorId, name: annotatorName }} onSave={saveCandidateAnnotation} /> : null}
+                {tab === "candidates" ? <CandidateWorkspace item={selected} caseIndex={selectedPair?.index ?? 0} records={annotations[caseAnnotationKey(selected, selectedPair?.index ?? 0)] ?? []} annotator={{ id: annotatorId, name: annotatorName }} onSave={saveCandidateAnnotation} canReturn={serverUser?.role === "admin"} onReturn={(annotationId) => void returnServerAnnotation(annotationId)} /> : null}
                 {tab === "tools" ? (
                   <div className="tool-definitions">
                     {(selected.tools ?? []).map((tool, index) => <ToolDefinition tool={tool} index={index} protocol={selectedProtocol} results={aiResults.filter((result) => result.caseIndex === selectedPair?.index && result.anchorId === `tool-definition-${index + 1}`)} onAi={(task) => openAiPanel({ kind: "tool-definition", index }, task)} onCopyResult={(result) => void copyAiResult(result)} onDownloadResult={exportAiResult} key={index} />)}
@@ -1891,7 +2469,7 @@ export default function Home() {
                 <section className="team-account"><div><span>{serverUser.role === "admin" ? "管理员" : "标注员"}</span><strong>{serverUser.display_name}</strong><small>@{serverUser.username}</small></div><button onClick={() => void logoutTeamServer()}>退出</button></section>
                 <section className="team-section">
                   <div className="team-section-title"><span>01</span><strong>选择标注项目</strong></div>
-                  <div className="project-list">{serverProjects.map((project) => <article className={activeProjectId === project.id ? "active" : ""} key={project.id}><div><strong>{project.name}</strong><small>{project.case_count} Cases · 我已提交 {project.my_submitted_count}</small></div><button disabled={teamBusy} onClick={() => void loadServerProject(project)}>打开</button></article>)}</div>
+                  <div className="project-list">{serverProjects.map((project) => <article className={`${activeProjectId === project.id ? "active" : ""} ${project.archived ? "archived" : ""}`} key={project.id}><div><strong>{project.name}{project.archived ? <em>已归档</em> : null}</strong><small>{project.case_count} Cases · 我已提交 {project.my_submitted_count}</small></div><button disabled={teamBusy} onClick={() => void loadServerProject(project)}>打开</button></article>)}</div>
                   {!serverProjects.length ? <p className="team-empty">还没有项目{serverUser.role === "admin" ? "，请先创建" : "，请联系管理员"}。</p> : null}
                 </section>
                 {serverUser.role === "admin" ? (
@@ -1899,18 +2477,55 @@ export default function Home() {
                     <section className="team-section">
                       <div className="team-section-title"><span>02</span><strong>管理员：项目与数据</strong></div>
                       <div className="team-inline"><input value={newProjectName} onChange={(event) => setNewProjectName(event.target.value)} placeholder="新项目名称" /><button disabled={teamBusy || !newProjectName.trim()} onClick={() => void createServerProject()}>创建项目</button></div>
+                      {activeProjectId ? <div className="project-admin-actions"><input value={projectNameEdit} onChange={(event) => setProjectNameEdit(event.target.value)} placeholder="当前项目名称" /><button disabled={teamBusy || !projectNameEdit.trim()} onClick={() => { const project = serverProjects.find((item) => item.id === activeProjectId); if (project) void updateServerProject(project, { name: projectNameEdit.trim() }); }}>重命名</button><button disabled={teamBusy} onClick={() => { const project = serverProjects.find((item) => item.id === activeProjectId); if (project) void updateServerProject(project, { archived: !project.archived }); }}>{serverProjects.find((item) => item.id === activeProjectId)?.archived ? "恢复" : "归档"}</button><button className="danger" disabled={teamBusy} onClick={() => { const project = serverProjects.find((item) => item.id === activeProjectId); if (project) void deleteServerProject(project); }}>删除</button></div> : null}
                       <input ref={projectFileInput} type="file" accept=".jsonl,application/x-ndjson,text/plain" hidden onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; void uploadProjectDataset(file); }} />
                       <button className="upload-project" disabled={teamBusy || !activeProjectId} onClick={() => projectFileInput.current?.click()}>上传并替换当前项目 JSONL</button>
                       <small className="team-help">先“打开”项目，再上传数据。原始文件与标注均保存在内网服务器。</small>
                     </section>
+                    {activeProjectId ? (
+                      <>
+                        <section className="team-section">
+                          <div className="team-section-title"><span>03</span><strong>项目成员与标注策略</strong></div>
+                          <div className="member-list">
+                            {projectMembers.map((member) => <label key={member.id}><input type="checkbox" checked={selectedMemberIds.includes(member.id)} onChange={(event) => setSelectedMemberIds((current) => event.target.checked ? [...current, member.id] : current.filter((id) => id !== member.id))} /><span><strong>{member.display_name}</strong><small>@{member.username}</small></span></label>)}
+                          </div>
+                          {!projectMembers.length ? <p className="team-empty">还没有标注员账号，请先在下方创建。</p> : null}
+                          <button className="team-primary" disabled={teamBusy} onClick={() => void saveProjectMembers()}>保存项目成员</button>
+                          <div className="policy-switches">
+                            <label><input type="checkbox" checked={assignmentOverview?.settings.blind_mode !== false} onChange={(event) => void updateProjectSettings({ blind_mode: event.target.checked })} /><span><strong>盲标模式</strong><small>标注员只看到自己的评分和备注</small></span></label>
+                            <label><input type="checkbox" checked={assignmentOverview?.settings.lock_submitted === true} onChange={(event) => void updateProjectSettings({ lock_submitted: event.target.checked })} /><span><strong>提交后锁定</strong><small>防止标注员再次覆盖已提交记录</small></span></label>
+                          </div>
+                          <details className="config-editor"><summary>编辑评分维度与 Badcase 标签</summary><label><span>每行：key | 名称 | 描述 | 最小值 | 最大值 | required</span><textarea rows={6} value={dimensionConfigText} onChange={(event) => setDimensionConfigText(event.target.value)} /></label><label><span>Badcase 标签（逗号或换行分隔）</span><textarea rows={3} value={badcaseTagText} onChange={(event) => setBadcaseTagText(event.target.value)} /></label><button className="team-primary" disabled={teamBusy} onClick={() => void saveAnnotationConfig()}>保存标注模板</button></details>
+                        </section>
+                        <section className="team-section assignment-section">
+                          <div className="team-section-title"><span>04</span><strong>Case 分配与进度</strong></div>
+                          {assignmentOverview ? <div className="assignment-summary five"><div><strong>{assignmentOverview.total_cases}</strong><small>全部</small></div><div><strong>{assignmentOverview.assigned_cases}</strong><small>已分配</small></div><div><strong>{assignmentOverview.unassigned_cases}</strong><small>未分配</small></div><div><strong>{assignmentOverview.submitted_annotations}</strong><small>已提交</small></div><div><strong>{assignmentOverview.draft_annotations}</strong><small>草稿</small></div></div> : null}
+                          {assignmentOverview?.members.length ? (
+                            <>
+                              <div className="member-progress">{assignmentOverview.members.map((member) => <article key={member.id}><div><strong>{member.display_name}</strong><small>@{member.username}</small></div><span>{member.submitted_count}/{member.assigned_count} 完成{member.draft_count ? ` · ${member.draft_count} 草稿` : ""}</span></article>)}</div>
+                              <label><span>分配给</span><select value={assignmentUserId} onChange={(event) => setAssignmentUserId(event.target.value)}>{assignmentOverview.members.map((member) => <option value={member.id} key={member.id}>{member.display_name} · 已分配 {member.assigned_count}</option>)}</select></label>
+                              <div className="assignment-options">
+                                <label><input type="checkbox" checked={replaceUserAssignments} onChange={(event) => setReplaceUserAssignments(event.target.checked)} />替换该用户已有分配</label>
+                                <label><input type="checkbox" checked={allowAssignmentOverlap} onChange={(event) => setAllowAssignmentOverlap(event.target.checked)} />允许与其他用户重复（双人盲标）</label>
+                              </div>
+                              <div className="random-assign"><input type="number" min={1} max={100000} value={randomQuantity} onChange={(event) => setRandomQuantity(Math.max(1, Number(event.target.value)))} /><button disabled={teamBusy} onClick={() => void assignRandomCases()}>按数量随机分配</button></div>
+                              <label><span>按 Case ID 指定 <em>逗号、空格或换行分隔</em></span><textarea value={explicitCaseIds} onChange={(event) => setExplicitCaseIds(event.target.value)} rows={3} placeholder="case-0001, case-0008" /></label>
+                              <div className="explicit-actions"><button disabled={!selected?.id} onClick={() => setExplicitCaseIds(String(selected?.id ?? ""))}>填入当前 Case</button><button className="team-primary" disabled={teamBusy || !explicitCaseIds.trim()} onClick={() => void assignExplicitCases()}>指定分配</button></div>
+                              <details className="assignment-reset"><summary>取消 / 重置分配</summary><small>当前用户已分配：{assignmentOverview.members.find((member) => member.id === assignmentUserId)?.external_ids.join("、") || "无"}</small><label><span>仅取消这些 Case ID</span><textarea rows={3} value={removeCaseIds} onChange={(event) => setRemoveCaseIds(event.target.value)} placeholder="case-0001, case-0008" /></label><label className="danger-check"><input type="checkbox" checked={deleteRemovedAnnotations} onChange={(event) => setDeleteRemovedAnnotations(event.target.checked)} />同时删除相关标注记录（默认保留）</label><div className="reset-actions"><button disabled={teamBusy || !removeCaseIds.trim()} onClick={() => void removeAssignments("ids")}>取消指定</button><button disabled={teamBusy} onClick={() => void removeAssignments("user")}>清空该用户</button><button className="danger" disabled={teamBusy} onClick={() => void removeAssignments("project")}>重置全项目</button></div></details>
+                            </>
+                          ) : <p className="team-empty">先保存至少一名项目成员，再进行 Case 分配。</p>}
+                        </section>
+                      </>
+                    ) : null}
                     <section className="team-section">
-                      <div className="team-section-title"><span>03</span><strong>管理员：创建账号</strong></div>
+                      <div className="team-section-title"><span>05</span><strong>管理员：账号管理</strong></div>
                       <div className="user-form"><input value={newUser.username} onChange={(event) => setNewUser((current) => ({ ...current, username: event.target.value }))} placeholder="用户名" /><input value={newUser.display_name} onChange={(event) => setNewUser((current) => ({ ...current, display_name: event.target.value }))} placeholder="显示姓名" /><input type="password" value={newUser.password} onChange={(event) => setNewUser((current) => ({ ...current, password: event.target.value }))} placeholder="初始密码（至少 8 位）" /><select value={newUser.role} onChange={(event) => setNewUser((current) => ({ ...current, role: event.target.value as "admin" | "annotator" }))}><option value="annotator">标注员</option><option value="admin">管理员</option></select></div>
                       <button className="team-primary" disabled={teamBusy || !newUser.username || !newUser.display_name || newUser.password.length < 8} onClick={() => void createServerUser()}>创建账号</button>
+                      {serverUsers.length ? <div className="user-list">{serverUsers.map((user) => <article className={user.active ? "" : "inactive"} key={user.id}><div><strong>{user.display_name}</strong><small>@{user.username} · {user.role === "admin" ? "管理员" : "标注员"}{user.active ? "" : " · 已停用"}</small></div><div><button disabled={teamBusy} onClick={() => void resetServerUserPassword(user)}>重置密码</button><button disabled={teamBusy || user.id === serverUser.id} onClick={() => void updateServerUser(user, { active: !user.active })}>{user.active ? "停用" : "启用"}</button></div></article>)}</div> : null}
                     </section>
                   </>
                 ) : null}
-                {activeProjectId && serverUser.role === "admin" ? <a className="team-export" href={`/api/projects/${activeProjectId}/export`}>导出当前项目完整标注 JSONL</a> : null}
+                {activeProjectId && serverUser.role === "admin" ? <section className="team-section export-section"><div className="team-section-title"><span>06</span><strong>结果导出</strong></div><label className="export-drafts"><input type="checkbox" checked={exportIncludeDrafts} onChange={(event) => setExportIncludeDrafts(event.target.checked)} />包含草稿（取消后只导出已提交）</label><div><a href={`/api/projects/${activeProjectId}/export?include_drafts=${exportIncludeDrafts}&view=full`}>完整 Case JSONL</a><a href={`/api/projects/${activeProjectId}/export?include_drafts=${exportIncludeDrafts}&view=records`}>扁平标注记录 JSONL</a></div></section> : null}
               </>
             )}
             {teamError ? <p className="team-error">{teamError}</p> : null}

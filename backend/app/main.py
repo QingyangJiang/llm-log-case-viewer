@@ -5,12 +5,11 @@ import hmac
 import json
 import os
 import secrets
-import shutil
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Annotated
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, create_engine, delete, func, select
@@ -66,6 +65,15 @@ class Project(Base):
     cases: Mapped[list[Case]] = relationship(back_populates="project", cascade="all, delete-orphan")
 
 
+class ProjectMember(Base):
+    __tablename__ = "project_members"
+    __table_args__ = (UniqueConstraint("project_id", "user_id"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class Case(Base):
     __tablename__ = "cases"
     __table_args__ = (UniqueConstraint("project_id", "external_id"),)
@@ -77,6 +85,16 @@ class Case(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     project: Mapped[Project] = relationship(back_populates="cases")
     annotations: Mapped[list[Annotation]] = relationship(back_populates="case", cascade="all, delete-orphan")
+
+
+class CaseAssignment(Base):
+    __tablename__ = "case_assignments"
+    __table_args__ = (UniqueConstraint("case_id", "user_id"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    case_id: Mapped[int] = mapped_column(ForeignKey("cases.id"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    assigned_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class Annotation(Base):
@@ -155,9 +173,20 @@ class UserCreate(BaseModel):
     role: str = "annotator"
 
 
+class UserUpdate(BaseModel):
+    display_name: str | None = Field(default=None, min_length=1, max_length=200)
+    password: str | None = Field(default=None, min_length=8, max_length=200)
+    active: bool | None = None
+
+
 class ProjectCreate(BaseModel):
     name: str = Field(min_length=1, max_length=240)
     annotation_config: dict[str, Any] = Field(default_factory=dict)
+
+
+class ProjectUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=240)
+    archived: bool | None = None
 
 
 class AnnotationBody(BaseModel):
@@ -169,8 +198,38 @@ class AnnotationBody(BaseModel):
     revision: int | None = None
 
 
+class ProjectSettingsBody(BaseModel):
+    blind_mode: bool = True
+    lock_submitted: bool = False
+    dimensions: list[dict[str, Any]] | None = None
+    badcase_tags: list[str] | None = None
+
+
+class ProjectMembersBody(BaseModel):
+    user_ids: list[int] = Field(default_factory=list)
+
+
+class ExplicitAssignmentBody(BaseModel):
+    user_id: int
+    external_ids: list[str] = Field(min_length=1, max_length=10_000)
+    replace_existing: bool = False
+
+
+class RandomAssignmentBody(BaseModel):
+    user_id: int
+    quantity: int = Field(ge=1, le=100_000)
+    allow_overlap: bool = False
+    replace_existing: bool = False
+
+
+class AssignmentRemovalBody(BaseModel):
+    user_id: int | None = None
+    external_ids: list[str] = Field(default_factory=list, max_length=10_000)
+    delete_annotations: bool = False
+
+
 def user_dict(user: User) -> dict[str, Any]:
-    return {"id": str(user.id), "username": user.username, "display_name": user.display_name, "role": user.role}
+    return {"id": str(user.id), "username": user.username, "display_name": user.display_name, "role": user.role, "active": user.active}
 
 
 def annotation_dict(annotation: Annotation) -> dict[str, Any]:
@@ -187,6 +246,54 @@ def annotation_dict(annotation: Annotation) -> dict[str, Any]:
         "created_at": annotation.created_at.isoformat(),
         "updated_at": annotation.updated_at.isoformat(),
     }
+
+
+def project_config(project: Project) -> dict[str, Any]:
+    return {"blind_mode": True, "lock_submitted": False, "archived": False, **(project.annotation_config or {})}
+
+
+def user_case_progress(cases: list[Case], user_id: int) -> tuple[int, int]:
+    completed = 0
+    in_progress = 0
+    for case in cases:
+        candidate_ids = {str(item.get("id")) for item in case.payload.get("candidates", []) if isinstance(item, dict) and item.get("id") is not None}
+        mine = [record for record in case.annotations if record.user_id == user_id]
+        if candidate_ids and all(any(record.candidate_id == candidate_id and record.status == "submitted" for record in mine) for candidate_id in candidate_ids):
+            completed += 1
+        elif mine:
+            in_progress += 1
+    return completed, in_progress
+
+
+def ensure_project_access(project_id: int, user: User, db: Session) -> Project:
+    project = db.get(Project, project_id)
+    if not project:
+        raise HTTPException(404, "项目不存在")
+    if user.role != "admin" and project_config(project)["archived"]:
+        raise HTTPException(403, "项目已归档")
+    if user.role != "admin" and not db.scalar(select(ProjectMember.id).where(ProjectMember.project_id == project_id, ProjectMember.user_id == user.id)):
+        raise HTTPException(403, "你不是该项目成员")
+    return project
+
+
+def ensure_case_access(case: Case, user: User, db: Session) -> None:
+    if user.role == "admin":
+        return
+    if project_config(case.project)["archived"]:
+        raise HTTPException(403, "项目已归档")
+    if not db.scalar(select(ProjectMember.id).where(ProjectMember.project_id == case.project_id, ProjectMember.user_id == user.id)):
+        raise HTTPException(403, "你不是该项目成员")
+    if not db.scalar(select(CaseAssignment.id).where(CaseAssignment.case_id == case.id, CaseAssignment.user_id == user.id)):
+        raise HTTPException(403, "该 Case 未分配给你")
+
+
+def ensure_assignable_user(project_id: int, user_id: int, db: Session) -> User:
+    user = db.get(User, user_id)
+    if not user or not user.active or user.role != "annotator":
+        raise HTTPException(422, "只能分配给有效标注员")
+    if not db.scalar(select(ProjectMember.id).where(ProjectMember.project_id == project_id, ProjectMember.user_id == user_id)):
+        raise HTTPException(422, "请先将该用户加入项目成员")
+    return user
 
 
 def current_user(request: Request, db: DB) -> User:
@@ -302,23 +409,147 @@ def create_user(body: UserCreate, _: AdminUser, db: DB) -> dict[str, Any]:
     return user_dict(user)
 
 
+@app.patch("/api/users/{user_id}")
+def update_user(user_id: int, body: UserUpdate, admin: AdminUser, db: DB) -> dict[str, Any]:
+    user = db.get(User, user_id)
+    if not user:
+        raise HTTPException(404, "账号不存在")
+    if body.active is False and user.id == admin.id:
+        raise HTTPException(422, "不能停用当前登录的管理员账号")
+    if body.display_name is not None:
+        user.display_name = body.display_name.strip()
+    if body.password is not None:
+        user.password_hash = hash_password(body.password)
+        db.execute(delete(LoginSession).where(LoginSession.user_id == user.id))
+    if body.active is not None:
+        user.active = body.active
+        if not body.active:
+            db.execute(delete(LoginSession).where(LoginSession.user_id == user.id))
+            project_case_ids = select(Case.id).where(Case.project_id.in_(select(ProjectMember.project_id).where(ProjectMember.user_id == user.id)))
+            db.execute(delete(CaseAssignment).where(CaseAssignment.user_id == user.id, CaseAssignment.case_id.in_(project_case_ids)))
+    db.commit()
+    return user_dict(user)
+
+
 @app.get("/api/projects")
 def list_projects(user: CurrentUser, db: DB) -> list[dict[str, Any]]:
-    projects = db.scalars(select(Project).order_by(Project.created_at.desc())).all()
+    query = select(Project).order_by(Project.created_at.desc())
+    if user.role != "admin":
+        query = query.join(ProjectMember).where(ProjectMember.user_id == user.id)
+    projects = db.scalars(query).all()
+    if user.role != "admin":
+        projects = [project for project in projects if not project_config(project)["archived"]]
     result = []
     for project in projects:
-        total = db.scalar(select(func.count(Case.id)).where(Case.project_id == project.id)) or 0
-        submitted = db.scalar(select(func.count(func.distinct(Annotation.case_id))).join(Case).where(Case.project_id == project.id, Annotation.user_id == user.id, Annotation.status == "submitted")) or 0
-        result.append({"id": project.id, "name": project.name, "annotation_config": project.annotation_config, "case_count": total, "my_submitted_count": submitted, "created_at": project.created_at.isoformat()})
+        if user.role == "admin":
+            total = db.scalar(select(func.count(Case.id)).where(Case.project_id == project.id)) or 0
+        else:
+            total = db.scalar(select(func.count(Case.id)).join(CaseAssignment).where(Case.project_id == project.id, CaseAssignment.user_id == user.id)) or 0
+        if user.role == "admin":
+            progress_cases = db.scalars(select(Case).where(Case.project_id == project.id)).all()
+        else:
+            progress_cases = db.scalars(select(Case).join(CaseAssignment).where(Case.project_id == project.id, CaseAssignment.user_id == user.id)).all()
+        submitted, _ = user_case_progress(progress_cases, user.id)
+        result.append({"id": project.id, "name": project.name, "archived": project_config(project)["archived"], "annotation_config": project_config(project), "case_count": total, "my_submitted_count": submitted, "created_at": project.created_at.isoformat()})
     return result
 
 
 @app.post("/api/projects")
 def create_project(body: ProjectCreate, user: AdminUser, db: DB) -> dict[str, Any]:
-    project = Project(name=body.name, annotation_config=body.annotation_config, created_by=user.id)
+    config = {"blind_mode": True, "lock_submitted": False, "archived": False, **body.annotation_config}
+    project = Project(name=body.name, annotation_config=config, created_by=user.id)
     db.add(project)
     db.commit()
-    return {"id": project.id, "name": project.name, "annotation_config": project.annotation_config}
+    return {"id": project.id, "name": project.name, "annotation_config": project_config(project)}
+
+
+@app.patch("/api/projects/{project_id}")
+def update_project(project_id: int, body: ProjectUpdate, _: AdminUser, db: DB) -> dict[str, Any]:
+    project = db.get(Project, project_id)
+    if not project:
+        raise HTTPException(404, "项目不存在")
+    if body.name is not None:
+        project.name = body.name.strip()
+    if body.archived is not None:
+        project.annotation_config = {**(project.annotation_config or {}), "archived": body.archived}
+    db.commit()
+    return {"id": project.id, "name": project.name, "archived": project_config(project)["archived"], "annotation_config": project_config(project)}
+
+
+@app.delete("/api/projects/{project_id}")
+def delete_project(project_id: int, _: AdminUser, db: DB, confirm_name: str = Query(min_length=1)) -> dict[str, bool]:
+    project = db.get(Project, project_id)
+    if not project:
+        raise HTTPException(404, "项目不存在")
+    if confirm_name != project.name:
+        raise HTTPException(422, "项目名称确认不匹配")
+    case_ids = select(Case.id).where(Case.project_id == project_id)
+    db.execute(delete(Annotation).where(Annotation.case_id.in_(case_ids)))
+    db.execute(delete(CaseAssignment).where(CaseAssignment.case_id.in_(case_ids)))
+    db.execute(delete(ProjectMember).where(ProjectMember.project_id == project_id))
+    db.execute(delete(Case).where(Case.project_id == project_id))
+    db.delete(project)
+    db.commit()
+    return {"ok": True}
+
+
+@app.patch("/api/projects/{project_id}/settings")
+def update_project_settings(project_id: int, body: ProjectSettingsBody, _: AdminUser, db: DB) -> dict[str, Any]:
+    project = db.get(Project, project_id)
+    if not project:
+        raise HTTPException(404, "项目不存在")
+    next_config = {**(project.annotation_config or {}), "blind_mode": body.blind_mode, "lock_submitted": body.lock_submitted}
+    if body.dimensions is not None:
+        if not body.dimensions:
+            raise HTTPException(422, "至少保留一个评分维度")
+        keys = [str(item.get("key", "")).strip() for item in body.dimensions]
+        if any(not key for key in keys) or len(keys) != len(set(keys)):
+            raise HTTPException(422, "评分维度 key 不能为空或重复")
+        for item in body.dimensions:
+            minimum = item.get("min", 1)
+            maximum = item.get("max", 5)
+            if not isinstance(minimum, int) or isinstance(minimum, bool) or not isinstance(maximum, int) or isinstance(maximum, bool) or minimum < 0 or maximum <= minimum or maximum - minimum > 10:
+                raise HTTPException(422, "评分维度的 min/max 必须是合理整数范围")
+        next_config["dimensions"] = body.dimensions
+    if body.badcase_tags is not None:
+        tags = list(dict.fromkeys(tag.strip() for tag in body.badcase_tags if tag.strip()))
+        if not tags:
+            raise HTTPException(422, "至少保留一个 Badcase 标签")
+        next_config["badcase_tags"] = tags
+    project.annotation_config = next_config
+    for case in db.scalars(select(Case).where(Case.project_id == project_id)).all():
+        case.payload = {**case.payload, "annotation_config": next_config}
+    db.commit()
+    return {"annotation_config": project_config(project)}
+
+
+@app.get("/api/projects/{project_id}/members")
+def project_members(project_id: int, _: AdminUser, db: DB) -> list[dict[str, Any]]:
+    if not db.get(Project, project_id):
+        raise HTTPException(404, "项目不存在")
+    member_ids = set(db.scalars(select(ProjectMember.user_id).where(ProjectMember.project_id == project_id)).all())
+    users = db.scalars(select(User).where(User.role == "annotator", User.active.is_(True)).order_by(User.display_name)).all()
+    return [{**user_dict(user), "member": user.id in member_ids} for user in users]
+
+
+@app.put("/api/projects/{project_id}/members")
+def replace_project_members(project_id: int, body: ProjectMembersBody, _: AdminUser, db: DB) -> dict[str, Any]:
+    if not db.get(Project, project_id):
+        raise HTTPException(404, "项目不存在")
+    requested = set(body.user_ids)
+    valid = set(db.scalars(select(User.id).where(User.id.in_(requested), User.role == "annotator", User.active.is_(True))).all()) if requested else set()
+    if valid != requested:
+        raise HTTPException(422, "成员列表包含无效或非标注员账号")
+    current = set(db.scalars(select(ProjectMember.user_id).where(ProjectMember.project_id == project_id)).all())
+    removed = current - valid
+    if removed:
+        project_case_ids = select(Case.id).where(Case.project_id == project_id)
+        db.execute(delete(CaseAssignment).where(CaseAssignment.case_id.in_(project_case_ids), CaseAssignment.user_id.in_(removed)))
+        db.execute(delete(ProjectMember).where(ProjectMember.project_id == project_id, ProjectMember.user_id.in_(removed)))
+    for user_id in valid - current:
+        db.add(ProjectMember(project_id=project_id, user_id=user_id))
+    db.commit()
+    return {"member_count": len(valid), "removed_assignments_for_users": len(removed)}
 
 
 @app.post("/api/projects/{project_id}/upload")
@@ -326,68 +557,204 @@ def upload_jsonl(project_id: int, _: AdminUser, db: DB, file: UploadFile = File(
     project = db.get(Project, project_id)
     if not project:
         raise HTTPException(404, "项目不存在")
-    safe_name = f"{project_id}-{utcnow().strftime('%Y%m%d%H%M%S')}-{Path(file.filename or 'dataset.jsonl').name}"
+    safe_name = f"{project_id}-{utcnow().strftime('%Y%m%d%H%M%S')}-{secrets.token_hex(4)}-{Path(file.filename or 'dataset.jsonl').name}"
     destination = DATA_DIR / "uploads" / safe_name
-    with destination.open("wb") as target:
-        shutil.copyfileobj(file.file, target)
-    if destination.stat().st_size > MAX_UPLOAD_MB * 1024 * 1024:
+    max_bytes = MAX_UPLOAD_MB * 1024 * 1024
+    uploaded_bytes = 0
+    try:
+        with destination.open("wb") as target:
+            while chunk := file.file.read(1024 * 1024):
+                uploaded_bytes += len(chunk)
+                if uploaded_bytes > max_bytes:
+                    raise HTTPException(413, f"文件超过 {MAX_UPLOAD_MB}MB 限制")
+                target.write(chunk)
+    except Exception:
         destination.unlink(missing_ok=True)
-        raise HTTPException(413, f"文件超过 {MAX_UPLOAD_MB}MB 限制")
-    if replace:
-        case_ids = select(Case.id).where(Case.project_id == project_id)
-        db.execute(delete(Annotation).where(Annotation.case_id.in_(case_ids)))
-        db.execute(delete(Case).where(Case.project_id == project_id))
-        db.commit()
-    inserted = 0
+        raise
+    parsed: list[tuple[int, str, dict[str, Any]]] = []
     errors: list[str] = []
     seen: set[str] = set()
-    with destination.open("r", encoding="utf-8") as source:
-        for line_number, line in enumerate(source, 1):
-            if not line.strip():
-                continue
-            try:
-                payload = json.loads(line)
-                if not isinstance(payload, dict):
-                    raise ValueError("不是 JSON object")
-                external_id = str(payload.get("id") or f"line-{line_number}")
-                if external_id in seen:
-                    raise ValueError("文件内 id 重复")
-                seen.add(external_id)
-                candidates = payload.get("candidates", [])
-                candidate_ids = [str(item.get("id")) for item in candidates if isinstance(item, dict)]
-                if len(candidate_ids) != len(set(candidate_ids)):
-                    raise ValueError("candidate id 重复")
-                if "annotation_config" not in payload and project.annotation_config:
-                    payload["annotation_config"] = project.annotation_config
-                payload.pop("annotations", None)
-                db.add(Case(project_id=project_id, external_id=external_id, ordinal=line_number, payload=payload))
-                inserted += 1
-                if inserted % 500 == 0:
-                    db.commit()
-            except Exception as exc:
-                errors.append(f"第 {line_number} 行：{exc}")
-                if len(errors) >= 100:
-                    break
     try:
+        with destination.open("r", encoding="utf-8") as source:
+            for line_number, line in enumerate(source, 1):
+                if not line.strip():
+                    continue
+                try:
+                    payload = json.loads(line)
+                    if not isinstance(payload, dict):
+                        raise ValueError("不是 JSON object")
+                    external_id = str(payload.get("id") or f"line-{line_number}")
+                    if external_id in seen:
+                        raise ValueError("文件内 id 重复")
+                    seen.add(external_id)
+                    candidates = payload.get("candidates", [])
+                    if not isinstance(candidates, list) or any(not isinstance(item, dict) for item in candidates):
+                        raise ValueError("candidates 必须是 object 数组")
+                    candidate_ids = [str(item.get("id", "")).strip() for item in candidates]
+                    if any(not candidate_id for candidate_id in candidate_ids):
+                        raise ValueError("candidate id 不能为空")
+                    if len(candidate_ids) != len(set(candidate_ids)):
+                        raise ValueError("candidate id 重复")
+                    if not candidates:
+                        raise ValueError("缺少 candidates，无法进行模型标注")
+                    if any(not str(item.get("model", "")).strip() for item in candidates):
+                        raise ValueError("candidate model 不能为空")
+                    if any("response" not in item for item in candidates):
+                        raise ValueError("candidate 缺少 response")
+                    if "annotation_config" not in payload and project.annotation_config:
+                        payload["annotation_config"] = project.annotation_config
+                    payload.pop("annotations", None)
+                    parsed.append((line_number, external_id, payload))
+                except (json.JSONDecodeError, TypeError, ValueError) as exc:
+                    errors.append(f"第 {line_number} 行：{exc}")
+                    if len(errors) >= 100:
+                        break
+    except UnicodeError as exc:
+        destination.unlink(missing_ok=True)
+        raise HTTPException(422, {"message": "文件编码错误：请上传 UTF-8 编码的 JSONL", "errors": [str(exc)]}) from exc
+    if not parsed and not errors:
+        errors.append("文件中没有可导入的 JSONL 数据")
+    if errors:
+        destination.unlink(missing_ok=True)
+        raise HTTPException(422, {"message": "文件校验失败，旧项目数据未修改", "errors": errors})
+    if not replace:
+        existing_ids = set(db.scalars(select(Case.external_id).where(Case.project_id == project_id, Case.external_id.in_([item[1] for item in parsed]))).all())
+        if existing_ids:
+            destination.unlink(missing_ok=True)
+            raise HTTPException(409, f"项目中已存在 {len(existing_ids)} 个相同 Case ID，旧项目数据未修改")
+    try:
+        if replace:
+            case_ids = select(Case.id).where(Case.project_id == project_id)
+            db.execute(delete(Annotation).where(Annotation.case_id.in_(case_ids)))
+            db.execute(delete(CaseAssignment).where(CaseAssignment.case_id.in_(case_ids)))
+            db.execute(delete(Case).where(Case.project_id == project_id))
+        for line_number, external_id, payload in parsed:
+            db.add(Case(project_id=project_id, external_id=external_id, ordinal=line_number, payload=payload))
         db.commit()
     except Exception as exc:
         db.rollback()
-        raise HTTPException(409, f"写入失败，可能存在重复 Case ID：{exc}") from exc
-    return {"inserted": inserted, "errors": errors, "source_file": safe_name}
+        destination.unlink(missing_ok=True)
+        raise HTTPException(409, f"写入失败，已回滚，旧项目数据保持不变：{exc}") from exc
+    return {"inserted": len(parsed), "errors": [], "source_file": safe_name}
 
 
 @app.get("/api/projects/{project_id}/cases")
-def project_cases(project_id: int, _: CurrentUser, db: DB, offset: int = 0, limit: int = 1000) -> dict[str, Any]:
+def project_cases(project_id: int, user: CurrentUser, db: DB, offset: int = 0, limit: int = 1000) -> dict[str, Any]:
+    project = ensure_project_access(project_id, user, db)
     limit = min(max(limit, 1), 10_000)
-    total = db.scalar(select(func.count(Case.id)).where(Case.project_id == project_id)) or 0
-    cases = db.scalars(select(Case).where(Case.project_id == project_id).order_by(Case.ordinal).offset(offset).limit(limit)).all()
+    query = select(Case).where(Case.project_id == project_id)
+    count_query = select(func.count(Case.id)).where(Case.project_id == project_id)
+    if user.role != "admin":
+        query = query.join(CaseAssignment).where(CaseAssignment.user_id == user.id)
+        count_query = count_query.join(CaseAssignment).where(CaseAssignment.user_id == user.id)
+    total = db.scalar(count_query) or 0
+    cases = db.scalars(query.order_by(Case.ordinal).offset(offset).limit(limit)).all()
+    config = project_config(project)
     items = []
     for case in cases:
         payload = dict(case.payload)
         payload["__server_case_id"] = case.id
-        payload["annotations"] = [annotation_dict(record) for record in case.annotations]
+        visible_annotations = case.annotations if user.role == "admin" or not config["blind_mode"] else [record for record in case.annotations if record.user_id == user.id]
+        payload["annotations"] = [annotation_dict(record) for record in visible_annotations]
+        if user.role == "admin":
+            payload["__assigned_user_ids"] = [str(value) for value in db.scalars(select(CaseAssignment.user_id).where(CaseAssignment.case_id == case.id)).all()]
         items.append(payload)
-    return {"items": items, "total": total, "offset": offset, "limit": limit}
+    return {"items": items, "total": total, "offset": offset, "limit": limit, "blind_mode": config["blind_mode"]}
+
+
+@app.get("/api/projects/{project_id}/assignment-overview")
+def assignment_overview(project_id: int, _: AdminUser, db: DB) -> dict[str, Any]:
+    project = db.get(Project, project_id)
+    if not project:
+        raise HTTPException(404, "项目不存在")
+    total = db.scalar(select(func.count(Case.id)).where(Case.project_id == project_id)) or 0
+    assigned_unique = db.scalar(select(func.count(func.distinct(CaseAssignment.case_id))).join(Case).where(Case.project_id == project_id)) or 0
+    submitted_total = db.scalar(select(func.count(Annotation.id)).join(Case).where(Case.project_id == project_id, Annotation.status == "submitted")) or 0
+    draft_total = db.scalar(select(func.count(Annotation.id)).join(Case).where(Case.project_id == project_id, Annotation.status == "draft")) or 0
+    members = []
+    rows = db.execute(select(ProjectMember.user_id, User.username, User.display_name).join(User, User.id == ProjectMember.user_id).where(ProjectMember.project_id == project_id).order_by(User.display_name)).all()
+    for user_id, username, display_name in rows:
+        assigned_rows = db.execute(select(Case.id, Case.external_id).join(CaseAssignment).where(Case.project_id == project_id, CaseAssignment.user_id == user_id).order_by(Case.ordinal)).all()
+        assigned_ids = [row[0] for row in assigned_rows]
+        assigned_cases = db.scalars(select(Case).where(Case.id.in_(assigned_ids))).all() if assigned_ids else []
+        submitted, drafts = user_case_progress(assigned_cases, user_id)
+        members.append({"id": str(user_id), "username": username, "display_name": display_name, "assigned_count": len(assigned_rows), "submitted_count": submitted, "draft_count": drafts, "external_ids": [row[1] for row in assigned_rows]})
+    return {"total_cases": total, "assigned_cases": assigned_unique, "unassigned_cases": max(0, total - assigned_unique), "submitted_annotations": submitted_total, "draft_annotations": draft_total, "members": members, "settings": project_config(project)}
+
+
+@app.post("/api/projects/{project_id}/assignments/explicit")
+def assign_explicit(project_id: int, body: ExplicitAssignmentBody, admin: AdminUser, db: DB) -> dict[str, Any]:
+    if not db.get(Project, project_id):
+        raise HTTPException(404, "项目不存在")
+    ensure_assignable_user(project_id, body.user_id, db)
+    external_ids = list(dict.fromkeys(value.strip() for value in body.external_ids if value.strip()))
+    cases = db.scalars(select(Case).where(Case.project_id == project_id, Case.external_id.in_(external_ids))).all()
+    found = {case.external_id for case in cases}
+    missing = [value for value in external_ids if value not in found]
+    if body.replace_existing and missing:
+        raise HTTPException(422, f"替换操作已取消：有 {len(missing)} 个 Case ID 不存在")
+    if body.replace_existing:
+        project_case_ids = select(Case.id).where(Case.project_id == project_id)
+        db.execute(delete(CaseAssignment).where(CaseAssignment.case_id.in_(project_case_ids), CaseAssignment.user_id == body.user_id))
+    current = set(db.scalars(select(CaseAssignment.case_id).where(CaseAssignment.user_id == body.user_id, CaseAssignment.case_id.in_([case.id for case in cases]))).all()) if cases else set()
+    for case in cases:
+        if case.id not in current:
+            db.add(CaseAssignment(case_id=case.id, user_id=body.user_id, assigned_by=admin.id))
+    db.commit()
+    assigned = db.scalar(select(func.count(CaseAssignment.id)).join(Case).where(Case.project_id == project_id, CaseAssignment.user_id == body.user_id)) or 0
+    return {"added_count": len(cases) - len(current), "assigned_count": assigned, "missing_external_ids": missing}
+
+
+@app.post("/api/projects/{project_id}/assignments/random")
+def assign_random(project_id: int, body: RandomAssignmentBody, admin: AdminUser, db: DB) -> dict[str, Any]:
+    if not db.get(Project, project_id):
+        raise HTTPException(404, "项目不存在")
+    ensure_assignable_user(project_id, body.user_id, db)
+    project_case_ids = select(Case.id).where(Case.project_id == project_id)
+    if body.replace_existing:
+        db.execute(delete(CaseAssignment).where(CaseAssignment.case_id.in_(project_case_ids), CaseAssignment.user_id == body.user_id))
+        db.flush()
+    own_assigned = select(CaseAssignment.case_id).where(CaseAssignment.user_id == body.user_id)
+    query = select(Case).where(Case.project_id == project_id, Case.id.not_in(own_assigned))
+    if not body.allow_overlap:
+        any_assigned = select(CaseAssignment.case_id)
+        query = query.where(Case.id.not_in(any_assigned))
+    cases = db.scalars(query.order_by(func.random()).limit(body.quantity)).all()
+    for case in cases:
+        db.add(CaseAssignment(case_id=case.id, user_id=body.user_id, assigned_by=admin.id))
+    db.commit()
+    assigned = db.scalar(select(func.count(CaseAssignment.id)).join(Case).where(Case.project_id == project_id, CaseAssignment.user_id == body.user_id)) or 0
+    return {"requested_count": body.quantity, "added_count": len(cases), "assigned_count": assigned, "available_shortfall": max(0, body.quantity - len(cases))}
+
+
+@app.post("/api/projects/{project_id}/assignments/remove")
+def remove_assignments(project_id: int, body: AssignmentRemovalBody, _: AdminUser, db: DB) -> dict[str, int]:
+    if not db.get(Project, project_id):
+        raise HTTPException(404, "项目不存在")
+    case_query = select(Case.id).where(Case.project_id == project_id)
+    external_ids = list(dict.fromkeys(value.strip() for value in body.external_ids if value.strip()))
+    if external_ids:
+        case_query = case_query.where(Case.external_id.in_(external_ids))
+    case_ids = list(db.scalars(case_query).all())
+    if external_ids and len(case_ids) != len(external_ids):
+        raise HTTPException(422, "取消失败：列表中包含不存在的 Case ID")
+    assignment_query = select(CaseAssignment.id).where(CaseAssignment.case_id.in_(case_ids))
+    if body.user_id is not None:
+        assignment_query = assignment_query.where(CaseAssignment.user_id == body.user_id)
+    assignment_ids = list(db.scalars(assignment_query).all()) if case_ids else []
+    if assignment_ids:
+        db.execute(delete(CaseAssignment).where(CaseAssignment.id.in_(assignment_ids)))
+    deleted_annotations = 0
+    if body.delete_annotations and case_ids:
+        annotation_query = select(Annotation.id).where(Annotation.case_id.in_(case_ids))
+        if body.user_id is not None:
+            annotation_query = annotation_query.where(Annotation.user_id == body.user_id)
+        annotation_ids = list(db.scalars(annotation_query).all())
+        deleted_annotations = len(annotation_ids)
+        if annotation_ids:
+            db.execute(delete(Annotation).where(Annotation.id.in_(annotation_ids)))
+    db.commit()
+    return {"removed_assignments": len(assignment_ids), "deleted_annotations": deleted_annotations}
 
 
 @app.put("/api/cases/{case_id}/annotations/{candidate_id}")
@@ -395,11 +762,14 @@ def save_annotation(case_id: int, candidate_id: str, body: AnnotationBody, user:
     case = db.get(Case, case_id)
     if not case:
         raise HTTPException(404, "Case 不存在")
+    ensure_case_access(case, user, db)
     candidate_ids = {str(item.get("id")) for item in case.payload.get("candidates", []) if isinstance(item, dict)}
     if candidate_id not in candidate_ids:
         raise HTTPException(404, "候选模型不存在")
     validate_annotation(case, body)
     record = db.scalar(select(Annotation).where(Annotation.case_id == case_id, Annotation.candidate_id == candidate_id, Annotation.user_id == user.id))
+    if record and record.status == "submitted" and project_config(case.project)["lock_submitted"] and user.role != "admin":
+        raise HTTPException(423, "该标注已提交并锁定，请联系管理员退回")
     if record and body.revision is not None and record.revision != body.revision:
         raise HTTPException(409, {"message": "标注已被其他页面更新", "current": annotation_dict(record)})
     if not record:
@@ -417,28 +787,52 @@ def save_annotation(case_id: int, candidate_id: str, body: AnnotationBody, user:
     return annotation_dict(record)
 
 
+@app.post("/api/annotations/{annotation_id}/return")
+def return_annotation(annotation_id: int, _: AdminUser, db: DB) -> dict[str, Any]:
+    record = db.get(Annotation, annotation_id)
+    if not record:
+        raise HTTPException(404, "标注记录不存在")
+    record.status = "draft"
+    record.revision = (record.revision or 0) + 1
+    record.updated_at = utcnow()
+    db.commit()
+    db.refresh(record)
+    return annotation_dict(record)
+
+
 @app.get("/api/projects/{project_id}/progress")
 def progress(project_id: int, user: CurrentUser, db: DB) -> dict[str, Any]:
-    total = db.scalar(select(func.count(Case.id)).where(Case.project_id == project_id)) or 0
-    mine = db.scalars(select(Annotation).join(Case).where(Case.project_id == project_id, Annotation.user_id == user.id)).all()
-    submitted_cases = len({item.case_id for item in mine if item.status == "submitted"})
-    draft_cases = len({item.case_id for item in mine if item.status == "draft"})
-    badcases = db.scalar(select(func.count(func.distinct(Annotation.case_id))).join(Case).where(Case.project_id == project_id, Annotation.badcase.is_(True))) or 0
+    project = ensure_project_access(project_id, user, db)
+    if user.role == "admin":
+        progress_cases = db.scalars(select(Case).where(Case.project_id == project_id)).all()
+    else:
+        progress_cases = db.scalars(select(Case).join(CaseAssignment).where(Case.project_id == project_id, CaseAssignment.user_id == user.id)).all()
+    total = len(progress_cases)
+    submitted_cases, draft_cases = user_case_progress(progress_cases, user.id)
+    badcase_query = select(func.count(func.distinct(Annotation.case_id))).join(Case).where(Case.project_id == project_id, Annotation.badcase.is_(True))
+    if user.role != "admin" and project_config(project)["blind_mode"]:
+        badcase_query = badcase_query.where(Annotation.user_id == user.id)
+    badcases = db.scalar(badcase_query) or 0
     return {"total_cases": total, "my_submitted_cases": submitted_cases, "my_draft_cases": draft_cases, "badcase_count": badcases}
 
 
 @app.get("/api/projects/{project_id}/export")
-def export_project(project_id: int, _: AdminUser, db: DB):
+def export_project(project_id: int, _: AdminUser, db: DB, include_drafts: bool = True, view: str = Query(default="full", pattern="^(full|records)$")):
     project = db.get(Project, project_id)
     if not project:
         raise HTTPException(404, "项目不存在")
 
     def generate():
         for case in db.scalars(select(Case).where(Case.project_id == project_id).order_by(Case.ordinal)).all():
+            records = [record for record in case.annotations if include_drafts or record.status == "submitted"]
+            if view == "records":
+                for record in records:
+                    yield json.dumps({"project_id": project_id, "project_name": project.name, "case_id": case.external_id, **annotation_dict(record)}, ensure_ascii=False, separators=(",", ":")) + "\n"
+                continue
             payload = dict(case.payload)
             payload["schema_version"] = payload.get("schema_version", "case-lens.annotation.v1")
-            payload["annotations"] = [annotation_dict(record) for record in case.annotations]
+            payload["annotations"] = [annotation_dict(record) for record in records]
             yield json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n"
 
-    filename = f"project-{project_id}-annotated.jsonl"
+    filename = f"project-{project_id}-{'annotations' if view == 'records' else 'annotated'}.jsonl"
     return StreamingResponse(generate(), media_type="application/x-ndjson", headers={"Content-Disposition": f'attachment; filename="{filename}"'})

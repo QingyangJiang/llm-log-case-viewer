@@ -15,7 +15,10 @@ services:
       retries: 20
 
   api:
-    build: ./backend
+    build:
+      context: ./backend
+      args:
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple}
     restart: unless-stopped
     environment:
       DB_HOST: postgres
@@ -42,7 +45,10 @@ services:
       retries: 10
 
   web:
-    build: .
+    build:
+      context: .
+      args:
+        NPM_CONFIG_REGISTRY: ${NPM_CONFIG_REGISTRY:-https://registry.npmmirror.com}
     restart: unless-stopped
     depends_on:
       api:
