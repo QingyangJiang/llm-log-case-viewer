@@ -20,6 +20,9 @@
 - 草稿自动暂存在浏览器；支持提交状态、左侧状态筛选和多人标注历史
 - 导出带标注的完整 JSONL，或只导出扁平标注记录
 - 内网团队模式：账号登录、管理员创建项目/用户、统一草稿与提交、项目进度和管理员导出
+- 项目成员隔离：标注员只看到自己加入的项目和分配给自己的 Case
+- 支持按 Case ID 指定分配，或按数量随机分配；可允许重叠以进行双人盲标
+- 盲标开关、提交锁定、管理员进度面板和标注退回
 
 ## 在线使用
 
@@ -78,8 +81,81 @@ docker compose exec -T postgres pg_dump -U case_lens case_lens > data/case-lens-
 - 若修改了 `POSTGRES_USER` / `POSTGRES_DB`，备份命令中的名称也要同步修改。
 - HTTP 内网部署请保持 `SECURE_COOKIES=false`；未来接入 HTTPS 后改为 `true`。
 - 防火墙只需向可信内网开放 `APP_PORT`。可修改 `.env` 中的 `APP_PORT`，例如 `8090`。
-- 当前是轻量账号体系：管理员可创建用户和项目，所有已登录用户均可看到全部项目；暂未包含项目级权限分配、LDAP/SSO 和密码自助重置。
+- 当前是轻量账号体系：管理员负责创建用户、项目成员和 Case 分配；暂未包含 LDAP/SSO 和密码自助重置。
 - 管理员“上传并替换”会清除该项目原有 Cases 及其标注；操作前先导出或备份。
+
+### 团队任务配置流程
+
+1. 管理员创建标注员账号和项目，打开项目后上传 JSONL。
+2. 在“项目成员与标注策略”中勾选允许参与该项目的标注员。未加入项目的账号看不到项目。
+3. 在“Case 分配与进度”中选择标注员：
+   - 输入数量后随机分配；默认不会与其他人的任务重叠。
+   - 开启“允许重复”可把同一 Case 分给多人，用于双人盲标或一致性检验。
+   - 输入一个或多个 Case ID 可精确指定；也可一键填入管理员当前查看的 Case。
+   - “替换已有分配”会先撤销该标注员在项目内的旧任务，再写入本次结果。
+4. 默认开启盲标：标注员只能看到自己的评分与备注；管理员可查看全部记录与整体进度。
+5. 可选开启“提交后锁定”。管理员在 Case 的标注历史中可将已提交记录退回草稿。
+
+从旧版本升级只需拉取代码并重建：
+
+```bash
+docker compose up -d --build
+```
+
+启动时会自动创建新的成员与任务分配表，不需要清空 PostgreSQL。已有 Case 和标注不会删除；升级后管理员需要先为旧项目配置成员与 Case 分配，标注员才能继续访问。
+
+### GitLab 导入后脚本没有执行权限
+
+如果构建前端时出现下面的错误：
+
+```text
+scripts/build-verified.sh: line 7: /app/scripts/sites-env.sh: Permission denied
+```
+
+原因是 `scripts/sites-env.sh` 没有可执行权限。GitLab 导入、压缩包解压或某些文件传输方式可能丢失 Git 的可执行位。先在项目根目录修复并确认权限变化：
+
+```bash
+chmod +x scripts/*.sh
+git status --short
+git diff --summary
+```
+
+如果权限此前确实丢失，输出中应出现类似内容：
+
+```text
+mode change 100644 => 100755 scripts/sites-env.sh
+```
+
+然后重新构建并启动：
+
+```bash
+sudo docker compose build --no-cache --progress=plain web
+sudo docker compose up -d
+```
+
+当前项目的根目录 `Dockerfile` 已在构建时执行 `chmod +x scripts/*.sh`，即使源码传输过程中丢失权限，也会先修复权限再执行前端构建。为了让 GitLab 仓库本身永久保存正确的可执行位，可将权限修复提交到仓库：
+
+```bash
+git add Dockerfile
+git add --chmod=+x scripts/*.sh
+git commit -m "Fix build script permissions and package mirrors"
+git push origin main
+```
+
+构建完成后检查容器、日志和后端健康状态：
+
+```bash
+sudo docker compose up -d
+sudo docker compose ps
+sudo docker compose logs --tail=100 web api
+curl http://127.0.0.1:8080/api/health
+```
+
+健康检查正常时返回：
+
+```json
+{"status":"ok"}
+```
 
 ## 数据格式
 
