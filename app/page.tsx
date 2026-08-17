@@ -42,6 +42,7 @@ type SaveState = "idle" | "dirty" | "saving" | "saved" | "error";
 
 type Protocol = "openai" | "anthropic" | "unknown";
 type ViewTab = "conversation" | "candidates" | "tools" | "raw" | "ai";
+const VIEW_TABS: ViewTab[] = ["conversation", "candidates", "tools", "raw", "ai"];
 type AiTask = "summary" | "translate" | "bilingual" | "custom";
 type AiTarget =
   | { kind: "case" }
@@ -1561,17 +1562,27 @@ export default function Home() {
         setPetSettingsOpen(false);
         return;
       }
-      if (["INPUT", "TEXTAREA", "SELECT"].includes((event.target as HTMLElement)?.tagName)) return;
-      if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
-      event.preventDefault();
-      const currentPosition = Math.max(0, filtered.findIndex(({ index }) => String(index) === selectedKey));
-      const nextPosition = event.key === "ArrowDown" ? Math.min(filtered.length - 1, currentPosition + 1) : Math.max(0, currentPosition - 1);
-      const next = filtered[nextPosition];
-      if (next) setSelectedKey(String(next.index));
+      const target = event.target instanceof HTMLElement ? event.target : null;
+      const editing = Boolean(target && (["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName) || target.isContentEditable));
+      if (editing || event.metaKey || event.ctrlKey || event.altKey || aiOpen || teamOpen || petSettingsOpen) return;
+      if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+        event.preventDefault();
+        const currentTab = Math.max(0, VIEW_TABS.indexOf(tab));
+        const direction = event.key === "ArrowRight" ? 1 : -1;
+        setTab(VIEW_TABS[(currentTab + direction + VIEW_TABS.length) % VIEW_TABS.length]);
+        return;
+      }
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        const currentPosition = Math.max(0, filtered.findIndex(({ index }) => String(index) === selectedKey));
+        const nextPosition = event.key === "ArrowDown" ? Math.min(filtered.length - 1, currentPosition + 1) : Math.max(0, currentPosition - 1);
+        const next = filtered[nextPosition];
+        if (next) setSelectedKey(String(next.index));
+      }
     };
     window.addEventListener("keydown", handleKeys);
     return () => window.removeEventListener("keydown", handleKeys);
-  }, [filtered, selectedKey, aiOpen, petSettingsOpen]);
+  }, [filtered, selectedKey, tab, aiOpen, teamOpen, petSettingsOpen]);
 
   const loadText = async (text: string, name: string) => {
     setNotice(text.length >= 2_000_000 ? "正在分批解析大型日志…" : "正在解析日志…");
@@ -2568,7 +2579,7 @@ export default function Home() {
         <div><span>MESSAGES</span><strong>{totalMessages.toLocaleString()}</strong></div>
         <div><span>TOOL CALLS</span><strong>{totalCalls.toLocaleString()}</strong></div>
         <div><span>已完成 / BADCASE</span><strong>{submittedCases} / {badcaseCount}</strong></div>
-        <div className="shortcut-hint"><kbd>↑</kbd><kbd>↓</kbd><span>切换 Case</span></div>
+        <div className="shortcut-hint"><kbd>↑</kbd><kbd>↓</kbd><span>Case</span><i /><kbd>←</kbd><kbd>→</kbd><span>视图</span></div>
       </section>
 
       {parseErrors.length ? (
@@ -2646,15 +2657,15 @@ export default function Home() {
                 <div><span>SOURCE LINE</span><strong>{selected.__line ?? "—"}</strong></div>
               </div>
 
-              <nav className="tabs" aria-label="Case 视图">
-                <button className={tab === "conversation" ? "active" : ""} onClick={() => setTab("conversation")}>对话轨迹 <span>{selected.messages?.length ?? 0}</span></button>
-                <button className={tab === "candidates" ? "active" : ""} onClick={() => setTab("candidates")}>模型结果与标注 <span>{selected.candidates?.length ?? 0}</span></button>
-                <button className={tab === "tools" ? "active" : ""} onClick={() => setTab("tools")}>Tools 定义 <span>{selected.tools?.length ?? 0}</span></button>
-                <button className={tab === "raw" ? "active" : ""} onClick={() => setTab("raw")}>原始 JSON</button>
-                <button className={tab === "ai" ? "active" : ""} onClick={() => setTab("ai")}>结果历史 <span>{aiResults.length}</span></button>
+              <nav className="tabs" aria-label="Case 视图" role="tablist">
+                <button role="tab" aria-selected={tab === "conversation"} className={tab === "conversation" ? "active" : ""} onClick={() => setTab("conversation")}>对话轨迹 <span>{selected.messages?.length ?? 0}</span></button>
+                <button role="tab" aria-selected={tab === "candidates"} className={tab === "candidates" ? "active" : ""} onClick={() => setTab("candidates")}>模型结果与标注 <span>{selected.candidates?.length ?? 0}</span></button>
+                <button role="tab" aria-selected={tab === "tools"} className={tab === "tools" ? "active" : ""} onClick={() => setTab("tools")}>Tools 定义 <span>{selected.tools?.length ?? 0}</span></button>
+                <button role="tab" aria-selected={tab === "raw"} className={tab === "raw" ? "active" : ""} onClick={() => setTab("raw")}>原始 JSON</button>
+                <button role="tab" aria-selected={tab === "ai"} className={tab === "ai" ? "active" : ""} onClick={() => setTab("ai")}>结果历史 <span>{aiResults.length}</span></button>
               </nav>
 
-              <div className="tab-content">
+              <div className="tab-content" role="tabpanel">
                 {tab === "conversation" ? (
                   <div className="conversation">
                     {selectedCaseInlineResults.length ? <div className="case-inline-results"><InlineAiResults results={selectedCaseInlineResults} label="整条 Case 的处理结果" onCopy={(result) => void copyAiResult(result)} onDownload={exportAiResult} /></div> : null}

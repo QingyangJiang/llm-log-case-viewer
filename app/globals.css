@@ -52,6 +52,7 @@ button { color: inherit; }
 .stat-strip .shortcut-hint { margin-left: auto; flex-direction: row; align-items: center; gap: 5px; border-right: 0; min-width: auto; }
 kbd { display: inline-flex; min-width: 22px; height: 22px; align-items: center; justify-content: center; padding: 0 5px; border: 1px solid var(--line-strong); border-bottom-width: 2px; background: white; border-radius: 3px; color: var(--muted); font-family: var(--font-geist-mono), monospace; font-size: 10px; }
 .shortcut-hint span { margin-left: 3px; }
+.shortcut-hint i { width: 1px; height: 18px; margin: 0 6px; background: var(--line-strong); }
 .error-banner { margin: 10px 18px 0; padding: 10px 14px; border: 1px solid #e5b26c; background: #fff6e8; color: #75440b; font-size: 12px; }
 .error-banner summary { cursor: pointer; font-weight: 650; }
 .error-banner ul { margin-bottom: 0; font-family: var(--font-geist-mono), monospace; }
@@ -146,7 +147,7 @@ kbd { display: inline-flex; min-width: 22px; height: 22px; align-items: center; 
 .case-facts > div { padding: 15px 18px; border-right: 1px solid var(--line); min-width: 0; }
 .case-facts span { display: block; color: var(--muted); font-family: var(--font-geist-mono), monospace; font-size: 8px; letter-spacing: .12em; }
 .case-facts strong { display: block; margin-top: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-geist-mono), monospace; font-size: 11px; }
-.tabs { height: 52px; display: flex; align-items: end; padding: 0 32px; gap: 24px; background: rgba(255,255,255,.94); border-bottom: 1px solid var(--line-strong); }
+.tabs { position: sticky; z-index: 20; top: 0; height: 52px; display: flex; align-items: end; padding: 0 32px; gap: 24px; background: #fff; border-bottom: 1px solid var(--line-strong); box-shadow: 0 5px 14px rgba(23,32,29,.08); }
 .tabs button { height: 52px; padding: 0; border: 0; border-bottom: 3px solid transparent; background: transparent; cursor: pointer; color: var(--muted); font-size: 12px; font-weight: 650; }
 .tabs button:hover { color: var(--ink); }.tabs button.active { color: var(--ink); border-color: var(--ink); }
 .tabs button span { display: inline-flex; min-width: 18px; height: 18px; align-items: center; justify-content: center; margin-left: 4px; background: #e9ece8; font-family: var(--font-geist-mono), monospace; font-size: 9px; }
