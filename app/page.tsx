@@ -1,6 +1,6 @@
 "use client";
 
-import { ChangeEvent, DragEvent, ReactNode, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, CSSProperties, DragEvent, ReactNode, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 
 type JsonObject = Record<string, unknown>;
 type CandidateOutput = { id: string; model: string; label?: string; reasoning?: unknown; response?: unknown; metadata?: JsonObject };
@@ -51,6 +51,19 @@ type AiTarget =
   | { kind: "message-tool"; messageIndex: number; itemIndex: number; source: "content" | "tool_call" };
 type ProviderMode = "local" | "external";
 type PetMood = "idle" | "happy" | "proud" | "curious" | "worried";
+type PetColor = "lime" | "aqua" | "peach" | "lavender" | "sky" | "coral" | "gold" | "midnight";
+type PetAccessory = "none" | "leaf" | "bow" | "glasses" | "star" | "headphones" | "cap" | "crown" | "halo" | "medal";
+type PetProfile = {
+  name: string;
+  color: PetColor;
+  accessory: PetAccessory;
+  xp: number;
+  level: number;
+  title?: string;
+  current_level_xp?: number;
+  next_level_xp?: number;
+  earned_event_keys?: string[];
+};
 type AiResult = {
   resultId: string;
   content: string;
@@ -83,6 +96,68 @@ const DEFAULT_DIMENSIONS: AnnotationDimension[] = [
   { key: "clarity", label: "表达质量", description: "结构、语言和可读性", min: 1, max: 5, required: true },
 ];
 const DEFAULT_BADCASE_TAGS = ["事实错误", "未遵循指令", "工具调用错误", "推理问题", "遗漏关键信息", "表达问题", "安全风险", "其他"];
+const DEFAULT_PET: PetProfile = { name: "小镜", color: "lime", accessory: "none", xp: 0, level: 1, current_level_xp: 0, next_level_xp: 20, earned_event_keys: [] };
+const PET_COLORS: { id: PetColor; label: string; value: string; level: number }[] = [
+  { id: "lime", label: "青柠", value: "#d9ff78", level: 1 },
+  { id: "aqua", label: "薄荷", value: "#9de8dc", level: 2 },
+  { id: "peach", label: "蜜桃", value: "#ffc7b8", level: 3 },
+  { id: "lavender", label: "薰衣草", value: "#cbbcff", level: 4 },
+  { id: "sky", label: "晴空", value: "#9fd7ff", level: 5 },
+  { id: "coral", label: "珊瑚", value: "#ff9c91", level: 6 },
+  { id: "gold", label: "鎏金", value: "#ffda68", level: 8 },
+  { id: "midnight", label: "星夜", value: "#7e88b8", level: 10 },
+];
+const PET_ACCESSORIES: { id: PetAccessory; label: string; symbol: string; level: number }[] = [
+  { id: "none", label: "无", symbol: "", level: 1 },
+  { id: "leaf", label: "叶子", symbol: "◆", level: 2 },
+  { id: "bow", label: "蝴蝶结", symbol: "∞", level: 3 },
+  { id: "glasses", label: "眼镜", symbol: "◉◉", level: 4 },
+  { id: "star", label: "星星", symbol: "★", level: 5 },
+  { id: "headphones", label: "耳机", symbol: "Ω", level: 6 },
+  { id: "cap", label: "小帽", symbol: "▲", level: 7 },
+  { id: "crown", label: "王冠", symbol: "♛", level: 8 },
+  { id: "halo", label: "光环", symbol: "◯", level: 10 },
+  { id: "medal", label: "勋章", symbol: "✪", level: 12 },
+];
+const PET_LEVELS = [
+  { level: 1, title: "实习搭子", unlock: "青柠色" },
+  { level: 2, title: "认真观察员", unlock: "薄荷色 · 叶子" },
+  { level: 4, title: "Badcase 侦探", unlock: "薰衣草 · 眼镜" },
+  { level: 6, title: "质量守门员", unlock: "珊瑚色 · 耳机" },
+  { level: 8, title: "评测专家", unlock: "鎏金色 · 王冠" },
+  { level: 10, title: "首席标注官", unlock: "星夜色 · 光环" },
+  { level: 12, title: "传奇质检师", unlock: "专属勋章" },
+];
+
+function petLevelFromXp(xp: number) {
+  return Math.floor(Math.sqrt(Math.max(0, xp) / 20)) + 1;
+}
+
+function petTitle(level: number) {
+  return [...PET_LEVELS].reverse().find((item) => level >= item.level)?.title ?? PET_LEVELS[0].title;
+}
+
+function formatXp(value: number) {
+  return Number.isInteger(value) ? String(value) : value.toFixed(1);
+}
+
+function normalizedPetProfile(value: Partial<PetProfile> | null | undefined): PetProfile {
+  const xp = Number.isFinite(value?.xp) ? Math.round(Math.max(0, Number(value?.xp)) * 10) / 10 : 0;
+  const level = petLevelFromXp(xp);
+  const color = PET_COLORS.some((item) => item.id === value?.color && item.level <= level) ? value!.color as PetColor : "lime";
+  const accessory = PET_ACCESSORIES.some((item) => item.id === value?.accessory && item.level <= level) ? value!.accessory as PetAccessory : "none";
+  return {
+    name: typeof value?.name === "string" && value.name.trim() ? value.name.trim().slice(0, 20) : "小镜",
+    color,
+    accessory,
+    xp,
+    level,
+    title: typeof value?.title === "string" ? value.title : petTitle(level),
+    current_level_xp: 20 * (level - 1) ** 2,
+    next_level_xp: 20 * level ** 2,
+    earned_event_keys: Array.isArray(value?.earned_event_keys) ? value.earned_event_keys.filter((item): item is string => typeof item === "string").slice(-1000) : [],
+  };
+}
 const dimensionsToText = (dimensions?: AnnotationDimension[]) => (dimensions?.length ? dimensions : DEFAULT_DIMENSIONS)
   .map((item) => [item.key, item.label, item.description ?? "", item.min ?? 1, item.max ?? 5, item.required === false ? "false" : "true"].join(" | "))
   .join("\n");
@@ -414,16 +489,6 @@ function datasetStorageKey(name: string, items: LogCase[]) {
   return `case-lens-annotations:${(hash >>> 0).toString(16)}`;
 }
 
-function savedAnnotatorField(field: "id" | "name") {
-  if (typeof window === "undefined") return "";
-  try {
-    const value = JSON.parse(window.localStorage.getItem("case-lens-annotator") ?? "{}");
-    return typeof value[field] === "string" ? value[field] : "";
-  } catch {
-    return "";
-  }
-}
-
 function stringify(value: unknown, spaces = 2) {
   if (typeof value === "string") return value;
   if (value === null || value === undefined) return "";
@@ -470,10 +535,49 @@ function extractTextForAi(value: unknown, includeThinking: boolean): string {
     .join(" ");
 }
 
-function getCaseTitle(item: LogCase, index: number) {
+function getCaseFullTitle(item: LogCase, index: number) {
+  if (typeof item.title === "string" && item.title.trim()) return item.title.replace(/\s+/g, " ").trim();
   const firstUser = (item.messages ?? []).find((message) => message.role === "user" && extractText(message.content).trim());
   const text = firstUser ? extractText(firstUser.content).replace(/\s+/g, " ").trim() : "无用户消息";
   return text || `Case ${index + 1}`;
+}
+
+function findTitleField(value: unknown, depth = 0): string {
+  if (depth > 3 || !isObject(value)) return "";
+  const preferred = ["title", "query", "question", "prompt", "instruction", "task", "text", "content"];
+  for (const key of preferred) {
+    const candidate = value[key];
+    if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
+  }
+  for (const candidate of Object.values(value)) {
+    const nested = findTitleField(candidate, depth + 1);
+    if (nested) return nested;
+  }
+  return "";
+}
+
+function getCaseTitle(item: LogCase, index: number) {
+  let text = getCaseFullTitle(item, index)
+    .replace(/```(?:json|text|markdown)?/gi, " ")
+    .replace(/data:image\/[a-z0-9.+-]+;base64,[a-z0-9+/=]+/gi, "[图片]")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (/^(?:\{|\[)/.test(text)) {
+    try {
+      const structuredTitle = findTitleField(JSON.parse(text));
+      if (structuredTitle) text = structuredTitle.replace(/\s+/g, " ").trim();
+    } catch {
+      // Keep the readable prefix when the user message only resembles JSON.
+    }
+  }
+  text = text.replace(/^(?:用户问题|问题|query|question|prompt|instruction|task)\s*[:：-]\s*/i, "");
+  const characters = Array.from(text);
+  const maxLength = 84;
+  if (characters.length <= maxLength) return text || `Case ${index + 1}`;
+  const preview = characters.slice(0, maxLength + 1).join("");
+  const sentenceEnds = [...preview.matchAll(/[。！？!?]|\.\s/g)].map((match) => match.index ?? 0).filter((position) => position >= 24 && position <= maxLength);
+  const cutAt = sentenceEnds.at(-1);
+  return `${Array.from(cutAt ? preview.slice(0, cutAt + 1) : preview).slice(0, maxLength).join("").trimEnd()}…`;
 }
 
 function getToolCalls(item: LogCase) {
@@ -763,7 +867,7 @@ function Icon({ children }: { children: ReactNode }) {
   return <span className="icon" aria-hidden="true">{children}</span>;
 }
 
-function CompanionPet({ visible, message, mood, completed, total, pulse, hasNext, onPet, onNext, onHide, onShow }: {
+function CompanionPet({ visible, message, mood, completed, total, pulse, hasNext, profile, settingsOpen, draftName, busy, persistenceLabel, onPet, onNext, onHide, onShow, onToggleSettings, onDraftName, onSelectColor, onSelectAccessory, onSaveProfile }: {
   visible: boolean;
   message: string;
   mood: PetMood;
@@ -771,28 +875,66 @@ function CompanionPet({ visible, message, mood, completed, total, pulse, hasNext
   total: number;
   pulse: number;
   hasNext: boolean;
+  profile: PetProfile;
+  settingsOpen: boolean;
+  draftName: string;
+  busy: boolean;
+  persistenceLabel: string;
   onPet: () => void;
   onNext: () => void;
   onHide: () => void;
   onShow: () => void;
+  onToggleSettings: () => void;
+  onDraftName: (value: string) => void;
+  onSelectColor: (value: PetColor) => void;
+  onSelectAccessory: (value: PetAccessory) => void;
+  onSaveProfile: () => void;
 }) {
-  if (!visible) return <button className="pet-summon" type="button" onClick={onShow}><span aria-hidden="true">◉ᴗ◉</span> 唤回小镜</button>;
+  if (!visible) return <button className="pet-summon" type="button" onClick={onShow}><span aria-hidden="true">◉ᴗ◉</span> 唤回{profile.name}</button>;
   const progress = total ? Math.min(100, Math.round(completed / total * 100)) : 0;
+  const levelStart = profile.current_level_xp ?? 20 * (profile.level - 1) ** 2;
+  const levelEnd = profile.next_level_xp ?? 20 * profile.level ** 2;
+  const levelProgress = Math.min(100, Math.round((profile.xp - levelStart) / Math.max(1, levelEnd - levelStart) * 100));
+  const petColor = PET_COLORS.find((item) => item.id === profile.color)?.value ?? PET_COLORS[0].value;
+  const accessory = PET_ACCESSORIES.find((item) => item.id === profile.accessory)?.symbol;
   return (
-    <section className={`companion-card mood-${mood}`} aria-label="标注搭子小镜">
-      <header><span>CASE BUDDY · 小镜</span><button type="button" onClick={onHide} aria-label="收起标注搭子">×</button></header>
+    <><section className={`companion-card mood-${mood}`} aria-label={`标注搭子${profile.name}`} style={{ "--pet-color": petColor } as CSSProperties}>
+      <header><span>CASE BUDDY · {profile.name}</span><div className="pet-header-actions"><b>LV.{profile.level}</b><button type="button" onClick={onToggleSettings} aria-label="自定义标注搭子">✎</button><button type="button" onClick={onHide} aria-label="收起标注搭子">×</button></div></header>
       <div className="companion-main">
         <button className="pet-stage" type="button" onClick={onPet} aria-label="摸摸小镜" key={pulse}>
           <span className="pet-spark spark-one" aria-hidden="true">✦</span><span className="pet-spark spark-two" aria-hidden="true">·</span>
-          <span className="pet-creature" aria-hidden="true"><i className="pet-ear left" /><i className="pet-ear right" /><b className="pet-eye left" /><b className="pet-eye right" /><em /><span className="pet-tail" /></span>
+          <span className="pet-creature" aria-hidden="true">{accessory ? <span className={`pet-accessory accessory-${profile.accessory}`}>{accessory}</span> : null}<i className="pet-ear left" /><i className="pet-ear right" /><b className="pet-eye left" /><b className="pet-eye right" /><em /><span className="pet-tail" /></span>
         </button>
         <div className="pet-dialog">
           <p aria-live="polite">{message}</p>
           <div><button type="button" onClick={onPet}>摸摸</button><button type="button" onClick={onNext} disabled={!hasNext}>下一条未完成</button></div>
         </div>
       </div>
-      <footer><span><strong>{completed}</strong> / {total || 0} 完成</span><i><b style={{ width: `${progress}%` }} /></i></footer>
+      <footer><div><span><strong>Lv.{profile.level}</strong> · {formatXp(profile.xp)} EXP</span><i><b style={{ width: `${levelProgress}%` }} /></i></div><div><span><strong>{completed}</strong> / {total || 0} 完成</span><i><b style={{ width: `${progress}%` }} /></i></div></footer>
     </section>
+    {settingsOpen ? <div className="pet-studio-backdrop" role="presentation">
+      <section className="pet-studio" role="dialog" aria-modal="true" aria-label="宠物自定义空间" style={{ "--pet-color": petColor } as CSSProperties}>
+        <header><div><span>PET STUDIO</span><h2>{profile.name}的自定义空间</h2><p>升级解锁更多颜色与配饰，打造你的专属标注搭子。</p></div><button type="button" onClick={onToggleSettings} aria-label="关闭宠物自定义空间">×</button></header>
+        <div className="pet-studio-body">
+          <aside className="pet-studio-profile">
+            <button className="pet-stage pet-stage-large" type="button" onClick={onPet} aria-label={`摸摸${profile.name}`}>
+              <span className="pet-spark spark-one" aria-hidden="true">✦</span><span className="pet-spark spark-two" aria-hidden="true">·</span>
+              <span className="pet-creature" aria-hidden="true">{accessory ? <span className={`pet-accessory accessory-${profile.accessory}`}>{accessory}</span> : null}<i className="pet-ear left" /><i className="pet-ear right" /><b className="pet-eye left" /><b className="pet-eye right" /><em /><span className="pet-tail" /></span>
+            </button>
+            <div className="pet-profile-name"><strong>{profile.name}</strong><span>Lv.{profile.level} · {profile.title ?? petTitle(profile.level)}</span></div>
+            <div className="pet-xp-card"><div><span>当前经验</span><strong>{formatXp(profile.xp)} EXP</strong></div><i><b style={{ width: `${levelProgress}%` }} /></i><small>距离 Lv.{profile.level + 1} 还需 {formatXp(Math.max(0, levelEnd - profile.xp))} EXP</small></div>
+            <div className="pet-exp-rules"><strong>经验获取</strong><span><b>+0.2</b> 摸摸 · 每小时最多 2 EXP</span><span><b>+6</b> 提交一个候选结果标注</span><span><b>+4</b> 首次发现并标记 Badcase</span></div>
+          </aside>
+          <div className="pet-studio-editor">
+            <label className="pet-name-field"><span>搭子名字</span><input value={draftName} maxLength={20} onChange={(event) => onDraftName(event.target.value)} aria-label="宠物名字" /><small>{draftName.length}/20</small></label>
+            <div className="pet-option-group pet-color-options"><div className="pet-option-title"><span>毛色</span><small>{PET_COLORS.filter((item) => item.level <= profile.level).length} / {PET_COLORS.length} 已解锁</small></div><div>{PET_COLORS.map((item) => <button type="button" key={item.id} className={profile.color === item.id ? "active" : ""} disabled={profile.level < item.level} onClick={() => onSelectColor(item.id)} style={{ "--swatch": item.value } as CSSProperties}><i />{item.label}{profile.level < item.level ? <small>Lv.{item.level}</small> : <small>✓</small>}</button>)}</div></div>
+            <div className="pet-option-group pet-accessory-options"><div className="pet-option-title"><span>配饰</span><small>{PET_ACCESSORIES.filter((item) => item.level <= profile.level).length} / {PET_ACCESSORIES.length} 已解锁</small></div><div>{PET_ACCESSORIES.map((item) => <button type="button" key={item.id} className={profile.accessory === item.id ? "active" : ""} disabled={profile.level < item.level} onClick={() => onSelectAccessory(item.id)}><b>{item.symbol || "—"}</b><span>{item.label}</span>{profile.level < item.level ? <small>Lv.{item.level}</small> : <small>✓</small>}</button>)}</div></div>
+            <div className="pet-level-roadmap"><div className="pet-option-title"><span>等级路线</span><small>持续标注，逐级成长</small></div><div>{PET_LEVELS.map((item) => <article key={item.level} className={profile.level >= item.level ? "unlocked" : profile.level + 1 === item.level ? "next" : ""}><b>Lv.{item.level}</b><div><strong>{item.title}</strong><small>{item.unlock}</small></div><span>{profile.level >= item.level ? "已解锁" : `${20 * (item.level - 1) ** 2} EXP`}</span></article>)}</div></div>
+          </div>
+        </div>
+        <footer><span>装扮会保存在{persistenceLabel}中</span><div><button type="button" onClick={onToggleSettings}>稍后再说</button><button className="pet-save" type="button" onClick={onSaveProfile} disabled={busy || !draftName.trim()}>{busy ? "保存中…" : "保存装扮"}</button></div></footer>
+      </section>
+    </div> : null}</>
   );
 }
 
@@ -1101,8 +1243,8 @@ export default function Home() {
   const [protocolFilter, setProtocolFilter] = useState<"all" | Protocol>("all");
   const [modelFilter, setModelFilter] = useState("all");
   const [annotationFilter, setAnnotationFilter] = useState<"all" | "unlabeled" | "draft" | "submitted" | "badcase">("all");
-  const [annotatorId, setAnnotatorId] = useState(() => savedAnnotatorField("id"));
-  const [annotatorName, setAnnotatorName] = useState(() => savedAnnotatorField("name"));
+  const [annotatorId, setAnnotatorId] = useState("");
+  const [annotatorName, setAnnotatorName] = useState("");
   const [annotations, setAnnotations] = useState<Record<string, CaseAnnotation[]>>(() => embeddedAnnotations(SAMPLE_CASES));
   const [datasetKey, setDatasetKey] = useState("case-lens-annotations:builtin");
   const [teamOpen, setTeamOpen] = useState(false);
@@ -1163,13 +1305,15 @@ export default function Home() {
   const [aiResultScope, setAiResultScope] = useState<"case" | "all">("case");
   const [activeAiResultId, setActiveAiResultId] = useState("");
   const [visibleLimit, setVisibleLimit] = useState(400);
-  const [petVisible, setPetVisible] = useState(() => {
-    if (typeof window === "undefined") return true;
-    return window.localStorage.getItem("case-lens-pet-visible") !== "false";
-  });
+  const [petVisible, setPetVisible] = useState(true);
   const [petMessage, setPetMessage] = useState("");
   const [petMood, setPetMood] = useState<PetMood>("idle");
   const [petPulse, setPetPulse] = useState(0);
+  const [petProfile, setPetProfile] = useState<PetProfile>(DEFAULT_PET);
+  const [petSettingsOpen, setPetSettingsOpen] = useState(false);
+  const [petDraftName, setPetDraftName] = useState(DEFAULT_PET.name);
+  const [petBusy, setPetBusy] = useState(false);
+  const [localPreferencesReady, setLocalPreferencesReady] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const projectFileInput = useRef<HTMLInputElement>(null);
   const searchInput = useRef<HTMLInputElement>(null);
@@ -1177,6 +1321,8 @@ export default function Home() {
   const aiReturnFocus = useRef<HTMLElement | null>(null);
   const aiAbort = useRef<AbortController | null>(null);
   const petTimer = useRef<number | null>(null);
+  const petProfileRef = useRef(petProfile);
+  const pettingBusyRef = useRef(false);
   const serverRevisions = useRef<Record<string, number | undefined>>({});
   const saveQueues = useRef<Record<string, Promise<CaseAnnotation | null>>>({});
   const deferredQuery = useDeferredValue(query);
@@ -1275,6 +1421,14 @@ export default function Home() {
     return projects;
   };
 
+  const refreshPetProfile = async () => {
+    const profile = normalizedPetProfile(await apiRequest<PetProfile>("/api/pet"));
+    petProfileRef.current = profile;
+    setPetProfile(profile);
+    setPetDraftName(profile.name);
+    return profile;
+  };
+
   const refreshAssignmentAdmin = async (projectId: number) => {
     const [members, overview, users] = await Promise.all([
       apiRequest<ProjectMemberOption[]>(`/api/projects/${projectId}/members`),
@@ -1290,6 +1444,21 @@ export default function Home() {
   };
 
   useEffect(() => {
+    const timer = window.setTimeout(() => {
+      const annotator = safeStorageGet<{ id?: string; name?: string }>("case-lens-annotator", {});
+      if (typeof annotator.id === "string") setAnnotatorId(annotator.id);
+      if (typeof annotator.name === "string") setAnnotatorName(annotator.name);
+      const savedPet = normalizedPetProfile(safeStorageGet<Partial<PetProfile>>("case-lens-pet-profile", DEFAULT_PET));
+      petProfileRef.current = savedPet;
+      setPetProfile(savedPet);
+      setPetDraftName(savedPet.name);
+      setPetVisible(window.localStorage.getItem("case-lens-pet-visible") !== "false");
+      setLocalPreferencesReady(true);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
     const controller = new AbortController();
     void (async () => {
       try {
@@ -1302,8 +1471,14 @@ export default function Home() {
           setServerUser(me.user);
           setAnnotatorId(me.user.id);
           setAnnotatorName(me.user.display_name);
-          const projects = await apiRequest<ServerProject[]>("/api/projects", { signal: controller.signal });
+          const [projects, profile] = await Promise.all([
+            apiRequest<ServerProject[]>("/api/projects", { signal: controller.signal }),
+            apiRequest<PetProfile>("/api/pet", { signal: controller.signal }),
+          ]);
           setServerProjects(projects);
+          const normalized = normalizedPetProfile(profile);
+          setPetProfile(normalized);
+          setPetDraftName(normalized.name);
         } catch {
           // Server exists but this browser is not logged in.
         }
@@ -1315,8 +1490,8 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    safeStorageSet("case-lens-annotator", { id: annotatorId, name: annotatorName });
-  }, [annotatorId, annotatorName]);
+    if (localPreferencesReady) safeStorageSet("case-lens-annotator", { id: annotatorId, name: annotatorName });
+  }, [annotatorId, annotatorName, localPreferencesReady]);
 
   useEffect(() => {
     if (!datasetKey) return;
@@ -1329,8 +1504,13 @@ export default function Home() {
   }, [aiResults, datasetKey]);
 
   useEffect(() => {
-    safeStorageSet("case-lens-pet-visible", String(petVisible));
-  }, [petVisible]);
+    if (localPreferencesReady) safeStorageSet("case-lens-pet-visible", String(petVisible));
+  }, [petVisible, localPreferencesReady]);
+
+  useEffect(() => {
+    petProfileRef.current = petProfile;
+    if (localPreferencesReady) safeStorageSet("case-lens-pet-profile", petProfile);
+  }, [petProfile, localPreferencesReady]);
 
   useEffect(() => () => {
     if (petTimer.current !== null) window.clearTimeout(petTimer.current);
@@ -1377,6 +1557,10 @@ export default function Home() {
         window.setTimeout(() => aiReturnFocus.current?.focus(), 0);
         return;
       }
+      if (event.key === "Escape" && petSettingsOpen) {
+        setPetSettingsOpen(false);
+        return;
+      }
       if (["INPUT", "TEXTAREA", "SELECT"].includes((event.target as HTMLElement)?.tagName)) return;
       if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
       event.preventDefault();
@@ -1387,7 +1571,7 @@ export default function Home() {
     };
     window.addEventListener("keydown", handleKeys);
     return () => window.removeEventListener("keydown", handleKeys);
-  }, [filtered, selectedKey, aiOpen]);
+  }, [filtered, selectedKey, aiOpen, petSettingsOpen]);
 
   const loadText = async (text: string, name: string) => {
     setNotice(text.length >= 2_000_000 ? "正在分批解析大型日志…" : "正在解析日志…");
@@ -1438,7 +1622,7 @@ export default function Home() {
       setAnnotatorId(result.user.id);
       setAnnotatorName(result.user.display_name);
       setLoginPassword("");
-      await refreshProjects();
+      await Promise.all([refreshProjects(), refreshPetProfile()]);
       if (result.user.role === "admin") setServerUsers(await apiRequest<ServerUser[]>("/api/users"));
     } catch (error) {
       setTeamError(error instanceof Error ? error.message : "登录失败");
@@ -1456,6 +1640,9 @@ export default function Home() {
       setActiveProjectId(null);
       setProjectMembers([]);
       setAssignmentOverview(null);
+      const localProfile = normalizedPetProfile(safeStorageGet<Partial<PetProfile>>("case-lens-pet-profile", DEFAULT_PET));
+      setPetProfile(localProfile);
+      setPetDraftName(localProfile.name);
     }
   };
 
@@ -1759,9 +1946,81 @@ export default function Home() {
     }, 3200);
   };
 
-  const petTheCompanion = () => {
+  const applyPetProfile = (nextValue: PetProfile, earned = 0, fallbackMessage = "") => {
+    const current = petProfileRef.current;
+    const next = normalizedPetProfile(nextValue);
+    petProfileRef.current = next;
+    setPetProfile(next);
+    setPetDraftName(next.name);
+    if (next.level > current.level) wakePet(`升级到 Lv.${next.level}！新装扮已解锁。`, "proud");
+    else if (earned > 0) wakePet(`${fallbackMessage} +${earned} EXP`, "proud");
+    return next;
+  };
+
+  const awardLocalPetExperience = (awards: { key: string; amount: number }[], message: string) => {
+    const current = petProfileRef.current;
+    const earnedKeys = new Set(current.earned_event_keys ?? []);
+    const fresh = awards.filter((award) => !earnedKeys.has(award.key));
+    if (!fresh.length) return 0;
+    fresh.forEach((award) => earnedKeys.add(award.key));
+    const amount = fresh.reduce((sum, award) => sum + award.amount, 0);
+    applyPetProfile({ ...current, xp: current.xp + amount, earned_event_keys: Array.from(earnedKeys).slice(-1000) }, amount, message);
+    return amount;
+  };
+
+  const petTheCompanion = async () => {
+    if (pettingBusyRef.current) return;
+    pettingBusyRef.current = true;
     const reactions = ["嘿嘿，再摸一下！", "今天也要稳稳地标完。", "我会帮你盯着草稿。", "发现 Badcase 就告诉我！", "进度条正在长大～"];
-    wakePet(reactions[petPulse % reactions.length], "happy");
+    try {
+      if (serverUser) {
+        const result = await apiRequest<{ profile: PetProfile; awarded: boolean; amount: number; hourly_earned: number; hourly_remaining: number }>("/api/pet/pet", { method: "POST", body: "{}" });
+        if (result.awarded) applyPetProfile(result.profile, result.amount, `摸摸 · 本小时 ${formatXp(result.hourly_earned)}/2`);
+        else {
+          applyPetProfile(result.profile);
+          wakePet("本小时摸摸经验已满 2 EXP，陪伴不限量～", "happy");
+        }
+      } else {
+        const hourKey = new Date().toISOString().slice(0, 13);
+        const currentKeys = petProfileRef.current.earned_event_keys ?? [];
+        const legacyKey = `pet:${hourKey}`;
+        const keyPrefix = `pet:${hourKey}:`;
+        const hourlyTouches = (currentKeys.includes(legacyKey) ? 5 : 0) + currentKeys.filter((key) => key.startsWith(keyPrefix)).length;
+        if (hourlyTouches >= 10) wakePet("本小时摸摸经验已满 2 EXP，陪伴不限量～", "happy");
+        else awardLocalPetExperience([{ key: `${keyPrefix}${hourlyTouches + 1}`, amount: 0.2 }], `摸摸 · 本小时 ${formatXp((hourlyTouches + 1) * 0.2)}/2`);
+      }
+    } catch {
+      wakePet(reactions[petPulse % reactions.length], "happy");
+    } finally {
+      pettingBusyRef.current = false;
+    }
+  };
+
+  const savePetCustomization = async () => {
+    const name = petDraftName.trim();
+    if (!name) return;
+    setPetBusy(true);
+    try {
+      const draft = { ...petProfileRef.current, name };
+      if (serverUser) {
+        const saved = await apiRequest<PetProfile>("/api/pet", { method: "PUT", body: JSON.stringify({ name, color: draft.color, accessory: draft.accessory }) });
+        applyPetProfile(saved);
+      } else {
+        applyPetProfile(draft);
+      }
+      setPetSettingsOpen(false);
+      wakePet(`以后就叫我「${name}」吧！`, "happy");
+    } catch (error) {
+      wakePet(error instanceof Error ? error.message : "装扮保存失败", "worried");
+    } finally {
+      setPetBusy(false);
+    }
+  };
+
+  const previewPetStyle = (patch: Partial<Pick<PetProfile, "color" | "accessory">>) => {
+    const next = { ...petProfileRef.current, ...patch };
+    petProfileRef.current = next;
+    setPetProfile(next);
   };
 
   const goToNextPendingCase = (skipCurrent = false) => {
@@ -1851,6 +2110,13 @@ export default function Home() {
       if (!isTeamSave) wakePet(value.badcase ? "Badcase 已抓住，我帮你记好了！" : status === "submitted" ? "提交成功，漂亮！" : "草稿交给我守着吧。", value.badcase ? "curious" : status === "submitted" ? "proud" : "happy");
       window.setTimeout(() => setNotice(""), 2200);
     }
+    if (!isTeamSave && status === "submitted") {
+      const eventSuffix = `${selected.__server_case_id ?? key}:${candidate.id}:${annotatorId.trim()}`;
+      awardLocalPetExperience([
+        { key: `annotation:${eventSuffix}`, amount: 6 },
+        ...(value.badcase ? [{ key: `badcase:${eventSuffix}`, amount: 4 }] : []),
+      ], value.badcase ? "标注完成并抓到 Badcase！" : "标注完成！");
+    }
     if (isTeamSave && selected.__server_case_id) {
       const previous = saveQueues.current[queueKey] ?? Promise.resolve(null);
       const request = previous.catch(() => null).then(() => apiRequest<CaseAnnotation>(`/api/cases/${selected.__server_case_id}/annotations/${encodeURIComponent(candidate.id)}`, {
@@ -1869,6 +2135,17 @@ export default function Home() {
           setNotice(status === "submitted" ? "标注已保存到团队服务器" : "草稿已保存到团队服务器");
           wakePet(value.badcase ? "Badcase 已抓住，我帮你记好了！" : status === "submitted" ? "提交成功，漂亮！" : "草稿交给我守着吧。", value.badcase ? "curious" : status === "submitted" ? "proud" : "happy");
           window.setTimeout(() => setNotice(""), 1800);
+        }
+        if (status === "submitted") {
+          const previousPet = petProfileRef.current;
+          try {
+            const nextPet = await refreshPetProfile();
+            const earned = Math.max(0, nextPet.xp - previousPet.xp);
+            if (nextPet.level > previousPet.level) wakePet(`升级到 Lv.${nextPet.level}！新装扮已解锁。`, "proud");
+            else if (earned) wakePet(`${value.badcase ? "标注完成并抓到 Badcase！" : "标注完成！"} +${earned} EXP`, "proud");
+          } catch {
+            // Annotation saving succeeded; pet progress can refresh on the next action.
+          }
         }
       } catch (error) {
         if (error instanceof ApiError && error.status === 409 && isObject(error.detail) && isObject(error.detail.current)) {
@@ -2309,7 +2586,7 @@ export default function Home() {
               <div className="annotator-fields"><input value={annotatorId} disabled={Boolean(serverUser)} onChange={(event) => setAnnotatorId(event.target.value)} placeholder="用户 ID，如 jiangqy" aria-label="标注员 ID" /><input value={annotatorName} disabled={Boolean(serverUser)} onChange={(event) => setAnnotatorName(event.target.value)} placeholder="显示姓名" aria-label="标注员姓名" /></div>
               <div className="annotator-actions"><button onClick={downloadAnnotationTemplate}>下载输入模板</button><button onClick={exportAnnotationRows}>仅导出标注记录</button></div>
             </div>
-            <CompanionPet visible={petVisible} message={petMessage || defaultPetMessage} mood={petMessage ? petMood : defaultPetMood} completed={Math.min(submittedCases, annotatableCases)} total={annotatableCases} pulse={petPulse} hasNext={pendingCases > 0} onPet={petTheCompanion} onNext={goToNextPendingCase} onHide={() => setPetVisible(false)} onShow={() => { setPetVisible(true); wakePet("我回来啦，继续一起标！", "happy"); }} />
+            <CompanionPet visible={petVisible} message={petMessage || defaultPetMessage} mood={petMessage ? petMood : defaultPetMood} completed={Math.min(submittedCases, annotatableCases)} total={annotatableCases} pulse={petPulse} hasNext={pendingCases > 0} profile={petProfile} settingsOpen={petSettingsOpen} draftName={petDraftName} busy={petBusy} persistenceLabel={serverUser ? "团队账号" : "当前浏览器"} onPet={() => void petTheCompanion()} onNext={goToNextPendingCase} onHide={() => setPetVisible(false)} onShow={() => { setPetVisible(true); wakePet("我回来啦，继续一起标！", "happy"); }} onToggleSettings={() => setPetSettingsOpen((current) => !current)} onDraftName={setPetDraftName} onSelectColor={(color) => previewPetStyle({ color })} onSelectAccessory={(accessory) => previewPetStyle({ accessory })} onSaveProfile={() => void savePetCustomization()} />
             <label className="search-box"><Icon>⌕</Icon><input ref={searchInput} value={query} onChange={(event) => { setQuery(event.target.value); setVisibleLimit(400); }} placeholder="搜索 ID、模型或消息…" /><kbd>⌘K</kbd></label>
             <div className="filters">
               <select value={protocolFilter} onChange={(event) => { setProtocolFilter(event.target.value as "all" | Protocol); setVisibleLimit(400); }} aria-label="协议筛选">
@@ -2332,7 +2609,7 @@ export default function Home() {
               return (
                 <button className={`case-row ${active ? "active" : ""} ${badcase ? "badcase" : ""}`} key={`${String(item.id)}-${index}`} onClick={() => { setSelectedKey(String(index)); setSidebarOpen(false); }}>
                   <div className="case-row-top"><span className={`protocol-dot ${protocol}`} /><code>{String(item.id ?? `case-${index + 1}`)}</code><span className={`annotation-status ${status}`}>{status === "submitted" ? "已完成" : status === "draft" ? "草稿" : "未标注"}</span>{badcase ? <span className="badcase-badge">BAD</span> : null}<span className="row-index">{String(index + 1).padStart(3, "0")}</span></div>
-                  <p>{getCaseTitle(item, index)}</p>
+                  <p title={getCaseFullTitle(item, index)}>{getCaseTitle(item, index)}</p>
                   <div className="case-row-meta"><span>{item.candidates?.length ? `${item.candidates.length} models` : item.model ?? "unknown model"}</span><span>{item.messages?.length ?? 0} msgs</span>{getToolCalls(item) ? <span className="call-count">⌁ {getToolCalls(item)}</span> : null}</div>
                 </button>
               );
@@ -2348,7 +2625,7 @@ export default function Home() {
               <div className="detail-header">
                 <div>
                   <div className="eyebrow"><span className={`protocol-pill ${selectedProtocol}`}>{protocolLabel(selectedProtocol)}</span><code>{String(selected.id ?? `line-${selected.__line ?? "?"}`)}</code></div>
-                  <h2>{getCaseTitle(selected, selectedPair?.index ?? 0)}</h2>
+                  <h2 title={getCaseFullTitle(selected, selectedPair?.index ?? 0)}>{getCaseTitle(selected, selectedPair?.index ?? 0)}</h2>
                 </div>
                 <div className="detail-actions">
                   <button className="icon-button" onClick={() => goRelativeCase(-1)} disabled={filtered.findIndex(({ index }) => index === selectedPair?.index) <= 0} title="上一条">←</button>

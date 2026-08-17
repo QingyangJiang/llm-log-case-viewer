@@ -126,6 +126,35 @@ class LoginSession(Base):
     user: Mapped[User] = relationship()
 
 
+class PetProfile(Base):
+    __tablename__ = "pet_profiles"
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    name: Mapped[str] = mapped_column(String(20), default="小镜")
+    color: Mapped[str] = mapped_column(String(20), default="lime")
+    accessory: Mapped[str] = mapped_column(String(20), default="none")
+    xp: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class PetExperienceEvent(Base):
+    __tablename__ = "pet_experience_events"
+    __table_args__ = (UniqueConstraint("user_id", "event_key"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    event_key: Mapped[str] = mapped_column(String(500))
+    reason: Mapped[str] = mapped_column(String(30))
+    amount: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class PetProgressV2(Base):
+    """Stores experience in 0.2 EXP units without altering existing deployments."""
+    __tablename__ = "pet_progress_v2"
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    xp_units: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
 connect_args = {"check_same_thread": False} if str(DATABASE_URL).startswith("sqlite") else {}
 engine = create_engine(DATABASE_URL, pool_pre_ping=True, connect_args=connect_args)
 SessionLocal = sessionmaker(engine, expire_on_commit=False)
@@ -228,6 +257,12 @@ class AssignmentRemovalBody(BaseModel):
     delete_annotations: bool = False
 
 
+class PetProfileUpdate(BaseModel):
+    name: str = Field(min_length=1, max_length=20)
+    color: str = Field(max_length=20)
+    accessory: str = Field(max_length=20)
+
+
 def user_dict(user: User) -> dict[str, Any]:
     return {"id": str(user.id), "username": user.username, "display_name": user.display_name, "role": user.role, "active": user.active}
 
@@ -250,6 +285,62 @@ def annotation_dict(annotation: Annotation) -> dict[str, Any]:
 
 def project_config(project: Project) -> dict[str, Any]:
     return {"blind_mode": True, "lock_submitted": False, "archived": False, **(project.annotation_config or {})}
+
+
+PET_COLORS = {"lime": 1, "aqua": 2, "peach": 3, "lavender": 4, "sky": 5, "coral": 6, "gold": 8, "midnight": 10}
+PET_ACCESSORIES = {"none": 1, "leaf": 2, "bow": 3, "glasses": 4, "star": 5, "headphones": 6, "cap": 7, "crown": 8, "halo": 10, "medal": 12}
+# One unit is 0.2 EXP, which keeps fractional petting rewards exact in the database.
+PET_XP_UNITS = {"pet": 1, "annotation": 30, "badcase": 20}
+PET_LEVEL_TITLES = {1: "实习搭子", 2: "认真观察员", 4: "Badcase 侦探", 6: "质量守门员", 8: "评测专家", 10: "首席标注官", 12: "传奇质检师"}
+
+
+def pet_level(xp: float) -> int:
+    return int((max(0, xp) / 20) ** 0.5) + 1
+
+
+def get_or_create_pet(db: Session, user_id: int) -> tuple[PetProfile, PetProgressV2]:
+    profile = db.get(PetProfile, user_id)
+    if not profile:
+        profile = PetProfile(user_id=user_id)
+        db.add(profile)
+        db.flush()
+    progress = db.get(PetProgressV2, user_id)
+    if not progress:
+        progress = PetProgressV2(user_id=user_id, xp_units=max(0, int((profile.xp or 0) * 5)))
+        db.add(progress)
+        db.flush()
+    return profile, progress
+
+
+def pet_title(level: int) -> str:
+    return next(title for required, title in reversed(PET_LEVEL_TITLES.items()) if level >= required)
+
+
+def pet_dict(profile: PetProfile, progress: PetProgressV2) -> dict[str, Any]:
+    xp = round(progress.xp_units / 5, 1)
+    level = pet_level(xp)
+    return {
+        "name": profile.name,
+        "color": profile.color,
+        "accessory": profile.accessory,
+        "xp": xp,
+        "level": level,
+        "title": pet_title(level),
+        "current_level_xp": 20 * (level - 1) ** 2,
+        "next_level_xp": 20 * level ** 2,
+    }
+
+
+def grant_pet_experience(db: Session, user_id: int, reason: str, event_key: str) -> tuple[PetProfile, PetProgressV2, bool, float]:
+    profile, progress = get_or_create_pet(db, user_id)
+    if db.scalar(select(PetExperienceEvent.id).where(PetExperienceEvent.user_id == user_id, PetExperienceEvent.event_key == event_key)):
+        return profile, progress, False, 0
+    units = PET_XP_UNITS[reason]
+    db.add(PetExperienceEvent(user_id=user_id, event_key=event_key, reason=reason, amount=units))
+    progress.xp_units += units
+    progress.updated_at = utcnow()
+    profile.updated_at = utcnow()
+    return profile, progress, True, round(units / 5, 1)
 
 
 def user_case_progress(cases: list[Case], user_id: int) -> tuple[int, int]:
@@ -390,6 +481,53 @@ def logout(request: Request, response: Response, db: DB) -> dict[str, bool]:
 @app.get("/api/auth/me")
 def me(user: CurrentUser) -> dict[str, Any]:
     return {"user": user_dict(user)}
+
+
+@app.get("/api/pet")
+def get_pet(user: CurrentUser, db: DB) -> dict[str, Any]:
+    profile, progress = get_or_create_pet(db, user.id)
+    db.commit()
+    return pet_dict(profile, progress)
+
+
+@app.put("/api/pet")
+def update_pet(body: PetProfileUpdate, user: CurrentUser, db: DB) -> dict[str, Any]:
+    profile, progress = get_or_create_pet(db, user.id)
+    level = pet_level(progress.xp_units / 5)
+    if body.color not in PET_COLORS:
+        raise HTTPException(422, "未知的宠物颜色")
+    if body.accessory not in PET_ACCESSORIES:
+        raise HTTPException(422, "未知的宠物配饰")
+    if PET_COLORS[body.color] > level or PET_ACCESSORIES[body.accessory] > level:
+        raise HTTPException(422, "该装扮尚未解锁")
+    profile.name = body.name.strip()
+    profile.color = body.color
+    profile.accessory = body.accessory
+    profile.updated_at = utcnow()
+    db.commit()
+    return pet_dict(profile, progress)
+
+
+@app.post("/api/pet/pet")
+def pet_companion(user: CurrentUser, db: DB) -> dict[str, Any]:
+    now = utcnow()
+    hour_start = now.replace(minute=0, second=0, microsecond=0)
+    hour_key = now.strftime("%Y-%m-%dT%H")
+    hourly_event_keys = db.scalars(select(PetExperienceEvent.event_key).where(
+        PetExperienceEvent.user_id == user.id,
+        PetExperienceEvent.reason == "pet",
+        PetExperienceEvent.created_at >= hour_start,
+    )).all()
+    # Legacy hourly pet events awarded 1 EXP, equivalent to five new touches.
+    hourly_count = sum(5 if key == f"pet:{hour_key}" else 1 for key in hourly_event_keys)
+    if hourly_count >= 10:
+        profile, progress = get_or_create_pet(db, user.id)
+        db.commit()
+        return {"profile": pet_dict(profile, progress), "awarded": False, "amount": 0, "hourly_earned": 2, "hourly_remaining": 0}
+    profile, progress, awarded, amount = grant_pet_experience(db, user.id, "pet", f"pet:{hour_key}:{hourly_count + 1}")
+    db.commit()
+    earned_count = hourly_count + (1 if awarded else 0)
+    return {"profile": pet_dict(profile, progress), "awarded": awarded, "amount": amount, "hourly_earned": round(earned_count / 5, 1), "hourly_remaining": max(0, 10 - earned_count)}
 
 
 @app.get("/api/users")
@@ -782,6 +920,11 @@ def save_annotation(case_id: int, candidate_id: str, body: AnnotationBody, user:
     record.status = body.status
     record.revision = (record.revision or 0) + 1
     record.updated_at = utcnow()
+    if body.status == "submitted":
+        event_suffix = f"{case_id}:{candidate_id}"
+        grant_pet_experience(db, user.id, "annotation", f"annotation:{event_suffix}")
+        if body.badcase:
+            grant_pet_experience(db, user.id, "badcase", f"badcase:{event_suffix}")
     db.commit()
     db.refresh(record)
     return annotation_dict(record)
