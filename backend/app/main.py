@@ -232,6 +232,7 @@ class ProjectSettingsBody(BaseModel):
     lock_submitted: bool = False
     dimensions: list[dict[str, Any]] | None = None
     badcase_tags: list[str] | None = None
+    model_order: list[str] | None = None
 
 
 class ProjectMembersBody(BaseModel):
@@ -654,6 +655,11 @@ def update_project_settings(project_id: int, body: ProjectSettingsBody, _: Admin
         if not tags:
             raise HTTPException(422, "至少保留一个 Badcase 标签")
         next_config["badcase_tags"] = tags
+    if body.model_order is not None:
+        model_order = list(dict.fromkeys(value.strip() for value in body.model_order if value.strip()))
+        if len(model_order) > 1000 or any(len(value) > 240 for value in model_order):
+            raise HTTPException(422, "模型展示顺序最多 1000 项，且每项不能超过 240 个字符")
+        next_config["model_order"] = model_order
     project.annotation_config = next_config
     for case in db.scalars(select(Case).where(Case.project_id == project_id)).all():
         case.payload = {**case.payload, "annotation_config": next_config}

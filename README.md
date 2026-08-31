@@ -205,7 +205,8 @@ curl http://127.0.0.1:8080/api/health
       {"key": "correctness", "label": "正确性", "description": "事实与结论是否正确", "min": 1, "max": 5, "required": true},
       {"key": "relevance", "label": "相关性", "min": 1, "max": 5, "required": true}
     ],
-    "badcase_tags": ["事实错误", "未遵循指令", "工具调用错误", "推理问题", "其他"]
+    "badcase_tags": ["事实错误", "未遵循指令", "工具调用错误", "推理问题", "其他"],
+    "model_order": ["deepseek-v4-flash", "enterprise-9b"]
   },
   "annotations": [
     {
@@ -229,7 +230,7 @@ curl http://127.0.0.1:8080/api/health
 - `messages` / `tools`：所有候选模型共享的输入上下文，继续兼容原格式。
 - `candidates`：同一 Case 的多个待评模型结果；`id` 在 Case 内唯一且稳定。
 - `reasoning` / `response`：支持字符串、JSON object 或 OpenAI/Anthropic 内容块数组。
-- `annotation_config`：每条 Case 可自定义评分维度；缺省时使用正确性、相关性、完整性、表达质量四个 1–5 分维度。
+- `annotation_config`：每条 Case 可自定义评分维度；`model_order` 按 `candidate.model`（也兼容 `id` / `label`）配置候选展示顺序，未列出的候选保持 JSONL 原顺序并追加在后。
 - `annotations`：可同时保存多名用户对不同候选模型的记录；唯一逻辑键为 `case id + candidate_id + annotator.id`。
 - `status`：`draft` 表示暂存，`submitted` 表示完成。提交时会校验所有必填维度。
 

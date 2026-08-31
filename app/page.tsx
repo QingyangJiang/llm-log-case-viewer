@@ -1,6 +1,6 @@
 "use client";
 
-import { ChangeEvent, CSSProperties, DragEvent, ReactNode, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, CSSProperties, DragEvent, ReactNode, UIEvent, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 type JsonObject = Record<string, unknown>;
 type CandidateOutput = { id: string; model: string; label?: string; reasoning?: unknown; response?: unknown; metadata?: JsonObject };
@@ -19,7 +19,7 @@ type CaseAnnotation = {
   created_at: string;
   updated_at: string;
 };
-type AnnotationConfig = { dimensions?: AnnotationDimension[]; badcase_tags?: string[]; blind_mode?: boolean; lock_submitted?: boolean };
+type AnnotationConfig = { dimensions?: AnnotationDimension[]; badcase_tags?: string[]; model_order?: string[]; blind_mode?: boolean; lock_submitted?: boolean };
 type LogCase = JsonObject & {
   schema_version?: string;
   id?: string | number;
@@ -43,6 +43,7 @@ type SaveState = "idle" | "dirty" | "saving" | "saved" | "error";
 type Protocol = "openai" | "anthropic" | "unknown";
 type ViewTab = "conversation" | "candidates" | "tools" | "raw" | "ai";
 const VIEW_TABS: ViewTab[] = ["conversation", "candidates", "tools", "raw", "ai"];
+const MESSAGE_ROLE_LABELS: Record<string, string> = { system: "SYSTEM", user: "USER", assistant: "ASSISTANT", tool: "TOOL", developer: "DEVELOPER" };
 type AiTask = "summary" | "translate" | "bilingual" | "custom";
 type AiTarget =
   | { kind: "case" }
@@ -178,6 +179,23 @@ function parseDimensionsText(value: string): AnnotationDimension[] {
     return { key, label, description, min, max, required: requiredText.toLowerCase() !== "false" };
   });
 }
+
+function parseModelOrderText(value: string): string[] {
+  return Array.from(new Set(value.split(/[，,\n]+/).map((item) => item.trim()).filter(Boolean)));
+}
+
+function orderedCandidates(candidates: CandidateOutput[], configuredOrder?: string[]): CandidateOutput[] {
+  if (!configuredOrder?.length || candidates.length < 2) return candidates;
+  const priority = new Map(configuredOrder.map((value, index) => [value.trim().toLocaleLowerCase(), index]));
+  return candidates
+    .map((candidate, index) => {
+      const keys = [candidate.model, candidate.id, candidate.label].filter(Boolean).map((value) => String(value).trim().toLocaleLowerCase());
+      const configuredIndex = keys.reduce((best, key) => Math.min(best, priority.get(key) ?? Number.POSITIVE_INFINITY), Number.POSITIVE_INFINITY);
+      return { candidate, index, configuredIndex };
+    })
+    .sort((left, right) => left.configuredIndex - right.configuredIndex || left.index - right.index)
+    .map(({ candidate }) => candidate);
+}
 const ANNOTATION_TEMPLATE: LogCase = {
   schema_version: "case-lens.annotation.v1",
   id: "case-000001",
@@ -187,7 +205,7 @@ const ANNOTATION_TEMPLATE: LogCase = {
     { id: "model-a", model: "model-a", label: "模型 A", reasoning: "可选：模型推理过程", response: "模型最终回复", metadata: { latency_ms: 1200 } },
     { id: "model-b", model: "model-b", label: "模型 B", reasoning: "可选：模型推理过程", response: "模型最终回复" },
   ],
-  annotation_config: { dimensions: DEFAULT_DIMENSIONS, badcase_tags: DEFAULT_BADCASE_TAGS },
+  annotation_config: { dimensions: DEFAULT_DIMENSIONS, badcase_tags: DEFAULT_BADCASE_TAGS, model_order: ["model-a", "model-b"] },
   annotations: [],
 };
 
@@ -939,8 +957,32 @@ function CompanionPet({ visible, message, mood, completed, total, pulse, hasNext
   );
 }
 
-function JsonCode({ value, compact = false }: { value: unknown; compact?: boolean }) {
-  return <pre className={compact ? "json-code compact" : "json-code"}>{tryPrettyJson(value)}</pre>;
+function HighlightedText({ text, query }: { text: string; query?: string }) {
+  const normalizedQuery = query?.trim();
+  if (!normalizedQuery) return <>{text}</>;
+  const lowerText = text.toLocaleLowerCase();
+  const lowerQuery = normalizedQuery.toLocaleLowerCase();
+  const parts: ReactNode[] = [];
+  let cursor = 0;
+  let highlights = 0;
+  const maxHighlights = 200;
+  while (cursor < text.length && highlights < maxHighlights) {
+    const foundAt = lowerText.indexOf(lowerQuery, cursor);
+    if (foundAt < 0) break;
+    if (foundAt > cursor) parts.push(text.slice(cursor, foundAt));
+    const end = foundAt + normalizedQuery.length;
+    parts.push(<mark className="search-highlight" key={`${foundAt}-${highlights}`}>{text.slice(foundAt, end)}</mark>);
+    cursor = end;
+    highlights += 1;
+  }
+  if (!parts.length) return <>{text}</>;
+  if (cursor < text.length) parts.push(text.slice(cursor));
+  return <>{parts}</>;
+}
+
+function JsonCode({ value, compact = false, searchQuery }: { value: unknown; compact?: boolean; searchQuery?: string }) {
+  const content = tryPrettyJson(value);
+  return <pre className={compact ? "json-code compact" : "json-code"}>{searchQuery ? <HighlightedText text={content} query={searchQuery} /> : content}</pre>;
 }
 
 function ToolAiActions({ onAi, label }: { onAi: (task: AiTask) => void; label: string }) {
@@ -953,16 +995,16 @@ function ToolAiActions({ onAi, label }: { onAi: (task: AiTask) => void; label: s
   );
 }
 
-function ContentBlock({ block, anchorId, results = [], onAi, onCopyResult, onDownloadResult }: { block: JsonObject; anchorId?: string; results?: AiResult[]; onAi?: (task: AiTask) => void; onCopyResult?: (result: AiResult) => void; onDownloadResult?: (result: AiResult) => void }) {
+function ContentBlock({ block, anchorId, results = [], searchQuery, onAi, onCopyResult, onDownloadResult }: { block: JsonObject; anchorId?: string; results?: AiResult[]; searchQuery?: string; onAi?: (task: AiTask) => void; onCopyResult?: (result: AiResult) => void; onDownloadResult?: (result: AiResult) => void }) {
   const type = String(block.type ?? "content");
   if (["text", "input_text", "output_text"].includes(type)) {
-    return <p className="message-text">{String(block.text ?? "")}</p>;
+    return <p className="message-text"><HighlightedText text={String(block.text ?? "")} query={searchQuery} /></p>;
   }
   if (type === "thinking") {
     return (
       <details className="thinking-block">
         <summary>Thinking / Reasoning</summary>
-        <p>{String(block.thinking ?? block.text ?? "")}</p>
+        <p><HighlightedText text={String(block.thinking ?? block.text ?? "")} query={searchQuery} /></p>
       </details>
     );
   }
@@ -971,7 +1013,7 @@ function ContentBlock({ block, anchorId, results = [], onAi, onCopyResult, onDow
       <div className="tool-ai-wrapper" id={anchorId}>
         <div className="tool-block">
           <div className="tool-block-head"><span>TOOL USE</span><strong>{String(block.name ?? "unnamed_tool")}</strong>{onAi ? <ToolAiActions onAi={onAi} label={` Tool Use ${String(block.name ?? "")}`} /> : null}</div>
-          <JsonCode value={block.input ?? {}} compact />
+          <JsonCode value={block.input ?? {}} compact searchQuery={searchQuery} />
           {block.id ? <code className="call-id">{String(block.id)}</code> : null}
         </div>
         {onCopyResult && onDownloadResult ? <InlineAiResults results={results} label="该 Tool Use 的处理结果" onCopy={onCopyResult} onDownload={onDownloadResult} /> : null}
@@ -983,7 +1025,7 @@ function ContentBlock({ block, anchorId, results = [], onAi, onCopyResult, onDow
       <div className="tool-ai-wrapper" id={anchorId}>
         <div className="tool-block result">
           <div className="tool-block-head"><span>TOOL RESULT</span><code>{String(block.tool_use_id ?? "")}</code>{onAi ? <ToolAiActions onAi={onAi} label=" Tool Result" /> : null}</div>
-          <JsonCode value={block.content ?? block} compact />
+          <JsonCode value={block.content ?? block} compact searchQuery={searchQuery} />
         </div>
         {onCopyResult && onDownloadResult ? <InlineAiResults results={results} label="该 Tool Result 的处理结果" onCopy={onCopyResult} onDownload={onDownloadResult} /> : null}
       </div>
@@ -1000,7 +1042,7 @@ function ContentBlock({ block, anchorId, results = [], onAi, onCopyResult, onDow
   return (
     <div className="unknown-block">
       <span className="mini-label">{type}</span>
-      <JsonCode value={block} compact />
+      <JsonCode value={block} compact searchQuery={searchQuery} />
     </div>
   );
 }
@@ -1028,17 +1070,16 @@ function InlineAiResults({ results, label, onCopy, onDownload }: { results: AiRe
   );
 }
 
-function MessageCard({ message, index, results, allResults, onAi, onToolAi, onCopyResult, onDownloadResult }: { message: JsonObject; index: number; results: AiResult[]; allResults: AiResult[]; onAi: (index: number, task: AiTask) => void; onToolAi: (target: AiTarget, task: AiTask) => void; onCopyResult: (result: AiResult) => void; onDownloadResult: (result: AiResult) => void }) {
+function MessageCard({ message, index, results, allResults, searchQuery, searchMatch = false, activeSearchMatch = false, onAi, onToolAi, onCopyResult, onDownloadResult }: { message: JsonObject; index: number; results: AiResult[]; allResults: AiResult[]; searchQuery?: string; searchMatch?: boolean; activeSearchMatch?: boolean; onAi: (index: number, task: AiTask) => void; onToolAi: (target: AiTarget, task: AiTask) => void; onCopyResult: (result: AiResult) => void; onDownloadResult: (result: AiResult) => void }) {
   const role = String(message.role ?? "unknown");
   const content = message.content;
-  const roleNames: Record<string, string> = { system: "SYSTEM", user: "USER", assistant: "ASSISTANT", tool: "TOOL", developer: "DEVELOPER" };
   const blocks = Array.isArray(content) ? content : null;
   const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls.filter(isObject) : [];
 
   return (
-    <article className={`message-card role-${role}`} id={`message-${index + 1}`}>
+    <article className={`message-card role-${role}${searchMatch ? " search-match" : ""}${activeSearchMatch ? " active-search-match" : ""}`} id={`message-${index + 1}`} data-message-index={index}>
       <header className="message-head">
-        <div className="role-wrap"><span className="role-dot" /><strong>{roleNames[role] ?? role.toUpperCase()}</strong></div>
+        <div className="role-wrap"><span className="role-dot" /><strong>{MESSAGE_ROLE_LABELS[role] ?? role.toUpperCase()}</strong></div>
         <div className="message-head-actions">
           {extractText(content).trim() ? (
             <>
@@ -1051,13 +1092,13 @@ function MessageCard({ message, index, results, allResults, onAi, onToolAi, onCo
         </div>
       </header>
       <div className="message-body">
-        {typeof content === "string" ? <p className="message-text">{content}</p> : null}
-        {content !== undefined && content !== null && !blocks && typeof content !== "string" ? <JsonCode value={content} compact /> : null}
+        {typeof content === "string" ? <p className="message-text"><HighlightedText text={content} query={searchQuery} /></p> : null}
+        {content !== undefined && content !== null && !blocks && typeof content !== "string" ? <JsonCode value={content} compact searchQuery={searchQuery} /> : null}
         {blocks?.map((block, blockIndex) => {
-          if (!isObject(block)) return <JsonCode key={blockIndex} value={block} compact />;
+          if (!isObject(block)) return <JsonCode key={blockIndex} value={block} compact searchQuery={searchQuery} />;
           const isToolBlock = block.type === "tool_use" || block.type === "tool_result";
           const anchorId = isToolBlock ? `message-${index + 1}-tool-block-${blockIndex + 1}` : undefined;
-          return <ContentBlock key={blockIndex} block={block} anchorId={anchorId} results={anchorId ? allResults.filter((result) => result.anchorId === anchorId) : []} onAi={isToolBlock ? (task) => onToolAi({ kind: "message-tool", messageIndex: index, itemIndex: blockIndex, source: "content" }, task) : undefined} onCopyResult={onCopyResult} onDownloadResult={onDownloadResult} />;
+          return <ContentBlock key={blockIndex} block={block} anchorId={anchorId} results={anchorId ? allResults.filter((result) => result.anchorId === anchorId) : []} searchQuery={searchQuery} onAi={isToolBlock ? (task) => onToolAi({ kind: "message-tool", messageIndex: index, itemIndex: blockIndex, source: "content" }, task) : undefined} onCopyResult={onCopyResult} onDownloadResult={onDownloadResult} />;
         })}
         {content === null && !toolCalls.length ? <p className="empty-content">content: null</p> : null}
         {toolCalls.map((call, callIndex) => {
@@ -1066,8 +1107,8 @@ function MessageCard({ message, index, results, allResults, onAi, onToolAi, onCo
           return (
             <div className="tool-ai-wrapper" id={anchorId} key={callIndex}>
               <div className="tool-block">
-                <div className="tool-block-head"><span>TOOL CALL</span><strong>{String(fn.name ?? "unnamed_tool")}</strong><ToolAiActions onAi={(task) => onToolAi({ kind: "message-tool", messageIndex: index, itemIndex: callIndex, source: "tool_call" }, task)} label={` Tool Call ${String(fn.name ?? "")}`} /></div>
-                <JsonCode value={tryPrettyJson(fn.arguments ?? call.input ?? {})} compact />
+                <div className="tool-block-head"><span>TOOL CALL</span><strong><HighlightedText text={String(fn.name ?? "unnamed_tool")} query={searchQuery} /></strong><ToolAiActions onAi={(task) => onToolAi({ kind: "message-tool", messageIndex: index, itemIndex: callIndex, source: "tool_call" }, task)} label={` Tool Call ${String(fn.name ?? "")}`} /></div>
+                <JsonCode value={tryPrettyJson(fn.arguments ?? call.input ?? {})} compact searchQuery={searchQuery} />
                 {call.id ? <code className="call-id">{String(call.id)}</code> : null}
               </div>
               <InlineAiResults results={allResults.filter((result) => result.anchorId === anchorId)} label="该 Tool Call 的处理结果" onCopy={onCopyResult} onDownload={onDownloadResult} />
@@ -1211,14 +1252,14 @@ function CandidateWorkspace({ item, caseIndex, records, annotator, onSave, canRe
   canReturn?: boolean;
   onReturn?: (annotationId: string) => void;
 }) {
-  const candidates = item.candidates ?? [];
+  const candidates = orderedCandidates(item.candidates ?? [], item.annotation_config?.model_order);
   const dimensions = item.annotation_config?.dimensions?.length ? item.annotation_config.dimensions : DEFAULT_DIMENSIONS;
   const badcaseTags = item.annotation_config?.badcase_tags?.length ? item.annotation_config.badcase_tags : DEFAULT_BADCASE_TAGS;
   if (!candidates.length) return <div className="empty-panel"><span>◇</span><h3>这个 Case 没有候选模型结果</h3><p>在 JSONL 中增加 candidates 数组后，即可并排查看 reasoning、response 并进行多维标注。</p></div>;
   return (
     <section className="candidate-workspace">
       <header className="candidate-workspace-head"><div><span>MODEL COMPARISON</span><h3>{candidates.length} 个候选结果</h3></div><p>当前标注员：<strong>{annotator.name || annotator.id || "未设置"}</strong> · 可暂存草稿后继续</p></header>
-      <div className="candidate-grid">
+      <div className={`candidate-grid columns-${Math.min(candidates.length, 4)}`}>
         {candidates.map((candidate) => {
           const existing = records.find((record) => record.candidate_id === candidate.id && record.annotator.id === annotator.id);
           const historyCount = new Set(records.filter((record) => record.candidate_id === candidate.id && record.status === "submitted").map((record) => record.annotator.id)).size;
@@ -1273,8 +1314,12 @@ export default function Home() {
   const [deleteRemovedAnnotations, setDeleteRemovedAnnotations] = useState(false);
   const [dimensionConfigText, setDimensionConfigText] = useState(dimensionsToText(DEFAULT_DIMENSIONS));
   const [badcaseTagText, setBadcaseTagText] = useState(DEFAULT_BADCASE_TAGS.join("，"));
+  const [modelOrderText, setModelOrderText] = useState("");
   const [exportIncludeDrafts, setExportIncludeDrafts] = useState(true);
   const [tab, setTab] = useState<ViewTab>("conversation");
+  const [conversationQuery, setConversationQuery] = useState("");
+  const [conversationMatchCursor, setConversationMatchCursor] = useState(-1);
+  const [activeConversationIndex, setActiveConversationIndex] = useState(0);
   const [dragging, setDragging] = useState(false);
   const [parseErrors, setParseErrors] = useState<string[]>([]);
   const [notice, setNotice] = useState("");
@@ -1318,15 +1363,22 @@ export default function Home() {
   const fileInput = useRef<HTMLInputElement>(null);
   const projectFileInput = useRef<HTMLInputElement>(null);
   const searchInput = useRef<HTMLInputElement>(null);
+  const caseListRef = useRef<HTMLDivElement>(null);
   const closeAiButton = useRef<HTMLButtonElement>(null);
   const aiReturnFocus = useRef<HTMLElement | null>(null);
   const aiAbort = useRef<AbortController | null>(null);
   const petTimer = useRef<number | null>(null);
+  const detailPanelRef = useRef<HTMLElement>(null);
+  const conversationNavRef = useRef<HTMLDivElement>(null);
+  const conversationScrollFrame = useRef<number | null>(null);
+  const detailScrollPositions = useRef<Record<string, number>>({});
+  const restoringDetailScroll = useRef(false);
   const petProfileRef = useRef(petProfile);
   const pettingBusyRef = useRef(false);
   const serverRevisions = useRef<Record<string, number | undefined>>({});
   const saveQueues = useRef<Record<string, Promise<CaseAnnotation | null>>>({});
   const deferredQuery = useDeferredValue(query);
+  const deferredConversationQuery = useDeferredValue(conversationQuery);
   const aiModel = providerMode === "local" ? localModel : externalModel;
   const setAiModel = providerMode === "local" ? setLocalModel : setExternalModel;
   const contextWindow = providerMode === "local" ? localContextWindow : externalContextWindow;
@@ -1363,6 +1415,143 @@ export default function Home() {
   const selectedPair = filtered.find(({ index }) => String(index) === selectedKey) ?? filtered[0];
   const selected = selectedPair?.item;
   const selectedProtocol = selected ? detectProtocol(selected) : "unknown";
+  const conversationMessageCount = selected?.messages?.length ?? 0;
+  const safeActiveConversationIndex = conversationMessageCount ? Math.min(activeConversationIndex, conversationMessageCount - 1) : 0;
+  const conversationMatches = useMemo(() => {
+    const normalized = deferredConversationQuery.trim().toLocaleLowerCase();
+    if (!normalized || !selected) return [];
+    return (selected.messages ?? []).flatMap((message, index) => stringify(message, 0).toLocaleLowerCase().includes(normalized) ? [index] : []);
+  }, [deferredConversationQuery, selected]);
+  const conversationMatchSet = useMemo(() => new Set(conversationMatches), [conversationMatches]);
+  const safeConversationCursor = conversationMatches.length && conversationMatchCursor >= 0
+    ? Math.min(conversationMatchCursor, conversationMatches.length - 1)
+    : -1;
+  const activeConversationMessage = safeConversationCursor >= 0 ? conversationMatches[safeConversationCursor] : undefined;
+  const [showBackToTop, setShowBackToTop] = useState(false);
+  const detailScrollKey = useCallback((view: ViewTab, caseIndex = selectedPair?.index) => `${datasetKey}:${caseIndex ?? "none"}:${view}`, [datasetKey, selectedPair?.index]);
+  const switchViewTab = useCallback((nextTab: ViewTab) => {
+    if (nextTab === tab) return;
+    if (detailPanelRef.current) detailScrollPositions.current[detailScrollKey(tab)] = detailPanelRef.current.scrollTop;
+    restoringDetailScroll.current = true;
+    setTab(nextTab);
+  }, [detailScrollKey, tab]);
+  const selectCase = useCallback((nextIndex: number, nextTab: ViewTab = tab) => {
+    if (nextIndex === selectedPair?.index && nextTab === tab) return;
+    if (detailPanelRef.current) detailScrollPositions.current[detailScrollKey(tab)] = detailPanelRef.current.scrollTop;
+    restoringDetailScroll.current = true;
+    setConversationMatchCursor(-1);
+    setSelectedKey(String(nextIndex));
+    if (nextTab !== tab) setTab(nextTab);
+  }, [detailScrollKey, selectedPair?.index, tab]);
+  const syncActiveConversationNavigation = useCallback(() => {
+    if (tab !== "conversation") return;
+    const panel = detailPanelRef.current;
+    if (!panel) return;
+    const cards = Array.from(panel.querySelectorAll<HTMLElement>(".message-card[data-message-index]"));
+    if (!cards.length) {
+      setActiveConversationIndex(0);
+      return;
+    }
+    const panelRect = panel.getBoundingClientRect();
+    const toolbar = panel.querySelector<HTMLElement>(".conversation-tools");
+    const anchorY = panelRect.top + 64 + (toolbar?.offsetHeight ?? 92) + 10;
+    let nextIndex = Number(cards[0].dataset.messageIndex ?? 0);
+    for (const card of cards) {
+      if (card.getBoundingClientRect().top > anchorY) break;
+      nextIndex = Number(card.dataset.messageIndex ?? nextIndex);
+    }
+    setActiveConversationIndex((current) => current === nextIndex ? current : nextIndex);
+  }, [tab]);
+  const handleDetailScroll = useCallback((event: UIEvent<HTMLElement>) => {
+    const top = event.currentTarget.scrollTop;
+    if (!restoringDetailScroll.current) detailScrollPositions.current[detailScrollKey(tab)] = top;
+    setShowBackToTop(top > 180);
+    if (tab === "conversation" && conversationScrollFrame.current === null) {
+      conversationScrollFrame.current = window.requestAnimationFrame(() => {
+        conversationScrollFrame.current = null;
+        syncActiveConversationNavigation();
+      });
+    }
+  }, [detailScrollKey, syncActiveConversationNavigation, tab]);
+  const backToTop = useCallback(() => {
+    const key = detailScrollKey(tab);
+    detailScrollPositions.current[key] = 0;
+    detailPanelRef.current?.scrollTo({ top: 0, behavior: "smooth" });
+  }, [detailScrollKey, tab]);
+  const navigateConversationMatch = useCallback((direction: -1 | 1) => {
+    if (!conversationMatches.length) return;
+    const nextCursor = conversationMatchCursor < 0
+      ? (direction === 1 ? 0 : conversationMatches.length - 1)
+      : (conversationMatchCursor + direction + conversationMatches.length) % conversationMatches.length;
+    setConversationMatchCursor(nextCursor);
+    const messageIndex = conversationMatches[nextCursor];
+    window.requestAnimationFrame(() => document.getElementById(`message-${messageIndex + 1}`)?.scrollIntoView({ behavior: "smooth", block: "center" }));
+  }, [conversationMatchCursor, conversationMatches]);
+  const navigateToConversationMessage = useCallback((messageIndex: number) => {
+    const panel = detailPanelRef.current;
+    const card = document.getElementById(`message-${messageIndex + 1}`);
+    if (!panel || !card) return;
+    const toolbar = panel.querySelector<HTMLElement>(".conversation-tools");
+    const panelRect = panel.getBoundingClientRect();
+    const cardRect = card.getBoundingClientRect();
+    const targetTop = Math.max(0, panel.scrollTop + cardRect.top - panelRect.top - 64 - (toolbar?.offsetHeight ?? 92) - 10);
+    setActiveConversationIndex(messageIndex);
+    panel.scrollTo({ top: targetTop, behavior: "smooth" });
+  }, []);
+
+  useLayoutEffect(() => {
+    const panel = detailPanelRef.current;
+    if (!panel) return;
+    const key = detailScrollKey(tab);
+    const top = detailScrollPositions.current[key] ?? 0;
+    restoringDetailScroll.current = true;
+    panel.scrollTop = top;
+    setShowBackToTop(top > 180);
+    const frame = window.requestAnimationFrame(() => {
+      if (detailPanelRef.current) detailPanelRef.current.scrollTop = top;
+      window.requestAnimationFrame(() => {
+        restoringDetailScroll.current = false;
+        syncActiveConversationNavigation();
+      });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [detailScrollKey, syncActiveConversationNavigation, tab]);
+
+  useEffect(() => {
+    const nav = conversationNavRef.current;
+    const button = nav?.querySelector<HTMLElement>(`[data-message-nav-index="${safeActiveConversationIndex}"]`);
+    if (!nav || !button) return;
+    const left = button.offsetLeft;
+    const right = left + button.offsetWidth;
+    const padding = 12;
+    if (left < nav.scrollLeft + padding) nav.scrollTo({ left: Math.max(0, left - padding), behavior: "smooth" });
+    else if (right > nav.scrollLeft + nav.clientWidth - padding) nav.scrollTo({ left: right - nav.clientWidth + padding, behavior: "smooth" });
+  }, [safeActiveConversationIndex, selectedPair?.index]);
+
+  useEffect(() => () => {
+    if (conversationScrollFrame.current !== null) window.cancelAnimationFrame(conversationScrollFrame.current);
+  }, []);
+
+  useEffect(() => {
+    if (selectedPair?.index === undefined) return;
+    const selectedPosition = filtered.findIndex(({ index }) => index === selectedPair.index);
+    if (selectedPosition < 0) return;
+    const frame = window.requestAnimationFrame(() => {
+      if (selectedPosition >= visibleLimit) {
+        setVisibleLimit(Math.ceil((selectedPosition + 1) / 400) * 400);
+        return;
+      }
+      const list = caseListRef.current;
+      const row = list?.querySelector<HTMLElement>(`[data-case-index="${selectedPair.index}"]`);
+      if (!list || !row) return;
+      const listRect = list.getBoundingClientRect();
+      const rowRect = row.getBoundingClientRect();
+      const edgePadding = 10;
+      if (rowRect.top < listRect.top + edgePadding) list.scrollTop += rowRect.top - listRect.top - edgePadding;
+      else if (rowRect.bottom > listRect.bottom - edgePadding) list.scrollTop += rowRect.bottom - listRect.bottom + edgePadding;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [filtered, selectedPair?.index, visibleLimit]);
   const scopedAiResults = useMemo(() => aiResultScope === "all" || !selectedPair
     ? aiResults
     : aiResults.filter((result) => result.caseIndex === selectedPair.index), [aiResults, aiResultScope, selectedPair]);
@@ -1569,7 +1758,7 @@ export default function Home() {
         event.preventDefault();
         const currentTab = Math.max(0, VIEW_TABS.indexOf(tab));
         const direction = event.key === "ArrowRight" ? 1 : -1;
-        setTab(VIEW_TABS[(currentTab + direction + VIEW_TABS.length) % VIEW_TABS.length]);
+        switchViewTab(VIEW_TABS[(currentTab + direction + VIEW_TABS.length) % VIEW_TABS.length]);
         return;
       }
       if (event.key === "ArrowDown" || event.key === "ArrowUp") {
@@ -1577,12 +1766,12 @@ export default function Home() {
         const currentPosition = Math.max(0, filtered.findIndex(({ index }) => String(index) === selectedKey));
         const nextPosition = event.key === "ArrowDown" ? Math.min(filtered.length - 1, currentPosition + 1) : Math.max(0, currentPosition - 1);
         const next = filtered[nextPosition];
-        if (next) setSelectedKey(String(next.index));
+        if (next) selectCase(next.index);
       }
     };
     window.addEventListener("keydown", handleKeys);
     return () => window.removeEventListener("keydown", handleKeys);
-  }, [filtered, selectedKey, tab, aiOpen, teamOpen, petSettingsOpen]);
+  }, [filtered, selectedKey, tab, aiOpen, teamOpen, petSettingsOpen, selectCase, switchViewTab]);
 
   const loadText = async (text: string, name: string) => {
     setNotice(text.length >= 2_000_000 ? "正在分批解析大型日志…" : "正在解析日志…");
@@ -1609,6 +1798,10 @@ export default function Home() {
       setModelFilter("all");
       setAnnotationFilter("all");
       setVisibleLimit(400);
+      setConversationQuery("");
+      setConversationMatchCursor(-1);
+      detailScrollPositions.current = {};
+      setShowBackToTop(false);
       setTab(parsed.cases.some((item) => item.candidates?.length) ? "candidates" : "conversation");
       setAiResults(cachedAiResults);
       setActiveAiResultId("");
@@ -1690,12 +1883,19 @@ export default function Home() {
       setProjectNameEdit(project.name);
       setDimensionConfigText(dimensionsToText(project.annotation_config?.dimensions));
       setBadcaseTagText((project.annotation_config?.badcase_tags?.length ? project.annotation_config.badcase_tags : DEFAULT_BADCASE_TAGS).join("，"));
+      const configuredOrder = project.annotation_config?.model_order ?? [];
+      const discoveredModels = Array.from(new Set(items.flatMap((item) => (item.candidates ?? []).map((candidate) => candidate.model || candidate.id).filter(Boolean))));
+      setModelOrderText([...configuredOrder, ...discoveredModels.filter((model) => !configuredOrder.includes(model))].join("\n"));
       setAiResults(cachedAiResults);
       setSelectedKey("0");
       setQuery("");
       setProtocolFilter("all");
       setModelFilter("all");
       setAnnotationFilter("all");
+      setConversationQuery("");
+      setConversationMatchCursor(-1);
+      detailScrollPositions.current = {};
+      setShowBackToTop(false);
       setTab(items.some((item) => item.candidates?.length) ? "candidates" : "conversation");
       if (serverUser?.role === "admin") await refreshAssignmentAdmin(project.id);
       setTeamOpen(false);
@@ -1847,6 +2047,7 @@ export default function Home() {
         lock_submitted: assignmentOverview?.settings.lock_submitted === true,
         dimensions: assignmentOverview?.settings.dimensions?.length ? assignmentOverview.settings.dimensions : DEFAULT_DIMENSIONS,
         badcase_tags: assignmentOverview?.settings.badcase_tags?.length ? assignmentOverview.settings.badcase_tags : DEFAULT_BADCASE_TAGS,
+        ...(assignmentOverview?.settings.model_order ? { model_order: assignmentOverview.settings.model_order } : {}),
         ...overrides,
       };
       await apiRequest(`/api/projects/${activeProjectId}/settings`, { method: "PATCH", body: JSON.stringify(settings) });
@@ -1867,7 +2068,7 @@ export default function Home() {
       const dimensions = parseDimensionsText(dimensionConfigText);
       const badcaseTags = badcaseTagText.split(/[，,\n]+/).map((item) => item.trim()).filter(Boolean);
       if (!badcaseTags.length) throw new Error("至少保留一个 Badcase 标签");
-      await updateProjectSettings({ dimensions, badcase_tags: Array.from(new Set(badcaseTags)) });
+      await updateProjectSettings({ dimensions, badcase_tags: Array.from(new Set(badcaseTags)), model_order: parseModelOrderText(modelOrderText) });
     } catch (error) {
       setTeamError(error instanceof Error ? error.message : "标注配置不正确");
     }
@@ -2044,8 +2245,7 @@ export default function Home() {
       wakePet("全部标完啦，去喝口水吧！", "proud");
       return;
     }
-    setSelectedKey(String(next.index));
-    setTab("candidates");
+    selectCase(next.index, "candidates");
     setSidebarOpen(false);
     wakePet(`出发！下一条是 ${String(next.item.id ?? `Case ${next.index + 1}`)}`, "curious");
   };
@@ -2055,7 +2255,7 @@ export default function Home() {
     const position = Math.max(0, filtered.findIndex(({ index }) => index === selectedPair?.index));
     const next = filtered[Math.min(filtered.length - 1, Math.max(0, position + offset))];
     if (next) {
-      setSelectedKey(String(next.index));
+      selectCase(next.index);
       setSidebarOpen(false);
     }
   };
@@ -2461,7 +2661,7 @@ export default function Home() {
       if (succeeded > 0) {
         setAiResultScope(aiTarget.kind === "batch" ? "all" : "case");
         setActiveAiResultId(latestResultId);
-        setTab(aiTarget.kind === "batch" ? "ai" : aiTarget.kind === "tool-definition" ? "tools" : "conversation");
+        switchViewTab(aiTarget.kind === "batch" ? "ai" : aiTarget.kind === "tool-definition" ? "tools" : "conversation");
         setAiOpen(false);
         if (aiTarget.kind === "message") {
           window.setTimeout(() => document.getElementById(`message-${aiTarget.index + 1}`)?.scrollIntoView({ behavior: "smooth", block: "center" }), 80);
@@ -2612,13 +2812,13 @@ export default function Home() {
             </div>
             <div className="result-count"><strong>{filtered.length.toLocaleString()}</strong> 个匹配 Case</div>
           </div>
-          <div className="case-list">
+          <div className="case-list" ref={caseListRef}>
             {visibleCases.map(({ item, index, protocol }) => {
               const active = selectedPair?.index === index;
               const status = annotationStatus(item, index, annotatorId, annotations);
               const badcase = hasBadcase(item, index, annotations);
               return (
-                <button className={`case-row ${active ? "active" : ""} ${badcase ? "badcase" : ""}`} key={`${String(item.id)}-${index}`} onClick={() => { setSelectedKey(String(index)); setSidebarOpen(false); }}>
+                <button className={`case-row ${active ? "active" : ""} ${badcase ? "badcase" : ""}`} data-case-index={index} aria-current={active ? "true" : undefined} key={`${String(item.id)}-${index}`} onClick={() => { selectCase(index); setSidebarOpen(false); }}>
                   <div className="case-row-top"><span className={`protocol-dot ${protocol}`} /><code>{String(item.id ?? `case-${index + 1}`)}</code><span className={`annotation-status ${status}`}>{status === "submitted" ? "已完成" : status === "draft" ? "草稿" : "未标注"}</span>{badcase ? <span className="badcase-badge">BAD</span> : null}<span className="row-index">{String(index + 1).padStart(3, "0")}</span></div>
                   <p title={getCaseFullTitle(item, index)}>{getCaseTitle(item, index)}</p>
                   <div className="case-row-meta"><span>{item.candidates?.length ? `${item.candidates.length} models` : item.model ?? "unknown model"}</span><span>{item.messages?.length ?? 0} msgs</span>{getToolCalls(item) ? <span className="call-count">⌁ {getToolCalls(item)}</span> : null}</div>
@@ -2630,7 +2830,7 @@ export default function Home() {
           </div>
         </aside>
 
-        <section className="detail-panel">
+        <section className="detail-panel" ref={detailPanelRef} onScroll={handleDetailScroll}>
           {selected ? (
             <>
               <div className="detail-header">
@@ -2658,18 +2858,51 @@ export default function Home() {
               </div>
 
               <nav className="tabs" aria-label="Case 视图" role="tablist">
-                <button role="tab" aria-selected={tab === "conversation"} className={tab === "conversation" ? "active" : ""} onClick={() => setTab("conversation")}>对话轨迹 <span>{selected.messages?.length ?? 0}</span></button>
-                <button role="tab" aria-selected={tab === "candidates"} className={tab === "candidates" ? "active" : ""} onClick={() => setTab("candidates")}>模型结果与标注 <span>{selected.candidates?.length ?? 0}</span></button>
-                <button role="tab" aria-selected={tab === "tools"} className={tab === "tools" ? "active" : ""} onClick={() => setTab("tools")}>Tools 定义 <span>{selected.tools?.length ?? 0}</span></button>
-                <button role="tab" aria-selected={tab === "raw"} className={tab === "raw" ? "active" : ""} onClick={() => setTab("raw")}>原始 JSON</button>
-                <button role="tab" aria-selected={tab === "ai"} className={tab === "ai" ? "active" : ""} onClick={() => setTab("ai")}>结果历史 <span>{aiResults.length}</span></button>
+                <button role="tab" aria-selected={tab === "conversation"} className={tab === "conversation" ? "active" : ""} onClick={() => switchViewTab("conversation")}>对话轨迹 <span>{selected.messages?.length ?? 0}</span></button>
+                <button role="tab" aria-selected={tab === "candidates"} className={tab === "candidates" ? "active" : ""} onClick={() => switchViewTab("candidates")}>模型结果与标注 <span>{selected.candidates?.length ?? 0}</span></button>
+                <button role="tab" aria-selected={tab === "tools"} className={tab === "tools" ? "active" : ""} onClick={() => switchViewTab("tools")}>Tools 定义 <span>{selected.tools?.length ?? 0}</span></button>
+                <button role="tab" aria-selected={tab === "raw"} className={tab === "raw" ? "active" : ""} onClick={() => switchViewTab("raw")}>原始 JSON</button>
+                <button role="tab" aria-selected={tab === "ai"} className={tab === "ai" ? "active" : ""} onClick={() => switchViewTab("ai")}>结果历史 <span>{aiResults.length}</span></button>
               </nav>
 
               <div className="tab-content" role="tabpanel">
                 {tab === "conversation" ? (
                   <div className="conversation">
+                    <div className="conversation-tools">
+                      <div className="conversation-search" role="search" aria-label="搜索当前对话轨迹">
+                        <label>
+                          <span aria-hidden="true">⌕</span>
+                          <input value={conversationQuery} onChange={(event) => { setConversationQuery(event.target.value); setConversationMatchCursor(-1); }} onKeyDown={(event) => {
+                            if (event.key === "Enter") {
+                              event.preventDefault();
+                              navigateConversationMatch(event.shiftKey ? -1 : 1);
+                            } else if (event.key === "Escape") {
+                              setConversationQuery("");
+                              setConversationMatchCursor(-1);
+                            }
+                          }} placeholder="搜索消息、工具名或参数…" aria-label="搜索当前对话轨迹" />
+                          {conversationQuery ? <button type="button" className="conversation-search-clear" onClick={() => { setConversationQuery(""); setConversationMatchCursor(-1); }} aria-label="清除对话搜索">×</button> : <kbd>Enter</kbd>}
+                        </label>
+                        <span className="conversation-search-count" aria-live="polite">{deferredConversationQuery.trim() ? `${safeConversationCursor + 1} / ${conversationMatches.length} 条消息` : "输入关键词"}</span>
+                        <div><button type="button" onClick={() => navigateConversationMatch(-1)} disabled={!conversationMatches.length} aria-label="上一个搜索结果" title="上一个（Shift + Enter）">↑</button><button type="button" onClick={() => navigateConversationMatch(1)} disabled={!conversationMatches.length} aria-label="下一个搜索结果" title="下一个（Enter）">↓</button></div>
+                      </div>
+                      {(selected.messages?.length ?? 0) > 0 ? (
+                        <nav className="conversation-navigator" aria-label="对话消息导航">
+                          <div className="conversation-progress" aria-live="polite">
+                            <span>{safeActiveConversationIndex + 1} / {conversationMessageCount}</span>
+                            <i><b style={{ width: `${((safeActiveConversationIndex + 1) / Math.max(conversationMessageCount, 1)) * 100}%` }} /></i>
+                          </div>
+                          <div className="conversation-nav-list" ref={conversationNavRef}>
+                            {(selected.messages ?? []).map((message, index) => {
+                              const role = String(message.role ?? "unknown");
+                              return <button type="button" className={`role-${role}${safeActiveConversationIndex === index ? " active" : ""}`} data-message-nav-index={index} aria-current={safeActiveConversationIndex === index ? "step" : undefined} onClick={() => navigateToConversationMessage(index)} title={`跳到第 ${index + 1} 条 · ${MESSAGE_ROLE_LABELS[role] ?? role.toUpperCase()}`} key={index}><span>{index + 1}</span>{MESSAGE_ROLE_LABELS[role] ?? role.toUpperCase()}</button>;
+                            })}
+                          </div>
+                        </nav>
+                      ) : null}
+                    </div>
                     {selectedCaseInlineResults.length ? <div className="case-inline-results"><InlineAiResults results={selectedCaseInlineResults} label="整条 Case 的处理结果" onCopy={(result) => void copyAiResult(result)} onDownload={exportAiResult} /></div> : null}
-                    {(selected.messages ?? []).map((message, index) => <MessageCard message={message} index={index} results={aiResults.filter((result) => result.caseIndex === selectedPair?.index && !result.anchorId && (result.messageIndex === index || (result.messageIndex === undefined && result.target === `消息 #${index + 1}`)))} allResults={aiResults.filter((result) => result.caseIndex === selectedPair?.index)} onAi={(messageIndex, task) => openAiPanel({ kind: "message", index: messageIndex }, task)} onToolAi={openAiPanel} onCopyResult={(result) => void copyAiResult(result)} onDownloadResult={exportAiResult} key={index} />)}
+                    {(selected.messages ?? []).map((message, index) => <MessageCard message={message} index={index} results={aiResults.filter((result) => result.caseIndex === selectedPair?.index && !result.anchorId && (result.messageIndex === index || (result.messageIndex === undefined && result.target === `消息 #${index + 1}`)))} allResults={aiResults.filter((result) => result.caseIndex === selectedPair?.index)} searchQuery={deferredConversationQuery} searchMatch={conversationMatchSet.has(index)} activeSearchMatch={activeConversationMessage === index} onAi={(messageIndex, task) => openAiPanel({ kind: "message", index: messageIndex }, task)} onToolAi={openAiPanel} onCopyResult={(result) => void copyAiResult(result)} onDownloadResult={exportAiResult} key={index} />)}
                     {!selected.messages?.length ? <div className="empty-panel"><span>≡</span><h3>这个 Case 没有 messages</h3><p>可切到“原始 JSON”检查实际字段结构。</p></div> : null}
                   </div>
                 ) : null}
@@ -2733,6 +2966,7 @@ export default function Home() {
                   </section>
                 ) : null}
               </div>
+              {showBackToTop ? <button type="button" className="back-to-top" onClick={backToTop} aria-label="回到详情顶部">↑ 回到顶部</button> : null}
             </>
           ) : <div className="empty-panel full"><span>∅</span><h3>没有可显示的 Case</h3><p>调整筛选条件，或载入新的 JSONL 文件。</p></div>}
         </section>
@@ -2783,7 +3017,7 @@ export default function Home() {
                             <label><input type="checkbox" checked={assignmentOverview?.settings.blind_mode !== false} onChange={(event) => void updateProjectSettings({ blind_mode: event.target.checked })} /><span><strong>盲标模式</strong><small>标注员只看到自己的评分和备注</small></span></label>
                             <label><input type="checkbox" checked={assignmentOverview?.settings.lock_submitted === true} onChange={(event) => void updateProjectSettings({ lock_submitted: event.target.checked })} /><span><strong>提交后锁定</strong><small>防止标注员再次覆盖已提交记录</small></span></label>
                           </div>
-                          <details className="config-editor"><summary>编辑评分维度与 Badcase 标签</summary><label><span>每行：key | 名称 | 描述 | 最小值 | 最大值 | required</span><textarea rows={6} value={dimensionConfigText} onChange={(event) => setDimensionConfigText(event.target.value)} /></label><label><span>Badcase 标签（逗号或换行分隔）</span><textarea rows={3} value={badcaseTagText} onChange={(event) => setBadcaseTagText(event.target.value)} /></label><button className="team-primary" disabled={teamBusy} onClick={() => void saveAnnotationConfig()}>保存标注模板</button></details>
+                          <details className="config-editor"><summary>编辑评分维度、Badcase 标签与模型顺序</summary><label><span>每行：key | 名称 | 描述 | 最小值 | 最大值 | required</span><textarea rows={6} value={dimensionConfigText} onChange={(event) => setDimensionConfigText(event.target.value)} /></label><label><span>Badcase 标签（逗号或换行分隔）</span><textarea rows={3} value={badcaseTagText} onChange={(event) => setBadcaseTagText(event.target.value)} /></label><label><span>模型展示顺序（每行一个 model）</span><textarea rows={5} value={modelOrderText} onChange={(event) => setModelOrderText(event.target.value)} placeholder={"model-a\nmodel-b\nmodel-c\nmodel-d"} /><small>优先匹配 candidate.model，也兼容 id 或 label；未列出的候选保持 JSONL 原顺序追加。</small></label><button className="team-primary" disabled={teamBusy} onClick={() => void saveAnnotationConfig()}>保存标注模板</button></details>
                         </section>
                         <section className="team-section assignment-section">
                           <div className="team-section-title"><span>04</span><strong>Case 分配与进度</strong></div>
@@ -2922,7 +3156,7 @@ export default function Home() {
               {aiBusy ? <button className="run-button cancel" onClick={cancelAiTask}>停止任务</button> : <button className="run-button" onClick={() => void runAiTask()}>✦ 开始{aiTask === "summary" ? "总结" : aiTask === "translate" ? "翻译" : aiTask === "bilingual" ? "生成双语摘要" : "处理"}</button>}
               {aiProgress ? <span aria-live="polite">{aiProgress}</span> : null}
             </div>
-            <div className="ai-drawer-result-note"><span>结果展示</span><p>消息与 Tool 的翻译或摘要会直接显示在对应 block 内；整条 Case 显示在对话轨迹顶部；批量结果进入结果历史。</p>{aiResults.length ? <button onClick={() => { setTab("ai"); setAiOpen(false); }}>查看全部 {aiResults.length} 条历史结果</button> : null}</div>
+            <div className="ai-drawer-result-note"><span>结果展示</span><p>消息与 Tool 的翻译或摘要会直接显示在对应 block 内；整条 Case 显示在对话轨迹顶部；批量结果进入结果历史。</p>{aiResults.length ? <button onClick={() => { switchViewTab("ai"); setAiOpen(false); }}>查看全部 {aiResults.length} 条历史结果</button> : null}</div>
           </aside>
         </>
       ) : null}
