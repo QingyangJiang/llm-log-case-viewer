@@ -269,6 +269,32 @@ OLLAMA_ORIGINS=* ollama serve
 
 vLLM / SGLang 常用 Base URL 为 `http://localhost:8000/v1`。线上 HTTPS 页面访问本地 HTTP 服务可能被浏览器拦截；遇到这种情况，推荐在本机运行 Viewer，或为模型服务配置 HTTPS / 可信代理。
 
+## 连接 NIO Anthropic API
+
+如果本机 `curl` 可以访问 `model.nioint.com`，但网关不允许 Case Lens 的浏览器 Origin，可在打开浏览器的同一台电脑运行仓库内的零依赖中继：
+
+```bash
+python3 scripts/model_cors_relay.py \
+  --allowed-origin http://10.129.72.139:8080
+```
+
+中继只监听 `127.0.0.1:19001`，只接受配置的 Origin，并固定转发 `/v1/messages`。API Key 由当前浏览器请求携带，中继不会保存或输出 Key 和请求正文。启动后可检查：
+
+```bash
+curl http://127.0.0.1:19001/health
+```
+
+Case Lens 模型配置选择：
+
+- 模式：`外部 API`
+- 预设：`NIO 本机中继`
+- 协议：`Anthropic · /messages`
+- Base URL：`http://127.0.0.1:19001/v1`
+- Model：实际模型 ID，例如 `DeepSeek-V4-Flash`
+- API Key：仍只保存在当前页面内存
+
+若 Case Lens 的 IP 或端口发生变化，需要用浏览器地址栏中的完整 Origin 重新启动中继。不要使用公开的通用 CORS 代理，也不要把中继绑定到公网地址。
+
 ## 大文件与上下文窗口
 
 在 AI 面板的“上下文与输出”配置区填写模型真实支持的上下文窗口和输出 Token。两项均支持任意数值输入，上下文同时提供 4K–256K 快捷值。工具会扣除系统提示和安全余量，实时计算单段输入预算：

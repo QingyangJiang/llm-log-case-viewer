@@ -469,11 +469,43 @@ def metric_scope(cases: list[Case], models: list[str], dimension_key: str, user_
     }
 
 
+def project_metric_dimensions(config: dict[str, Any], cases: list[Case]) -> list[dict[str, Any]]:
+    dimensions: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def append_dimension(value: Any) -> None:
+        if not isinstance(value, dict) or not value.get("key"):
+            return
+        key = str(value["key"])
+        if key in seen:
+            return
+        seen.add(key)
+        dimensions.append({
+            "key": key,
+            "label": str(value.get("label") or key),
+            "min": value.get("min", 1),
+            "max": value.get("max", 10),
+        })
+
+    for item in config.get("dimensions", []):
+        append_dimension(item)
+    for case in cases:
+        case_config = case.payload.get("annotation_config", {})
+        if isinstance(case_config, dict):
+            for item in case_config.get("dimensions", []):
+                append_dimension(item)
+    for case in cases:
+        for record in case.annotations:
+            for key in (record.scores or {}):
+                append_dimension({"key": key, "label": key, "min": 1, "max": 10})
+    if not dimensions:
+        append_dimension({"key": "correctness", "label": "正确性", "min": 1, "max": 10})
+    return dimensions
+
+
 def project_metrics_payload(project: Project, cases: list[Case], dimension_key: str | None = None) -> dict[str, Any]:
     config = project_config(project)
-    dimensions = [item for item in config.get("dimensions", []) if isinstance(item, dict) and item.get("key")]
-    if not dimensions:
-        dimensions = [{"key": "correctness", "label": "正确性", "min": 1, "max": 10}]
+    dimensions = project_metric_dimensions(config, cases)
     selected = next((item for item in dimensions if item["key"] == dimension_key), None) if dimension_key else dimensions[0]
     if selected is None:
         raise HTTPException(422, "未知的评分维度")

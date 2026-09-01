@@ -100,6 +100,27 @@ class MetricsPayloadTest(unittest.TestCase):
         self.assertEqual(result["models"], [])
         self.assertEqual(result["scopes"][0]["complete_case_count"], 0)
 
+    def test_old_project_uses_case_and_historical_score_dimensions(self) -> None:
+        alice = User(id=1, username="alice", display_name="Alice", password_hash="x", role="annotator")
+        project = Project(id=1, name="Legacy", created_by=1, annotation_config={})
+        legacy_case = Case(
+            id=1,
+            project_id=1,
+            external_id="legacy",
+            ordinal=0,
+            payload={
+                "annotation_config": {"dimensions": [{"key": "quality", "label": "任务质量", "min": 1, "max": 10}]},
+                "candidates": [{"id": "a", "model": "model-a"}],
+            },
+            annotations=[annotation(alice, "a", 9)],
+        )
+
+        result = project_metrics_payload(project, [legacy_case], "quality")
+
+        self.assertEqual(result["dimension"], {"key": "quality", "label": "任务质量", "min": 1, "max": 10})
+        self.assertEqual(result["scopes"][0]["complete_case_count"], 1)
+        self.assertEqual(result["scopes"][0]["models"][0]["avg"], 9.0)
+
 
 if __name__ == "__main__":
     unittest.main()

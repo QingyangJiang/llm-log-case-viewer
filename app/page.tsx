@@ -3483,6 +3483,7 @@ export default function Home() {
               ) : (
                 <div className="preset-row">
                   <button onClick={() => { setExternalApiProtocol("anthropic"); setExternalEndpoint("https://model.nioint.com/token-x/v1"); setExternalModel("DeepSeek-V4-Flash"); }}>NIO Anthropic</button>
+                  <button onClick={() => { setExternalApiProtocol("anthropic"); setExternalEndpoint("http://127.0.0.1:19001/v1"); setExternalModel("DeepSeek-V4-Flash"); }}>NIO 本机中继</button>
                   <span>Messages API · x-api-key</span>
                 </div>
               )}
@@ -3516,7 +3517,7 @@ export default function Home() {
                 <p>当前每段安全输入预算约 {inputBudget.toLocaleString()} Tokens。{aiTask === "translate" ? `工具会根据最大输出反推片段大小，为译文保留最多 ${requestOutputLimit.toLocaleString()} Tokens，并逐段按顺序拼接。` : "已扣除系统提示、最大输出和安全余量；摘要逐段提炼后分层合并。"}</p>
               </details>
               <div className="config-actions"><button onClick={saveAiConfig}>保存配置</button><button onClick={() => void runConnectionTest()} disabled={aiBusy}>测试连接</button></div>
-              {providerMode === "local" ? <details className="connection-help"><summary>本地连接失败怎么办？</summary><p>确认模型服务已启动并选择匹配的 API 协议。Ollama 需允许当前网页来源访问；若浏览器拦截 HTTPS → HTTP 请求，建议下载仓库后本地运行查看器。</p><code>OLLAMA_ORIGINS=* ollama serve</code></details> : <p className="external-help">Anthropic 模式会调用 <code>/messages</code>，并发送 <code>x-api-key</code> 与 <code>anthropic-version: 2023-06-01</code>。如果本机 curl 成功但网页失败，请检查 API 是否允许当前网页 Origin 的 CORS / OPTIONS 请求。</p>}
+              {providerMode === "local" ? <details className="connection-help"><summary>本地连接失败怎么办？</summary><p>确认模型服务已启动并选择匹配的 API 协议。Ollama 需允许当前网页来源访问；若浏览器拦截 HTTPS → HTTP 请求，建议下载仓库后本地运行查看器。</p><code>OLLAMA_ORIGINS=* ollama serve</code></details> : <details className="connection-help"><summary>外部 API / CORS 连接帮助</summary><p>Anthropic 模式会调用 <code>/messages</code>，并发送 <code>x-api-key</code> 与 <code>anthropic-version</code>。若 NIO 网关不允许 Case Lens Origin，请在能成功 curl 的本机启动仓库内中继，再选择“NIO 本机中继”。</p><code>python3 scripts/model_cors_relay.py --allowed-origin http://10.129.72.139:8080</code></details>}
             </div>
 
             {aiError ? <div className="ai-error"><strong>处理失败</strong><p>{aiError}</p>{providerMode === "local" ? <small>请检查本地服务是否启动、模型名称是否正确，以及服务是否允许浏览器跨域访问。</small> : null}</div> : null}
