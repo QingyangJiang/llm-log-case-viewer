@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import math
 import os
 import secrets
 from datetime import datetime, timedelta, timezone
@@ -14,7 +15,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, create_engine, delete, func, select
 from sqlalchemy.engine import URL
-from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
+from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, selectinload, sessionmaker
 
 
 if os.getenv("DATABASE_URL"):
@@ -357,6 +358,151 @@ def user_case_progress(cases: list[Case], user_id: int) -> tuple[int, int]:
     return completed, in_progress
 
 
+def metric_number(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) else None
+
+
+def metric_model_summary(model: str, points: list[dict[str, Any]]) -> dict[str, Any]:
+    values = [float(point["score"]) for point in points]
+    count = len(values)
+    if not count:
+        return {
+            "model": model, "n": 0, "avg": 0, "median": 0, "std": 0,
+            "tiers": {"tier_1": {"count": 0, "pct": 0}, "tier_2": {"count": 0, "pct": 0}, "tier_3": {"count": 0, "pct": 0}},
+            "badcase_rate": 0, "manual_badcase_rate": 0, "score_hist": [0] * 10, "out_of_range_count": 0,
+        }
+    average = sum(values) / count
+    ordered = sorted(values)
+    midpoint = count // 2
+    median = ordered[midpoint] if count % 2 else (ordered[midpoint - 1] + ordered[midpoint]) / 2
+    std = math.sqrt(sum((value - average) ** 2 for value in values) / count) if count >= 2 else 0
+    tier_1 = sum(value >= 8 for value in values)
+    tier_2 = sum(4 <= value < 8 for value in values)
+    tier_3 = sum(value < 4 for value in values)
+    histogram = [0] * 10
+    out_of_range = 0
+    for value in values:
+        rounded = int(math.floor(value + 0.5))
+        if 1 <= rounded <= 10:
+            histogram[rounded - 1] += 1
+        else:
+            out_of_range += 1
+    percent = lambda value: round(value / count * 100, 1)
+    return {
+        "model": model,
+        "n": count,
+        "avg": round(average, 2),
+        "median": round(median, 1),
+        "std": round(std, 2),
+        "tiers": {
+            "tier_1": {"count": tier_1, "pct": percent(tier_1)},
+            "tier_2": {"count": tier_2, "pct": percent(tier_2)},
+            "tier_3": {"count": tier_3, "pct": percent(tier_3)},
+        },
+        "badcase_rate": percent(tier_2 + tier_3),
+        "manual_badcase_rate": percent(sum(bool(point["badcase"]) for point in points)),
+        "score_hist": histogram,
+        "out_of_range_count": out_of_range,
+    }
+
+
+def metric_scope(cases: list[Case], models: list[str], dimension_key: str, user_id: int | None, label: str) -> dict[str, Any]:
+    model_set = set(models)
+    points = {model: [] for model in models}
+    candidate_complete = 0
+    attempted = 0
+    complete = 0
+    if not models:
+        return {
+            "id": "overall" if user_id is None else f"annotator:{user_id}",
+            "label": label,
+            "annotator_id": str(user_id) if user_id is not None else None,
+            "candidate_complete_case_count": 0,
+            "attempted_case_count": 0,
+            "complete_case_count": 0,
+            "dropped_case_count": 0,
+            "complete_rate": 0,
+            "models": [],
+        }
+    for case in cases:
+        candidates = case.payload.get("candidates", [])
+        candidate_to_model = {
+            str(candidate.get("id")): str(candidate.get("model") or candidate.get("id"))
+            for candidate in candidates
+            if isinstance(candidate, dict) and candidate.get("id") is not None
+        }
+        if not model_set.issubset(set(candidate_to_model.values())):
+            continue
+        candidate_complete += 1
+        grouped: dict[str, list[tuple[float, bool]]] = {model: [] for model in models}
+        for record in case.annotations:
+            if record.status != "submitted" or (user_id is not None and record.user_id != user_id):
+                continue
+            model = candidate_to_model.get(record.candidate_id)
+            score = metric_number((record.scores or {}).get(dimension_key))
+            if model in grouped and score is not None:
+                grouped[model].append((score, bool(record.badcase)))
+        if any(grouped[model] for model in models):
+            attempted += 1
+        if not all(grouped[model] for model in models):
+            continue
+        complete += 1
+        for model in models:
+            rows = grouped[model]
+            points[model].append({
+                "score": sum(row[0] for row in rows) / len(rows),
+                "badcase": sum(row[1] for row in rows) * 2 >= len(rows),
+            })
+    return {
+        "id": "overall" if user_id is None else f"annotator:{user_id}",
+        "label": label,
+        "annotator_id": str(user_id) if user_id is not None else None,
+        "candidate_complete_case_count": candidate_complete,
+        "attempted_case_count": attempted,
+        "complete_case_count": complete,
+        "dropped_case_count": max(0, attempted - complete),
+        "complete_rate": round(complete / attempted * 100, 1) if attempted else 0,
+        "models": [metric_model_summary(model, points[model]) for model in models],
+    }
+
+
+def project_metrics_payload(project: Project, cases: list[Case], dimension_key: str | None = None) -> dict[str, Any]:
+    config = project_config(project)
+    dimensions = [item for item in config.get("dimensions", []) if isinstance(item, dict) and item.get("key")]
+    if not dimensions:
+        dimensions = [{"key": "correctness", "label": "正确性", "min": 1, "max": 10}]
+    selected = next((item for item in dimensions if item["key"] == dimension_key), None) if dimension_key else dimensions[0]
+    if selected is None:
+        raise HTTPException(422, "未知的评分维度")
+    discovered: list[str] = []
+    for case in cases:
+        for candidate in case.payload.get("candidates", []):
+            if not isinstance(candidate, dict) or candidate.get("id") is None:
+                continue
+            model = str(candidate.get("model") or candidate.get("id"))
+            if model not in discovered:
+                discovered.append(model)
+    configured = [str(value) for value in config.get("model_order", []) if str(value) in discovered]
+    models = [*configured, *(model for model in discovered if model not in configured)]
+    annotators: dict[int, str] = {}
+    for case in cases:
+        for record in case.annotations:
+            if record.status == "submitted" and metric_number((record.scores or {}).get(str(selected["key"]))) is not None:
+                annotators[record.user_id] = record.user.display_name
+    scopes = [metric_scope(cases, models, str(selected["key"]), None, "总体")]
+    scopes.extend(metric_scope(cases, models, str(selected["key"]), user_id, label) for user_id, label in sorted(annotators.items(), key=lambda item: item[1]))
+    return {
+        "dimension": {"key": str(selected["key"]), "label": str(selected.get("label") or selected["key"]), "min": selected.get("min", 1), "max": selected.get("max", 10)},
+        "dimensions": [{"key": str(item["key"]), "label": str(item.get("label") or item["key"]), "min": item.get("min", 1), "max": item.get("max", 10)} for item in dimensions],
+        "models": models,
+        "total_case_count": len(cases),
+        "scopes": scopes,
+    }
+
+
 def ensure_project_access(project_id: int, user: User, db: Session) -> Project:
     project = db.get(Project, project_id)
     if not project:
@@ -431,6 +577,50 @@ def validate_annotation(case: Case, body: AnnotationBody) -> None:
         missing = [key for key in required if key not in body.scores]
         if missing:
             raise HTTPException(422, f"缺少必填评分：{', '.join(missing)}")
+
+
+def candidate_model_map(payload: dict[str, Any]) -> dict[str, str]:
+    return {
+        str(item.get("id")): str(item.get("model", "")).strip()
+        for item in payload.get("candidates", [])
+        if isinstance(item, dict) and item.get("id") is not None
+    }
+
+
+def annotation_candidate_remaps(case: Case, next_payload: dict[str, Any]) -> list[tuple[Annotation, str]]:
+    """Map annotations to the updated candidate IDs without silently changing model identity."""
+    previous_candidates = candidate_model_map(case.payload)
+    next_candidates = candidate_model_map(next_payload)
+    next_ids_by_model: dict[str, list[str]] = {}
+    for candidate_id, model in next_candidates.items():
+        next_ids_by_model.setdefault(model, []).append(candidate_id)
+
+    remaps: list[tuple[Annotation, str]] = []
+    target_keys: set[tuple[int, str]] = set()
+    for record in case.annotations:
+        previous_model = previous_candidates.get(record.candidate_id)
+        if previous_model is None:
+            raise ValueError(f"历史标注引用了未知 candidate_id：{record.candidate_id}")
+        if record.candidate_id in next_candidates:
+            if next_candidates[record.candidate_id] != previous_model:
+                raise ValueError(
+                    f"candidate_id {record.candidate_id} 的模型由 {previous_model} 变为 {next_candidates[record.candidate_id]}，无法安全保留标注"
+                )
+            target_id = record.candidate_id
+        else:
+            model_matches = next_ids_by_model.get(previous_model, [])
+            if len(model_matches) != 1:
+                raise ValueError(
+                    f"已标注候选 {record.candidate_id}（{previous_model}）在新文件中没有唯一对应项；请保持 candidate_id 不变"
+                )
+            target_id = model_matches[0]
+        target_key = (record.user_id, target_id)
+        if target_key in target_keys:
+            raise ValueError(f"候选迁移后会产生重复标注：{target_id}")
+        target_keys.add(target_key)
+        if target_id != record.candidate_id:
+            remaps.append((record, target_id))
+    return remaps
 
 
 app = FastAPI(title="Case Lens API", version="1.0.0", docs_url="/api/docs", openapi_url="/api/openapi.json")
@@ -748,6 +938,8 @@ def upload_jsonl(project_id: int, _: AdminUser, db: DB, file: UploadFile = File(
                     if "annotation_config" not in payload and project.annotation_config:
                         payload["annotation_config"] = project.annotation_config
                     payload.pop("annotations", None)
+                    payload.pop("__server_case_id", None)
+                    payload.pop("__assigned_user_ids", None)
                     parsed.append((line_number, external_id, payload))
                 except (json.JSONDecodeError, TypeError, ValueError) as exc:
                     errors.append(f"第 {line_number} 行：{exc}")
@@ -766,20 +958,84 @@ def upload_jsonl(project_id: int, _: AdminUser, db: DB, file: UploadFile = File(
         if existing_ids:
             destination.unlink(missing_ok=True)
             raise HTTPException(409, f"项目中已存在 {len(existing_ids)} 个相同 Case ID，旧项目数据未修改")
+    existing_cases: dict[str, Case] = {}
+    remap_plan: list[tuple[Annotation, str]] = []
+    compatibility_errors: list[str] = []
+    preserved_annotations = 0
+    preserved_assignments = 0
+    if replace:
+        existing = db.scalars(
+            select(Case)
+            .where(Case.project_id == project_id)
+            .options(selectinload(Case.annotations))
+            .order_by(Case.ordinal)
+        ).all()
+        existing_cases = {case.external_id: case for case in existing}
+        preserved_annotations = sum(len(case.annotations) for case in existing)
+        preserved_assignments = db.scalar(
+            select(func.count(CaseAssignment.id)).join(Case).where(Case.project_id == project_id)
+        ) or 0
+        for _, external_id, payload in parsed:
+            case = existing_cases.get(external_id)
+            if not case:
+                continue
+            try:
+                remap_plan.extend(annotation_candidate_remaps(case, payload))
+            except ValueError as exc:
+                compatibility_errors.append(f"Case {external_id}：{exc}")
+        if compatibility_errors:
+            destination.unlink(missing_ok=True)
+            raise HTTPException(
+                409,
+                {
+                    "message": "更新文件与历史标注无法安全匹配，旧项目数据未修改",
+                    "errors": compatibility_errors[:100],
+                },
+            )
+
+    inserted = 0
+    updated = 0
+    unchanged = 0
+    parsed_ids = {external_id for _, external_id, _ in parsed}
+    retained = [case for external_id, case in existing_cases.items() if external_id not in parsed_ids]
     try:
         if replace:
-            case_ids = select(Case.id).where(Case.project_id == project_id)
-            db.execute(delete(Annotation).where(Annotation.case_id.in_(case_ids)))
-            db.execute(delete(CaseAssignment).where(CaseAssignment.case_id.in_(case_ids)))
-            db.execute(delete(Case).where(Case.project_id == project_id))
-        for line_number, external_id, payload in parsed:
-            db.add(Case(project_id=project_id, external_id=external_id, ordinal=line_number, payload=payload))
+            for record, target_id in remap_plan:
+                record.candidate_id = target_id
+            for line_number, external_id, payload in parsed:
+                case = existing_cases.get(external_id)
+                if case:
+                    if case.payload == payload and case.ordinal == line_number:
+                        unchanged += 1
+                    else:
+                        case.payload = payload
+                        case.ordinal = line_number
+                        updated += 1
+                else:
+                    db.add(Case(project_id=project_id, external_id=external_id, ordinal=line_number, payload=payload))
+                    inserted += 1
+            for offset, case in enumerate(retained, len(parsed) + 1):
+                case.ordinal = offset
+        else:
+            for line_number, external_id, payload in parsed:
+                db.add(Case(project_id=project_id, external_id=external_id, ordinal=line_number, payload=payload))
+                inserted += 1
         db.commit()
     except Exception as exc:
         db.rollback()
         destination.unlink(missing_ok=True)
         raise HTTPException(409, f"写入失败，已回滚，旧项目数据保持不变：{exc}") from exc
-    return {"inserted": len(parsed), "errors": [], "source_file": safe_name}
+    return {
+        "inserted": inserted,
+        "updated": updated,
+        "unchanged": unchanged,
+        "retained_not_in_file": len(retained),
+        "preserved_annotations": preserved_annotations,
+        "remapped_annotations": len(remap_plan),
+        "preserved_assignments": preserved_assignments,
+        "errors": [],
+        "source_file": safe_name,
+    }
 
 
 @app.get("/api/projects/{project_id}/cases")
@@ -804,6 +1060,18 @@ def project_cases(project_id: int, user: CurrentUser, db: DB, offset: int = 0, l
             payload["__assigned_user_ids"] = [str(value) for value in db.scalars(select(CaseAssignment.user_id).where(CaseAssignment.case_id == case.id)).all()]
         items.append(payload)
     return {"items": items, "total": total, "offset": offset, "limit": limit, "blind_mode": config["blind_mode"]}
+
+
+@app.get("/api/projects/{project_id}/metrics")
+def project_metrics(project_id: int, user: CurrentUser, db: DB, dimension: str | None = Query(default=None, max_length=200)) -> dict[str, Any]:
+    project = ensure_project_access(project_id, user, db)
+    cases = db.scalars(
+        select(Case)
+        .where(Case.project_id == project_id)
+        .options(selectinload(Case.annotations).selectinload(Annotation.user))
+        .order_by(Case.ordinal)
+    ).all()
+    return project_metrics_payload(project, cases, dimension)
 
 
 @app.get("/api/projects/{project_id}/assignment-overview")

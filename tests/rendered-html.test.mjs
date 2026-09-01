@@ -31,7 +31,7 @@ test("renders development preview metadata", async () => {
   );
   const html = await response.text();
   assert.match(html, developmentPreviewMeta);
-  for (const requiredUi of ["Case Lens", "团队模式", "模型结果与标注", "标注搭子", "自定义标注搭子"]) {
+  for (const requiredUi of ["Case Lens", "团队模式", "指标看板", "问答", "模型结果与标注", "标注搭子", "自定义标注搭子"]) {
     assert.match(html, new RegExp(requiredUi), `missing core UI: ${requiredUi}`);
   }
 });
