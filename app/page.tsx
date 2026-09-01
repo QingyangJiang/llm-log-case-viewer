@@ -2,6 +2,7 @@
 
 import { ChangeEvent, CSSProperties, DragEvent, ReactNode, UIEvent, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { BADCASE_AUTO_SCORE_THRESHOLD, shouldAutoMarkBadcase } from "./annotation-rules";
+import { MarkdownContent } from "./markdown-content";
 import { cleanApiBaseUrl, modelApiEndpoint, modelApiRequest } from "./model-api";
 import type { ApiProtocol, ModelApiMessage } from "./model-api";
 
@@ -3078,7 +3079,7 @@ export default function Home() {
 
   return (
     <main
-      className={`app-shell ${dragging ? "is-dragging" : ""}`}
+      className={`app-shell ${dragging ? "is-dragging" : ""} ${chatOpen ? "chat-open" : ""}`}
       onDragEnter={(event) => { event.preventDefault(); setDragging(true); }}
       onDragOver={(event) => event.preventDefault()}
       onDragLeave={(event) => { if (event.currentTarget === event.target) setDragging(false); }}
@@ -3315,7 +3316,7 @@ export default function Home() {
             <label><input type="checkbox" checked={chatIncludeCase} disabled={chatBusy} onChange={(event) => setChatIncludeCase(event.target.checked)} /><span><strong>{chatIncludeCase ? "携带当前 Case" : "普通问答"}</strong><small>{chatIncludeCase && selected ? `Case · ${String(selected.id ?? "未命名")}` : "不发送日志内容"}</small></span></label>
             <button onClick={() => openAiPanel({ kind: "case" }, "summary")} aria-label="打开模型设置">⚙</button>
           </div>
-          <div className="chat-model-strip"><span>{providerMode === "local" ? "LOCAL" : "EXTERNAL"}</span><strong>{aiModel || "未配置模型"}</strong><small>{apiProtocol === "anthropic" ? "Anthropic Messages" : "OpenAI Compatible"}</small></div>
+          <div className="chat-model-strip"><span>{providerMode === "local" ? "LOCAL" : "EXTERNAL"}</span><strong>{aiModel || "未配置模型"}</strong><small>{apiProtocol === "anthropic" ? "Anthropic Messages" : "OpenAI Compatible"} · Markdown</small></div>
           <div className="chat-messages" ref={chatMessagesRef} aria-live="polite">
             {!chatMessages.length ? (
               <div className="chat-empty">
@@ -3328,7 +3329,7 @@ export default function Home() {
             ) : chatMessages.map((message) => (
               <article className={`chat-message ${message.role}`} key={message.id}>
                 <header><span>{message.role === "user" ? "你" : aiModel || "助手"}</span>{message.role === "assistant" ? <button onClick={() => void navigator.clipboard.writeText(message.content)}>复制</button> : null}</header>
-                <div>{message.content}</div>
+                {message.role === "assistant" ? <MarkdownContent content={message.content} /> : <div>{message.content}</div>}
               </article>
             ))}
             {chatBusy ? <article className="chat-message assistant pending"><header><span>{aiModel || "助手"}</span></header><div><i /><i /><i /></div></article> : null}
