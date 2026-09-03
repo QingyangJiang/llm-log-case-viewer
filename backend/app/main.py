@@ -6,14 +6,20 @@ import json
 import math
 import os
 import secrets
+import threading
+import urllib.error
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Annotated
+from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, create_engine, delete, func, select
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, create_engine, delete, func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.engine import URL
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, selectinload, sessionmaker
 
@@ -156,6 +162,68 @@ class PetProgressV2(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
 
+class PetEvolution(Base):
+    __tablename__ = "pet_evolutions"
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    available_chances: Mapped[int] = mapped_column(Integer, default=0)
+    credited_level: Mapped[int] = mapped_column(Integer, default=1)
+    stage: Mapped[int] = mapped_column(Integer, default=0)
+    path: Mapped[str] = mapped_column(String(30), default="")
+    variant_seed: Mapped[int] = mapped_column(Integer, default=0)
+    traits: Mapped[list[str]] = mapped_column(JSON, default=list)
+    history: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class JudgeConfigVersion(Base):
+    __tablename__ = "judge_config_versions"
+    __table_args__ = (UniqueConstraint("project_id", "version"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    version: Mapped[int] = mapped_column(Integer)
+    config: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    api_key: Mapped[str] = mapped_column(Text, default="")
+    signature: Mapped[str] = mapped_column(String(64), index=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class JudgeCaseRun(Base):
+    __tablename__ = "judge_case_runs"
+    __table_args__ = (UniqueConstraint("case_id", "config_id", "case_hash"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    case_id: Mapped[int] = mapped_column(ForeignKey("cases.id"), index=True)
+    config_id: Mapped[int] = mapped_column(ForeignKey("judge_config_versions.id"), index=True)
+    case_hash: Mapped[str] = mapped_column(String(64), index=True)
+    status: Mapped[str] = mapped_column(String(40), default="queued", index=True)
+    stage1_result: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    stage1_raw: Mapped[str] = mapped_column(Text, default="")
+    error: Mapped[str] = mapped_column(Text, default="")
+    triggered_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class JudgeCandidateRun(Base):
+    __tablename__ = "judge_candidate_runs"
+    __table_args__ = (UniqueConstraint("case_run_id", "candidate_id", "candidate_hash"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    case_run_id: Mapped[int] = mapped_column(ForeignKey("judge_case_runs.id"), index=True)
+    candidate_id: Mapped[str] = mapped_column(String(300), index=True)
+    candidate_hash: Mapped[str] = mapped_column(String(64), index=True)
+    status: Mapped[str] = mapped_column(String(40), default="queued", index=True)
+    stage2_result: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    stage2_raw: Mapped[str] = mapped_column(Text, default="")
+    stage3_result: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    stage3_raw: Mapped[str] = mapped_column(Text, default="")
+    error: Mapped[str] = mapped_column(Text, default="")
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 connect_args = {"check_same_thread": False} if str(DATABASE_URL).startswith("sqlite") else {}
 engine = create_engine(DATABASE_URL, pool_pre_ping=True, connect_args=connect_args)
 SessionLocal = sessionmaker(engine, expire_on_commit=False)
@@ -236,6 +304,66 @@ class ProjectSettingsBody(BaseModel):
     model_order: list[str] | None = None
 
 
+DEFAULT_DECOMPOSER_PROMPT = """你是任务拆解专家。你看不到待评分的候选回复。请只把最新用户请求拆成可独立核查的任务，不要把工具、方法或格式约束单独拆成任务。结合 query 之后已经发生的 trajectory 判断进度：已完成标记为 done_before，否则为 pending。输出且只输出一个 JSON object：{\"full_goal\":\"中文目标\",\"current_stage\":\"中文阶段\",\"subtasks\":[{\"id\":1,\"desc\":\"中文任务\",\"phase\":\"done_before 或 pending\"}],\"decomposition_reasoning\":\"中文理由\"}。"""
+
+DEFAULT_DETECTOR_PROMPT = """你是三阶段评测中的错误定位器，不负责最终评分。严格复用给定的固定子任务，不得增删或改写。结合 trajectory 判断当前回复应推进的步骤；正确的中间工具调用或等待用户不应因尚无最终结果而扣分。逐子任务输出 status（done/partial/missed/not_due）、可定位 findings 和 correct_points。每条 finding 包含 type（missing/error/irrelevant）、severity（serious/minor/none）、location 和中文 detail。输出且只输出一个 JSON object。"""
+
+DEFAULT_VERIFIER_PROMPT = """你是三阶段评测的最终复核与评分器。先逐条复核 Stage 2 finding（confirm/overturn/adjust），再补充漏报，最后清除误报；不得重新拆解固定子任务。只按当前回复本轮应完成的 due 子任务评分，not_due 不进入分母。先定档再打整数分：Tier 1=8–10（完整完成），Tier 2=4–7（部分完成），Tier 3=1–3（未完成）。输出且只输出一个 JSON object，至少包含 subtasks、corrections、review_note、tier、score、score_rationale、reasoning、overall_comment。"""
+
+
+def default_judge_config() -> dict[str, Any]:
+    return {
+        "protocol": "anthropic",
+        "base_url": "https://model.nioint.com/token-x/v1",
+        "model_name": "DeepSeek-V4-Flash",
+        "stage1_temperature": 0.0,
+        "stage2_temperature": 0.0,
+        "stage3_temperature": 0.1,
+        "stage1_max_tokens": 4096,
+        "stage2_max_tokens": 4096,
+        "stage3_max_tokens": 4096,
+        "concurrency": 2,
+        "sample_count": 3,
+        "adaptive_sampling": False,
+        "input_limit": 0,
+        "seed": 0,
+        "timeout_seconds": 300,
+        "max_retries": 1,
+        "rubric": "Tier 1：8–10，完整完成；Tier 2：4–7，部分完成；Tier 3：1–3，未完成。",
+        "decomposer_prompt": DEFAULT_DECOMPOSER_PROMPT,
+        "detector_prompt": DEFAULT_DETECTOR_PROMPT,
+        "verifier_prompt": DEFAULT_VERIFIER_PROMPT,
+    }
+
+
+class JudgeConfigBody(BaseModel):
+    protocol: str = "anthropic"
+    base_url: str = Field(min_length=1, max_length=2000)
+    api_key: str | None = Field(default=None, max_length=10_000)
+    model_name: str = Field(min_length=1, max_length=300)
+    stage1_temperature: float = Field(default=0, ge=0, le=2)
+    stage2_temperature: float = Field(default=0, ge=0, le=2)
+    stage3_temperature: float = Field(default=0.1, ge=0, le=2)
+    stage1_max_tokens: int = Field(default=4096, ge=128, le=131_072)
+    stage2_max_tokens: int = Field(default=4096, ge=128, le=131_072)
+    stage3_max_tokens: int = Field(default=4096, ge=128, le=131_072)
+    concurrency: int = Field(default=2, ge=1, le=8)
+    sample_count: int = Field(default=3, ge=1, le=9)
+    adaptive_sampling: bool = False
+    input_limit: int = Field(default=0, ge=0, le=2_000_000)
+    seed: int = Field(default=0, ge=0, le=2_147_483_647)
+    timeout_seconds: int = Field(default=300, ge=10, le=1800)
+    max_retries: int = Field(default=1, ge=0, le=5)
+    rubric: str = Field(default=default_judge_config()["rubric"], min_length=1, max_length=20_000)
+    decomposer_prompt: str = Field(default=DEFAULT_DECOMPOSER_PROMPT, min_length=1, max_length=100_000)
+    detector_prompt: str = Field(default=DEFAULT_DETECTOR_PROMPT, min_length=1, max_length=100_000)
+    verifier_prompt: str = Field(default=DEFAULT_VERIFIER_PROMPT, min_length=1, max_length=100_000)
+
+
+class JudgeRunBody(BaseModel):
+    case_ids: list[int] = Field(default_factory=list, max_length=10_000)
+
+
 class ProjectMembersBody(BaseModel):
     user_ids: list[int] = Field(default_factory=list)
 
@@ -263,6 +391,10 @@ class PetProfileUpdate(BaseModel):
     name: str = Field(min_length=1, max_length=20)
     color: str = Field(max_length=20)
     accessory: str = Field(max_length=20)
+
+
+class PetEvolutionBody(BaseModel):
+    spend: int = Field(ge=1, le=5)
 
 
 def user_dict(user: User) -> dict[str, Any]:
@@ -294,13 +426,21 @@ PET_ACCESSORIES = {"none": 1, "leaf": 2, "bow": 3, "glasses": 4, "star": 5, "hea
 # One unit is 0.2 EXP, which keeps fractional petting rewards exact in the database.
 PET_XP_UNITS = {"pet": 1, "annotation": 30, "badcase": 20}
 PET_LEVEL_TITLES = {1: "实习搭子", 2: "认真观察员", 4: "Badcase 侦探", 6: "质量守门员", 8: "评测专家", 10: "首席标注官", 12: "传奇质检师"}
+PET_EVOLUTION_PATHS: dict[str, dict[str, Any]] = {
+    "starlight": {"name": "星辉灵兽", "quality": "radiant", "traits": [["星尘额纹", "新月耳尖", "彗星小角"], ["月光羽翼", "星轨尾焰", "银河披风"], ["星环冠冕", "极光领域", "星核辉光"]]},
+    "guardian": {"name": "守护机甲", "quality": "bold", "traits": [["合金耳甲", "战术目镜", "棱镜面罩"], ["折叠钢翼", "推进尾翼", "护盾肩甲"], ["量子核心", "冠军冠冕", "脉冲力场"]]},
+    "forest": {"name": "森灵幻兽", "quality": "gentle", "traits": [["新芽鹿角", "苔藓耳尖", "花蕾额纹"], ["叶脉羽翼", "花藤披风", "蒲公英尾"], ["萤火光环", "古树冠冕", "四季领域"]]},
+    "storm": {"name": "风暴精灵", "quality": "electric", "traits": [["闪电耳羽", "雷云额纹", "电光小角"], ["疾风羽翼", "旋风尾环", "雷霆披风"], ["风眼冠冕", "暴雨领域", "蓝电核心"]]},
+    "wonky": {"name": "歪歪异变体", "quality": "awkward", "traits": [["参差尖牙", "皱皱触角", "大小眼花纹"], ["斑驳小翅膀", "歪斜尾鳍", "补丁披风"], ["倾斜纸冠", "毛边光圈", "咕嘟气泡场"]]},
+}
+PET_MAX_EVOLUTION_STAGE = 3
 
 
 def pet_level(xp: float) -> int:
     return int((max(0, xp) / 20) ** 0.5) + 1
 
 
-def get_or_create_pet(db: Session, user_id: int) -> tuple[PetProfile, PetProgressV2]:
+def get_or_create_pet(db: Session, user_id: int) -> tuple[PetProfile, PetProgressV2, PetEvolution]:
     profile = db.get(PetProfile, user_id)
     if not profile:
         profile = PetProfile(user_id=user_id)
@@ -311,14 +451,24 @@ def get_or_create_pet(db: Session, user_id: int) -> tuple[PetProfile, PetProgres
         progress = PetProgressV2(user_id=user_id, xp_units=max(0, int((profile.xp or 0) * 5)))
         db.add(progress)
         db.flush()
-    return profile, progress
+    level = pet_level(progress.xp_units / 5)
+    evolution = db.get(PetEvolution, user_id)
+    if not evolution:
+        evolution = PetEvolution(user_id=user_id, available_chances=max(0, level - 1), credited_level=level)
+        db.add(evolution)
+        db.flush()
+    elif level > evolution.credited_level:
+        evolution.available_chances += level - evolution.credited_level
+        evolution.credited_level = level
+        evolution.updated_at = utcnow()
+    return profile, progress, evolution
 
 
 def pet_title(level: int) -> str:
     return next(title for required, title in reversed(PET_LEVEL_TITLES.items()) if level >= required)
 
 
-def pet_dict(profile: PetProfile, progress: PetProgressV2) -> dict[str, Any]:
+def pet_dict(profile: PetProfile, progress: PetProgressV2, evolution: PetEvolution) -> dict[str, Any]:
     xp = round(progress.xp_units / 5, 1)
     level = pet_level(xp)
     return {
@@ -330,19 +480,33 @@ def pet_dict(profile: PetProfile, progress: PetProgressV2) -> dict[str, Any]:
         "title": pet_title(level),
         "current_level_xp": 20 * (level - 1) ** 2,
         "next_level_xp": 20 * level ** 2,
+        "evolution_chances": evolution.available_chances,
+        "evolution_credited_level": evolution.credited_level,
+        "evolution_stage": evolution.stage,
+        "evolution_path": evolution.path,
+        "evolution_name": PET_EVOLUTION_PATHS.get(evolution.path, {}).get("name", "未变身"),
+        "evolution_quality": PET_EVOLUTION_PATHS.get(evolution.path, {}).get("quality", "base"),
+        "evolution_variant": evolution.variant_seed,
+        "evolution_traits": evolution.traits or [],
+        "evolution_history": evolution.history or [],
     }
 
 
-def grant_pet_experience(db: Session, user_id: int, reason: str, event_key: str) -> tuple[PetProfile, PetProgressV2, bool, float]:
-    profile, progress = get_or_create_pet(db, user_id)
+def grant_pet_experience(db: Session, user_id: int, reason: str, event_key: str) -> tuple[PetProfile, PetProgressV2, PetEvolution, bool, float]:
+    profile, progress, evolution = get_or_create_pet(db, user_id)
     if db.scalar(select(PetExperienceEvent.id).where(PetExperienceEvent.user_id == user_id, PetExperienceEvent.event_key == event_key)):
-        return profile, progress, False, 0
+        return profile, progress, evolution, False, 0
     units = PET_XP_UNITS[reason]
     db.add(PetExperienceEvent(user_id=user_id, event_key=event_key, reason=reason, amount=units))
     progress.xp_units += units
     progress.updated_at = utcnow()
     profile.updated_at = utcnow()
-    return profile, progress, True, round(units / 5, 1)
+    next_level = pet_level(progress.xp_units / 5)
+    if next_level > evolution.credited_level:
+        evolution.available_chances += next_level - evolution.credited_level
+        evolution.credited_level = next_level
+        evolution.updated_at = utcnow()
+    return profile, progress, evolution, True, round(units / 5, 1)
 
 
 def user_case_progress(cases: list[Case], user_id: int) -> tuple[int, int]:
@@ -655,6 +819,532 @@ def annotation_candidate_remaps(case: Case, next_payload: dict[str, Any]) -> lis
     return remaps
 
 
+def canonical_hash(value: Any) -> str:
+    payload = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def judge_case_content(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in payload.items()
+        if key not in {"candidates", "annotations", "annotation_config"} and not key.startswith("__")
+    }
+
+
+def judge_candidate_content(candidate: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in candidate.items() if not key.startswith("__")}
+
+
+def judge_config_signature(config: dict[str, Any]) -> str:
+    return canonical_hash(config)
+
+
+def active_judge_config(db: Session, project_id: int) -> JudgeConfigVersion | None:
+    return db.scalar(
+        select(JudgeConfigVersion)
+        .where(JudgeConfigVersion.project_id == project_id, JudgeConfigVersion.active.is_(True))
+        .order_by(JudgeConfigVersion.version.desc())
+    )
+
+
+def judge_config_payload(record: JudgeConfigVersion | None, include_details: bool = True) -> dict[str, Any]:
+    if not record:
+        config = default_judge_config() if include_details else {
+            "protocol": default_judge_config()["protocol"],
+            "model_name": default_judge_config()["model_name"],
+        }
+        return {**config, "configured": False, "has_api_key": False, "version": 0}
+    summary = {
+        "protocol": record.config.get("protocol", "anthropic"),
+        "model_name": record.config.get("model_name", ""),
+        "configured": True,
+        "has_api_key": bool(record.api_key) if include_details else False,
+        "version": record.version,
+        "signature": record.signature,
+        "created_at": record.created_at.isoformat(),
+    }
+    if not include_details:
+        return summary
+    return {
+        **record.config,
+        **summary,
+    }
+
+
+def text_value(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, ensure_ascii=False, indent=2, default=str)
+
+
+def judge_case_sections(payload: dict[str, Any]) -> dict[str, str]:
+    messages = payload.get("messages") if isinstance(payload.get("messages"), list) else []
+    last_user = -1
+    for index, message in enumerate(messages):
+        if isinstance(message, dict) and str(message.get("role", "")).lower() == "user":
+            last_user = index
+    if last_user >= 0:
+        context = messages[:last_user]
+        query = messages[last_user].get("content") if isinstance(messages[last_user], dict) else messages[last_user]
+        trajectory = messages[last_user + 1:]
+    else:
+        context, trajectory = messages, []
+        query = payload.get("query", "(未找到 user 消息)")
+    refer_info = payload.get("refer_info")
+    reference_answer = refer_info.get("reference_answer") if isinstance(refer_info, dict) else None
+    if reference_answer is None:
+        reference_answer = payload.get("reference_answer", refer_info if refer_info is not None else "(未提供)")
+    return {
+        "context": text_value(context) if context else "(无前置上下文)",
+        "query": text_value(query),
+        "trajectory": text_value(trajectory) if trajectory else "(无后续轨迹)",
+        "tools": text_value(payload.get("tools", [])) if payload.get("tools") else "(未提供)",
+        "reference_answer": text_value(reference_answer),
+    }
+
+
+def clip_judge_text(value: str, token_limit: int) -> str:
+    if token_limit <= 0:
+        return value
+    char_limit = max(1000, token_limit * 4)
+    if len(value) <= char_limit:
+        return value
+    head = int(char_limit * 0.7)
+    tail = char_limit - head
+    return f"{value[:head]}\n\n[... 输入按配置截断 ...]\n\n{value[-tail:]}"
+
+
+def parse_json_object(raw: str) -> dict[str, Any]:
+    cleaned = raw.strip()
+    if cleaned.startswith("```"):
+        lines = cleaned.splitlines()
+        if lines:
+            lines = lines[1:]
+        if lines and lines[-1].strip().startswith("```"):
+            lines = lines[:-1]
+        cleaned = "\n".join(lines).strip()
+    try:
+        value = json.loads(cleaned)
+    except json.JSONDecodeError:
+        start, end = cleaned.find("{"), cleaned.rfind("}")
+        if start < 0 or end <= start:
+            return {"raw_output": raw, "parse_error": "模型未返回 JSON object"}
+        try:
+            value = json.loads(cleaned[start:end + 1])
+        except json.JSONDecodeError as exc:
+            return {"raw_output": raw, "parse_error": f"JSON 解析失败：{exc}"}
+    return value if isinstance(value, dict) else {"result": value, "parse_error": "模型返回的顶层不是 JSON object"}
+
+
+def require_judge_object(value: dict[str, Any], stage: str) -> dict[str, Any]:
+    if value.get("parse_error"):
+        raise ValueError(f"{stage}结构化输出无效：{value['parse_error']}")
+    return value
+
+
+def redact_judge_error(error: Exception | str, api_key: str = "") -> str:
+    message = str(error)
+    if api_key:
+        message = message.replace(api_key, "***")
+    for marker in ("Authorization: Bearer ", "authorization: bearer ", "x-api-key: ", '"x-api-key":"'):
+        start = message.lower().find(marker.lower())
+        if start < 0:
+            continue
+        value_start = start + len(marker)
+        value_end = len(message)
+        for terminator in ('"', "'", "\n", "\r", ",", " "):
+            candidate = message.find(terminator, value_start)
+            if candidate >= 0:
+                value_end = min(value_end, candidate)
+        message = f"{message[:value_start]}***{message[value_end:]}"
+    return message[:2000]
+
+
+def model_endpoint(base_url: str, protocol: str) -> str:
+    cleaned = base_url.strip().rstrip("/；; ")
+    suffix = "/messages" if protocol == "anthropic" else "/chat/completions"
+    return cleaned if cleaned.endswith(suffix) else f"{cleaned}{suffix}"
+
+
+def call_judge_model(config: dict[str, Any], api_key: str, system_prompt: str, user_prompt: str, temperature: float, max_tokens: int) -> str:
+    protocol = str(config.get("protocol", "anthropic")).lower()
+    endpoint = model_endpoint(str(config.get("base_url", "")), protocol)
+    headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    if protocol == "anthropic":
+        headers.update({"x-api-key": api_key, "anthropic-version": "2023-06-01"})
+        body: dict[str, Any] = {
+            "model": config["model_name"],
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "system": system_prompt,
+            "messages": [{"role": "user", "content": user_prompt}],
+        }
+    else:
+        headers["Authorization"] = f"Bearer {api_key}"
+        body = {
+            "model": config["model_name"],
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
+        }
+        if int(config.get("seed", 0)):
+            body["seed"] = int(config["seed"])
+    request = urllib.request.Request(endpoint, data=json.dumps(body, ensure_ascii=False).encode("utf-8"), headers=headers, method="POST")
+    attempts = int(config.get("max_retries", 1)) + 1
+    last_error: Exception | None = None
+    for _ in range(attempts):
+        try:
+            with urllib.request.urlopen(request, timeout=int(config.get("timeout_seconds", 300))) as response:
+                data = json.loads(response.read().decode("utf-8"))
+            if protocol == "anthropic":
+                parts = data.get("content", [])
+                content = "".join(str(item.get("text", "")) for item in parts if isinstance(item, dict) and item.get("type") == "text")
+            else:
+                content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                if isinstance(content, list):
+                    content = "".join(str(item.get("text", "")) for item in content if isinstance(item, dict))
+            if not str(content).strip():
+                raise ValueError("模型返回内容为空")
+            return str(content)
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")[:1500]
+            last_error = RuntimeError(f"上游模型返回 HTTP {exc.code}：{detail}")
+            if exc.code not in {408, 409, 429, 500, 502, 503, 504}:
+                break
+        except (urllib.error.URLError, TimeoutError, ValueError, json.JSONDecodeError) as exc:
+            last_error = exc
+    raise RuntimeError(str(last_error or "模型调用失败"))
+
+
+def stage1_user_prompt(payload: dict[str, Any], token_limit: int) -> str:
+    sections = judge_case_sections(payload)
+    value = f"""请拆解以下 Case。\n\n=== CONTEXT ===\n{sections['context']}\n\n=== QUERY ===\n{sections['query']}\n\n=== TRAJECTORY ===\n{sections['trajectory']}\n\n=== TOOLS ===\n{sections['tools']}\n\n=== REFERENCE ANSWER ===\n{sections['reference_answer']}"""
+    return clip_judge_text(value, token_limit)
+
+
+def stage2_user_prompt(payload: dict[str, Any], candidate: dict[str, Any], stage1: dict[str, Any], token_limit: int) -> str:
+    sections = judge_case_sections(payload)
+    value = f"""请定位候选回复在固定子任务上的问题。\n\n=== FIXED SUBTASKS ===\n{text_value(stage1.get('subtasks', []))}\n\n=== STAGE 1 NOTES ===\n{text_value(stage1)}\n\n=== CONTEXT ===\n{sections['context']}\n\n=== QUERY ===\n{sections['query']}\n\n=== TRAJECTORY ===\n{sections['trajectory']}\n\n=== TOOLS ===\n{sections['tools']}\n\n=== REFERENCE ANSWER ===\n{sections['reference_answer']}\n\n=== CANDIDATE RESPONSE ===\n{text_value({'reasoning': candidate.get('reasoning'), 'response': candidate.get('response')})}"""
+    return clip_judge_text(value, token_limit)
+
+
+def stage3_user_prompt(payload: dict[str, Any], candidate: dict[str, Any], stage1: dict[str, Any], stage2: dict[str, Any], config: dict[str, Any], token_limit: int) -> str:
+    sections = judge_case_sections(payload)
+    value = f"""请复核错误定位并给出最终档位和整数分。\n\n=== RUBRIC ===\n{config.get('rubric')}\n\n=== FIXED SUBTASKS / STAGE 1 ===\n{text_value(stage1)}\n\n=== STAGE 2 LOCALIZATION ===\n{text_value(stage2)}\n\n=== CONTEXT ===\n{sections['context']}\n\n=== QUERY ===\n{sections['query']}\n\n=== TRAJECTORY ===\n{sections['trajectory']}\n\n=== TOOLS ===\n{sections['tools']}\n\n=== REFERENCE ANSWER ===\n{sections['reference_answer']}\n\n=== CANDIDATE RESPONSE ===\n{text_value({'reasoning': candidate.get('reasoning'), 'response': candidate.get('response')})}"""
+    return clip_judge_text(value, token_limit)
+
+
+def find_result_value(value: Any, keys: set[str]) -> Any:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if str(key).lower() in keys:
+                return item
+        for item in value.values():
+            found = find_result_value(item, keys)
+            if found is not None:
+                return found
+    return None
+
+
+def aggregate_stage3(samples: list[dict[str, Any]]) -> dict[str, Any]:
+    scores: list[int] = []
+    tiers: list[int] = []
+    for sample in samples:
+        score = find_result_value(sample, {"score", "final_score"})
+        tier = find_result_value(sample, {"tier", "final_tier"})
+        try:
+            scores.append(max(1, min(10, int(round(float(score))))))
+        except (TypeError, ValueError):
+            pass
+        try:
+            tiers.append(max(1, min(3, int(str(tier).replace("Tier", "").replace("tier", "").strip()))))
+        except (TypeError, ValueError):
+            pass
+    final_score = sorted(scores)[len(scores) // 2] if scores else None
+    if tiers:
+        final_tier = max(set(tiers), key=lambda item: (tiers.count(item), -item))
+    elif final_score is not None:
+        final_tier = 1 if final_score >= 8 else 2 if final_score >= 4 else 3
+    else:
+        final_tier = None
+    chosen = samples[0] if samples else {}
+    if final_score is not None:
+        chosen = min(samples, key=lambda sample: abs(float(find_result_value(sample, {"score", "final_score"}) or final_score) - final_score))
+    parse_error_count = sum(bool(sample.get("parse_error")) for sample in samples)
+    return {
+        "consensus": {
+            "score": final_score,
+            "tier": final_tier,
+            "sample_count": len(samples),
+            "score_range": [min(scores), max(scores)] if scores else None,
+            "stable": bool(scores) and parse_error_count == 0 and len(set(scores)) <= 1 and len(set(tiers)) <= 1,
+            "parse_error_count": parse_error_count,
+        },
+        "final": chosen,
+        "samples": samples,
+    }
+
+
+_judge_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="case-lens-judge")
+_judge_schedule_lock = threading.Lock()
+_active_judge_case_runs: set[int] = set()
+_judge_config_semaphores: dict[int, threading.BoundedSemaphore] = {}
+
+
+def execute_judge_case_run(case_run_id: int) -> None:
+    with SessionLocal() as db:
+        case_run = db.get(JudgeCaseRun, case_run_id)
+        if not case_run:
+            return
+        case = db.get(Case, case_run.case_id)
+        config_record = db.get(JudgeConfigVersion, case_run.config_id)
+        if not case or not config_record:
+            case_run.status = "failed"
+            case_run.error = "Case 或判分配置不存在"
+            case_run.completed_at = utcnow()
+            db.commit()
+            return
+        config = config_record.config
+        if canonical_hash(judge_case_content(case.payload)) != case_run.case_hash:
+            case_run.status = "stale"
+            case_run.error = "Case 内容已变化，本次任务已过期"
+            case_run.completed_at = utcnow()
+            db.commit()
+            return
+        case_run.started_at = case_run.started_at or utcnow()
+        case_run.error = ""
+        try:
+            if not case_run.stage1_result:
+                case_run.status = "running_stage_1"
+                db.commit()
+                stage1_input = stage1_user_prompt(case.payload, int(config.get("input_limit", 0)))
+                raw = call_judge_model(config, config_record.api_key, str(config["decomposer_prompt"]), stage1_input, float(config["stage1_temperature"]), int(config["stage1_max_tokens"]))
+                case_run.stage1_raw = raw
+                case_run.stage1_result = require_judge_object(parse_json_object(raw), "阶段一")
+                if not isinstance(case_run.stage1_result.get("subtasks"), list) or not case_run.stage1_result["subtasks"]:
+                    raise ValueError("阶段一结构化输出缺少 subtasks")
+                case_run.stage1_result["_input_truncated"] = "[... 输入按配置截断 ...]" in stage1_input
+                db.commit()
+        except Exception as exc:
+            case_run.status = "failed"
+            case_run.error = f"阶段一失败：{redact_judge_error(exc, config_record.api_key)}"
+            case_run.completed_at = utcnow()
+            candidate_runs = db.scalars(select(JudgeCandidateRun).where(JudgeCandidateRun.case_run_id == case_run.id)).all()
+            for candidate_run in candidate_runs:
+                if candidate_run.status in {"queued", "running_stage_2", "running_stage_3"}:
+                    candidate_run.status = "failed"
+                    candidate_run.error = case_run.error
+                    candidate_run.completed_at = utcnow()
+            db.commit()
+            return
+
+        candidate_map = {
+            str(item.get("id")): item
+            for item in case.payload.get("candidates", [])
+            if isinstance(item, dict) and item.get("id") is not None
+        }
+        candidate_runs = db.scalars(select(JudgeCandidateRun).where(JudgeCandidateRun.case_run_id == case_run.id).order_by(JudgeCandidateRun.id)).all()
+        for candidate_run in candidate_runs:
+            if candidate_run.status == "succeeded":
+                continue
+            candidate = candidate_map.get(candidate_run.candidate_id)
+            if not candidate or canonical_hash(judge_candidate_content(candidate)) != candidate_run.candidate_hash:
+                candidate_run.status = "stale"
+                candidate_run.error = "候选回复已变化，本次结果已过期"
+                candidate_run.completed_at = utcnow()
+                db.commit()
+                continue
+            candidate_run.started_at = candidate_run.started_at or utcnow()
+            candidate_run.error = ""
+            try:
+                if not candidate_run.stage2_result:
+                    candidate_run.status = "running_stage_2"
+                    case_run.status = "running_stage_2"
+                    db.commit()
+                    stage2_input = stage2_user_prompt(case.payload, candidate, case_run.stage1_result or {}, int(config.get("input_limit", 0)))
+                    raw = call_judge_model(config, config_record.api_key, str(config["detector_prompt"]), stage2_input, float(config["stage2_temperature"]), int(config["stage2_max_tokens"]))
+                    candidate_run.stage2_raw = raw
+                    candidate_run.stage2_result = require_judge_object(parse_json_object(raw), "阶段二")
+                    candidate_run.stage2_result["_input_truncated"] = "[... 输入按配置截断 ...]" in stage2_input
+                    db.commit()
+                candidate_run.status = "running_stage_3"
+                case_run.status = "running_stage_3"
+                db.commit()
+                samples: list[dict[str, Any]] = []
+                raw_samples: list[str] = []
+                stage3_input = stage3_user_prompt(case.payload, candidate, case_run.stage1_result or {}, candidate_run.stage2_result or {}, config, int(config.get("input_limit", 0)))
+                for sample_index in range(int(config.get("sample_count", 3))):
+                    try:
+                        raw = call_judge_model(config, config_record.api_key, str(config["verifier_prompt"]), stage3_input, float(config["stage3_temperature"]), int(config["stage3_max_tokens"]))
+                        raw_samples.append(raw)
+                        samples.append(parse_json_object(raw))
+                    except Exception as exc:
+                        message = redact_judge_error(exc, config_record.api_key)
+                        raw_samples.append(f"SAMPLE {sample_index + 1} FAILED: {message}")
+                        samples.append({"parse_error": f"采样请求失败：{message}"})
+                consensus = aggregate_stage3(samples)
+                if bool(config.get("adaptive_sampling")) and not consensus["consensus"]["stable"]:
+                    for _ in range(min(2, 9 - len(samples))):
+                        try:
+                            raw = call_judge_model(config, config_record.api_key, str(config["verifier_prompt"]), stage3_input, float(config["stage3_temperature"]), int(config["stage3_max_tokens"]))
+                            raw_samples.append(raw)
+                            samples.append(parse_json_object(raw))
+                        except Exception as exc:
+                            message = redact_judge_error(exc, config_record.api_key)
+                            raw_samples.append(f"ADAPTIVE SAMPLE FAILED: {message}")
+                            samples.append({"parse_error": f"追采请求失败：{message}"})
+                final_aggregate = aggregate_stage3(samples)
+                if final_aggregate["consensus"]["score"] is None:
+                    raise ValueError("阶段三没有任何可用的结构化评分样本")
+                candidate_run.stage3_raw = "\n\n--- SAMPLE ---\n\n".join(raw_samples)
+                candidate_run.stage3_result = {
+                    **final_aggregate,
+                    "input_truncated": bool(case_run.stage1_result.get("_input_truncated"))
+                    or bool(candidate_run.stage2_result.get("_input_truncated"))
+                    or "[... 输入按配置截断 ...]" in stage3_input,
+                }
+                candidate_run.status = "succeeded"
+                candidate_run.completed_at = utcnow()
+                db.commit()
+            except Exception as exc:
+                failed_stage = "阶段二" if candidate_run.status == "running_stage_2" else "阶段三"
+                candidate_run.status = "failed"
+                candidate_run.error = f"{failed_stage}失败：{redact_judge_error(exc, config_record.api_key)}"
+                candidate_run.completed_at = utcnow()
+                db.commit()
+
+        statuses = list(db.scalars(select(JudgeCandidateRun.status).where(JudgeCandidateRun.case_run_id == case_run.id)).all())
+        succeeded = sum(status == "succeeded" for status in statuses)
+        case_run.status = "succeeded" if statuses and succeeded == len(statuses) else "partial_failed" if succeeded else "failed"
+        case_run.completed_at = utcnow()
+        if case_run.status == "failed" and not case_run.error:
+            case_run.error = "全部候选判分失败"
+        db.commit()
+
+
+def _judge_case_worker(case_run_id: int) -> None:
+    semaphore: threading.BoundedSemaphore | None = None
+    try:
+        with SessionLocal() as db:
+            claimed = db.execute(
+                update(JudgeCaseRun)
+                .where(JudgeCaseRun.id == case_run_id, JudgeCaseRun.status == "queued")
+                .values(status="claimed", started_at=utcnow())
+            )
+            db.commit()
+            if claimed.rowcount != 1:
+                return
+            case_run = db.get(JudgeCaseRun, case_run_id)
+            config_record = db.get(JudgeConfigVersion, case_run.config_id) if case_run else None
+            if config_record:
+                with _judge_schedule_lock:
+                    semaphore = _judge_config_semaphores.setdefault(
+                        config_record.id,
+                        threading.BoundedSemaphore(int(config_record.config.get("concurrency", 2))),
+                    )
+        if semaphore:
+            semaphore.acquire()
+        with SessionLocal() as db:
+            claimed_run = db.get(JudgeCaseRun, case_run_id)
+            if not claimed_run or claimed_run.status != "claimed":
+                return
+        execute_judge_case_run(case_run_id)
+    finally:
+        if semaphore:
+            semaphore.release()
+        with _judge_schedule_lock:
+            _active_judge_case_runs.discard(case_run_id)
+
+
+def schedule_judge_case_run(case_run_id: int) -> bool:
+    with _judge_schedule_lock:
+        if case_run_id in _active_judge_case_runs:
+            return False
+        _active_judge_case_runs.add(case_run_id)
+    _judge_executor.submit(_judge_case_worker, case_run_id)
+    return True
+
+
+def judge_candidate_payload(record: JudgeCandidateRun) -> dict[str, Any]:
+    return {
+        "id": record.id,
+        "candidate_id": record.candidate_id,
+        "status": record.status,
+        "stage2": record.stage2_result,
+        "stage3": record.stage3_result,
+        "stage2_raw": record.stage2_raw,
+        "stage3_raw": record.stage3_raw,
+        "error": record.error,
+        "started_at": record.started_at.isoformat() if record.started_at else None,
+        "completed_at": record.completed_at.isoformat() if record.completed_at else None,
+    }
+
+
+def project_judge_status_payload(db: Session, project: Project, user: User) -> dict[str, Any]:
+    config_record = active_judge_config(db, project.id)
+    case_query = select(Case).where(Case.project_id == project.id)
+    if user.role != "admin":
+        case_query = case_query.join(CaseAssignment).where(CaseAssignment.user_id == user.id)
+    cases = db.scalars(case_query.order_by(Case.ordinal)).all()
+    result_cases: dict[str, Any] = {}
+    summary = {"not_started": 0, "queued": 0, "running": 0, "succeeded": 0, "failed": 0, "stale": 0, "cancelled": 0}
+    for case in cases:
+        case_hash = canonical_hash(judge_case_content(case.payload))
+        case_run = None
+        if config_record:
+            case_run = db.scalar(
+                select(JudgeCaseRun)
+                .where(JudgeCaseRun.case_id == case.id, JudgeCaseRun.config_id == config_record.id, JudgeCaseRun.case_hash == case_hash)
+                .order_by(JudgeCaseRun.id.desc())
+            )
+        candidate_payloads: dict[str, Any] = {}
+        for candidate in case.payload.get("candidates", []):
+            if not isinstance(candidate, dict) or candidate.get("id") is None:
+                continue
+            candidate_id = str(candidate["id"])
+            candidate_hash = canonical_hash(judge_candidate_content(candidate))
+            candidate_run = None
+            if case_run:
+                candidate_run = db.scalar(
+                    select(JudgeCandidateRun)
+                    .where(JudgeCandidateRun.case_run_id == case_run.id, JudgeCandidateRun.candidate_id == candidate_id, JudgeCandidateRun.candidate_hash == candidate_hash)
+                    .order_by(JudgeCandidateRun.id.desc())
+                )
+            if candidate_run:
+                candidate_payloads[candidate_id] = judge_candidate_payload(candidate_run)
+                if candidate_run.status == "succeeded":
+                    summary["succeeded"] += 1
+                elif candidate_run.status in {"running_stage_2", "running_stage_3"}:
+                    summary["running"] += 1
+                elif candidate_run.status == "queued":
+                    summary["queued"] += 1
+                elif candidate_run.status == "stale":
+                    summary["stale"] += 1
+                elif candidate_run.status == "cancelled":
+                    summary["cancelled"] += 1
+                else:
+                    summary["failed"] += 1
+            else:
+                summary["not_started"] += 1
+        result_cases[str(case.id)] = {
+            "case_id": case.id,
+            "external_id": case.external_id,
+            "status": case_run.status if case_run else "not_started",
+            "stage1": case_run.stage1_result if case_run else None,
+            "stage1_raw": case_run.stage1_raw if case_run else "",
+            "error": case_run.error if case_run else "",
+            "config_version": config_record.version if config_record else 0,
+            "candidates": candidate_payloads,
+        }
+    return {
+        "config": judge_config_payload(config_record, include_details=user.role == "admin"),
+        "summary": summary,
+        "running": bool(summary["queued"] or summary["running"]),
+        "cases": result_cases,
+    }
+
+
 app = FastAPI(title="Case Lens API", version="1.0.0", docs_url="/api/docs", openapi_url="/api/openapi.json")
 
 
@@ -672,6 +1362,18 @@ def startup() -> None:
                 raise RuntimeError("首次启动必须设置 ADMIN_PASSWORD")
             db.add(User(username=username, display_name=os.getenv("ADMIN_DISPLAY_NAME", "管理员"), password_hash=hash_password(password), role="admin"))
             db.commit()
+        recoverable = db.scalars(
+            select(JudgeCaseRun).where(JudgeCaseRun.status.in_(["queued", "claimed", "running_stage_1", "running_stage_2", "running_stage_3"]))
+        ).all()
+        for case_run in recoverable:
+            case_run.status = "queued"
+        recoverable_candidate_ids = [case_run.id for case_run in recoverable]
+        if recoverable_candidate_ids:
+            for candidate_run in db.scalars(select(JudgeCandidateRun).where(JudgeCandidateRun.case_run_id.in_(recoverable_candidate_ids), JudgeCandidateRun.status.in_(["running_stage_2", "running_stage_3"]))).all():
+                candidate_run.status = "queued"
+            db.commit()
+    for case_run_id in recoverable_candidate_ids:
+        schedule_judge_case_run(case_run_id)
 
 
 @app.get("/api/health")
@@ -708,14 +1410,14 @@ def me(user: CurrentUser) -> dict[str, Any]:
 
 @app.get("/api/pet")
 def get_pet(user: CurrentUser, db: DB) -> dict[str, Any]:
-    profile, progress = get_or_create_pet(db, user.id)
+    profile, progress, evolution = get_or_create_pet(db, user.id)
     db.commit()
-    return pet_dict(profile, progress)
+    return pet_dict(profile, progress, evolution)
 
 
 @app.put("/api/pet")
 def update_pet(body: PetProfileUpdate, user: CurrentUser, db: DB) -> dict[str, Any]:
-    profile, progress = get_or_create_pet(db, user.id)
+    profile, progress, evolution = get_or_create_pet(db, user.id)
     level = pet_level(progress.xp_units / 5)
     if body.color not in PET_COLORS:
         raise HTTPException(422, "未知的宠物颜色")
@@ -728,7 +1430,59 @@ def update_pet(body: PetProfileUpdate, user: CurrentUser, db: DB) -> dict[str, A
     profile.accessory = body.accessory
     profile.updated_at = utcnow()
     db.commit()
-    return pet_dict(profile, progress)
+    return pet_dict(profile, progress, evolution)
+
+
+@app.post("/api/pet/evolve")
+def evolve_pet(body: PetEvolutionBody, user: CurrentUser, db: DB) -> dict[str, Any]:
+    if body.spend not in {1, 5}:
+        raise HTTPException(422, "变身只能使用 1 次或 5 次机会")
+    profile, progress, evolution = get_or_create_pet(db, user.id)
+    if evolution.stage >= PET_MAX_EVOLUTION_STAGE:
+        raise HTTPException(422, "已经完成三次变身强化")
+    if evolution.available_chances < body.spend:
+        raise HTTPException(422, "可用变身机会不足")
+    db.flush()
+    evolution = db.scalar(
+        select(PetEvolution)
+        .where(PetEvolution.user_id == user.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ) or evolution
+    if evolution.available_chances < body.spend:
+        raise HTTPException(409, "变身机会刚刚发生变化，请刷新后重试")
+    evolution.available_chances -= body.spend
+    guaranteed = body.spend == 5
+    success = guaranteed or secrets.randbelow(10) == 0
+    trait = ""
+    if success:
+        if evolution.stage == 0 or evolution.path not in PET_EVOLUTION_PATHS:
+            evolution.path = secrets.choice(tuple(PET_EVOLUTION_PATHS))
+            evolution.variant_seed = secrets.randbelow(4)
+        path = PET_EVOLUTION_PATHS[evolution.path]
+        trait_pool = path["traits"][min(evolution.stage, PET_MAX_EVOLUTION_STAGE - 1)]
+        trait = secrets.choice(trait_pool)
+        evolution.traits = [*(evolution.traits or []), trait]
+        evolution.stage += 1
+    event = {
+        "at": utcnow().isoformat(),
+        "spent": body.spend,
+        "guaranteed": guaranteed,
+        "success": success,
+        "stage": evolution.stage,
+        "path": evolution.path,
+        "trait": trait,
+    }
+    evolution.history = [event, *(evolution.history or [])][:50]
+    evolution.updated_at = utcnow()
+    db.commit()
+    return {
+        "profile": pet_dict(profile, progress, evolution),
+        "success": success,
+        "spent": body.spend,
+        "guaranteed": guaranteed,
+        "trait": trait,
+    }
 
 
 @app.post("/api/pet/pet")
@@ -744,13 +1498,13 @@ def pet_companion(user: CurrentUser, db: DB) -> dict[str, Any]:
     # Legacy hourly pet events awarded 1 EXP, equivalent to five new touches.
     hourly_count = sum(5 if key == f"pet:{hour_key}" else 1 for key in hourly_event_keys)
     if hourly_count >= 10:
-        profile, progress = get_or_create_pet(db, user.id)
+        profile, progress, evolution = get_or_create_pet(db, user.id)
         db.commit()
-        return {"profile": pet_dict(profile, progress), "awarded": False, "amount": 0, "hourly_earned": 2, "hourly_remaining": 0}
-    profile, progress, awarded, amount = grant_pet_experience(db, user.id, "pet", f"pet:{hour_key}:{hourly_count + 1}")
+        return {"profile": pet_dict(profile, progress, evolution), "awarded": False, "amount": 0, "hourly_earned": 2, "hourly_remaining": 0}
+    profile, progress, evolution, awarded, amount = grant_pet_experience(db, user.id, "pet", f"pet:{hour_key}:{hourly_count + 1}")
     db.commit()
     earned_count = hourly_count + (1 if awarded else 0)
-    return {"profile": pet_dict(profile, progress), "awarded": awarded, "amount": amount, "hourly_earned": round(earned_count / 5, 1), "hourly_remaining": max(0, 10 - earned_count)}
+    return {"profile": pet_dict(profile, progress, evolution), "awarded": awarded, "amount": amount, "hourly_earned": round(earned_count / 5, 1), "hourly_remaining": max(0, 10 - earned_count)}
 
 
 @app.get("/api/users")
@@ -845,6 +1599,10 @@ def delete_project(project_id: int, _: AdminUser, db: DB, confirm_name: str = Qu
     if confirm_name != project.name:
         raise HTTPException(422, "项目名称确认不匹配")
     case_ids = select(Case.id).where(Case.project_id == project_id)
+    judge_case_run_ids = select(JudgeCaseRun.id).where(JudgeCaseRun.project_id == project_id)
+    db.execute(delete(JudgeCandidateRun).where(JudgeCandidateRun.case_run_id.in_(judge_case_run_ids)))
+    db.execute(delete(JudgeCaseRun).where(JudgeCaseRun.project_id == project_id))
+    db.execute(delete(JudgeConfigVersion).where(JudgeConfigVersion.project_id == project_id))
     db.execute(delete(Annotation).where(Annotation.case_id.in_(case_ids)))
     db.execute(delete(CaseAssignment).where(CaseAssignment.case_id.in_(case_ids)))
     db.execute(delete(ProjectMember).where(ProjectMember.project_id == project_id))
@@ -887,6 +1645,229 @@ def update_project_settings(project_id: int, body: ProjectSettingsBody, _: Admin
         case.payload = {**case.payload, "annotation_config": next_config}
     db.commit()
     return {"annotation_config": project_config(project)}
+
+
+@app.get("/api/projects/{project_id}/judge/config")
+def get_judge_config(project_id: int, user: CurrentUser, db: DB) -> dict[str, Any]:
+    ensure_project_access(project_id, user, db)
+    return judge_config_payload(active_judge_config(db, project_id), include_details=user.role == "admin")
+
+
+@app.put("/api/projects/{project_id}/judge/config")
+def save_judge_config(project_id: int, body: JudgeConfigBody, admin: AdminUser, db: DB) -> dict[str, Any]:
+    if not db.get(Project, project_id):
+        raise HTTPException(404, "项目不存在")
+    protocol = body.protocol.strip().lower()
+    if protocol not in {"anthropic", "openai"}:
+        raise HTTPException(422, "协议只能是 anthropic 或 openai")
+    endpoint = urlsplit(body.base_url.strip().rstrip("/；; "))
+    if endpoint.scheme not in {"http", "https"} or not endpoint.netloc:
+        raise HTTPException(422, "Base URL 必须是完整的 HTTP(S) 地址")
+    previous = active_judge_config(db, project_id)
+    config = body.model_dump(exclude={"api_key"})
+    config["protocol"] = protocol
+    config["base_url"] = body.base_url.strip().rstrip("/；; ")
+    api_key = body.api_key.strip() if body.api_key is not None and body.api_key.strip() else (previous.api_key if previous else "")
+    version = (db.scalar(select(func.max(JudgeConfigVersion.version)).where(JudgeConfigVersion.project_id == project_id)) or 0) + 1
+    if previous:
+        previous.active = False
+    record = JudgeConfigVersion(
+        project_id=project_id,
+        version=version,
+        config=config,
+        api_key=api_key,
+        signature=judge_config_signature(config),
+        active=True,
+        created_by=admin.id,
+    )
+    db.add(record)
+    db.commit()
+    db.refresh(record)
+    return judge_config_payload(record)
+
+
+@app.post("/api/projects/{project_id}/judge/test")
+def test_judge_config(project_id: int, _: AdminUser, db: DB) -> dict[str, Any]:
+    if not db.get(Project, project_id):
+        raise HTTPException(404, "项目不存在")
+    record = active_judge_config(db, project_id)
+    if not record:
+        raise HTTPException(422, "请先保存判分配置")
+    try:
+        response = call_judge_model(record.config, record.api_key, "你是连接测试助手。", "只回复：连接成功", 0, 64)
+    except Exception as exc:
+        raise HTTPException(502, f"判分模型连接失败：{redact_judge_error(exc, record.api_key)}") from exc
+    return {"ok": True, "response": response[:200], "version": record.version}
+
+
+@app.post("/api/projects/{project_id}/judge/run")
+def run_project_judge(project_id: int, body: JudgeRunBody, user: CurrentUser, db: DB) -> dict[str, Any]:
+    project = ensure_project_access(project_id, user, db)
+    config_record = active_judge_config(db, project_id)
+    if not config_record:
+        raise HTTPException(422, "管理员尚未配置自动判分模型")
+    query = select(Case).where(Case.project_id == project_id)
+    if user.role != "admin":
+        query = query.join(CaseAssignment).where(CaseAssignment.user_id == user.id)
+    requested_ids = list(dict.fromkeys(body.case_ids))
+    if requested_ids:
+        query = query.where(Case.id.in_(requested_ids))
+    cases = db.scalars(query.order_by(Case.ordinal)).all()
+    if requested_ids and len(cases) != len(requested_ids):
+        raise HTTPException(403, "请求中包含无权访问或不存在的 Case")
+    if not cases:
+        raise HTTPException(422, "没有可判分的 Case")
+    if len(cases) > 10_000:
+        raise HTTPException(422, "单次最多触发 10000 条 Case")
+    queued = reused = skipped = 0
+    scheduled_case_run_ids: set[int] = set()
+    for case in cases:
+        candidates = [item for item in case.payload.get("candidates", []) if isinstance(item, dict) and item.get("id") is not None]
+        if not candidates:
+            continue
+        case_hash = canonical_hash(judge_case_content(case.payload))
+        case_run = db.scalar(select(JudgeCaseRun).where(JudgeCaseRun.case_id == case.id, JudgeCaseRun.config_id == config_record.id, JudgeCaseRun.case_hash == case_hash))
+        if not case_run:
+            case_run = JudgeCaseRun(project_id=project_id, case_id=case.id, config_id=config_record.id, case_hash=case_hash, status="queued", triggered_by=user.id)
+            db.add(case_run)
+            db.flush()
+        pending_for_case = False
+        needs_schedule = False
+        for candidate in candidates:
+            candidate_id = str(candidate["id"])
+            candidate_hash = canonical_hash(judge_candidate_content(candidate))
+            candidate_run = db.scalar(select(JudgeCandidateRun).where(JudgeCandidateRun.case_run_id == case_run.id, JudgeCandidateRun.candidate_id == candidate_id, JudgeCandidateRun.candidate_hash == candidate_hash))
+            if candidate_run and candidate_run.status == "succeeded":
+                skipped += 1
+                continue
+            if candidate_run and candidate_run.status in {"queued", "running_stage_2", "running_stage_3"}:
+                reused += 1
+                pending_for_case = True
+                continue
+            if candidate_run:
+                candidate_run.status = "queued"
+                candidate_run.error = ""
+            else:
+                candidate_run = JudgeCandidateRun(case_run_id=case_run.id, candidate_id=candidate_id, candidate_hash=candidate_hash, status="queued")
+                db.add(candidate_run)
+            queued += 1
+            pending_for_case = True
+            needs_schedule = True
+        if pending_for_case:
+            if needs_schedule or case_run.status not in {"claimed", "running_stage_1", "running_stage_2", "running_stage_3"}:
+                case_run.status = "queued"
+                case_run.error = ""
+                case_run.completed_at = None
+                scheduled_case_run_ids.add(case_run.id)
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(409, "相同判分任务正在创建，请稍后重试") from exc
+    for case_run_id in scheduled_case_run_ids:
+        schedule_judge_case_run(case_run_id)
+    return {"queued": queued, "reused": reused, "skipped": skipped, "case_count": len(cases)}
+
+
+@app.post("/api/projects/{project_id}/judge/cancel")
+def cancel_project_judge(project_id: int, body: JudgeRunBody, user: CurrentUser, db: DB) -> dict[str, Any]:
+    ensure_project_access(project_id, user, db)
+    config_record = active_judge_config(db, project_id)
+    if not config_record:
+        return {"cancelled": 0, "running_not_cancelled": 0}
+    case_query = select(Case).where(Case.project_id == project_id)
+    if user.role != "admin":
+        case_query = case_query.join(CaseAssignment).where(CaseAssignment.user_id == user.id)
+    requested_ids = list(dict.fromkeys(body.case_ids))
+    if requested_ids:
+        case_query = case_query.where(Case.id.in_(requested_ids))
+    cases = db.scalars(case_query).all()
+    if requested_ids and len(cases) != len(requested_ids):
+        raise HTTPException(403, "请求中包含无权访问或不存在的 Case")
+    cancelled = running_not_cancelled = 0
+    for case in cases:
+        case_run = db.scalar(select(JudgeCaseRun).where(
+            JudgeCaseRun.case_id == case.id,
+            JudgeCaseRun.config_id == config_record.id,
+            JudgeCaseRun.case_hash == canonical_hash(judge_case_content(case.payload)),
+        ))
+        if not case_run:
+            continue
+        if case_run.status in {"queued", "claimed"}:
+            case_run.status = "cancelled"
+            case_run.completed_at = utcnow()
+            case_run.error = "任务在开始模型请求前由用户取消"
+            for candidate_run in db.scalars(select(JudgeCandidateRun).where(
+                JudgeCandidateRun.case_run_id == case_run.id,
+                JudgeCandidateRun.status == "queued",
+            )).all():
+                candidate_run.status = "cancelled"
+                candidate_run.completed_at = utcnow()
+                candidate_run.error = "任务已取消"
+                cancelled += 1
+        elif case_run.status in {"running_stage_1", "running_stage_2", "running_stage_3"}:
+            running_not_cancelled += 1
+    db.commit()
+    return {"cancelled": cancelled, "running_not_cancelled": running_not_cancelled}
+
+
+@app.get("/api/projects/{project_id}/judge/status")
+def get_project_judge_status(project_id: int, user: CurrentUser, db: DB) -> dict[str, Any]:
+    project = ensure_project_access(project_id, user, db)
+    return project_judge_status_payload(db, project, user)
+
+
+@app.get("/api/projects/{project_id}/judge/history")
+def get_case_judge_history(project_id: int, case_id: int, user: CurrentUser, db: DB) -> dict[str, Any]:
+    ensure_project_access(project_id, user, db)
+    query = select(Case).where(Case.project_id == project_id, Case.id == case_id)
+    if user.role != "admin":
+        query = query.join(CaseAssignment).where(CaseAssignment.user_id == user.id)
+    case = db.scalar(query)
+    if not case:
+        raise HTTPException(404, "Case 不存在或无权访问")
+    current_case_hash = canonical_hash(judge_case_content(case.payload))
+    current_candidate_hashes = {
+        str(candidate["id"]): canonical_hash(judge_candidate_content(candidate))
+        for candidate in case.payload.get("candidates", [])
+        if isinstance(candidate, dict) and candidate.get("id") is not None
+    }
+    runs = db.scalars(
+        select(JudgeCaseRun)
+        .where(JudgeCaseRun.case_id == case.id)
+        .order_by(JudgeCaseRun.created_at.desc(), JudgeCaseRun.id.desc())
+    ).all()
+    result: list[dict[str, Any]] = []
+    for case_run in runs:
+        config = db.get(JudgeConfigVersion, case_run.config_id)
+        trigger = db.get(User, case_run.triggered_by)
+        candidate_runs = db.scalars(
+            select(JudgeCandidateRun)
+            .where(JudgeCandidateRun.case_run_id == case_run.id)
+            .order_by(JudgeCandidateRun.id.desc())
+        ).all()
+        result.append({
+            "id": case_run.id,
+            "status": case_run.status,
+            "stage1": case_run.stage1_result,
+            "stage1_raw": case_run.stage1_raw,
+            "error": case_run.error,
+            "config_version": config.version if config else 0,
+            "model_name": str(config.config.get("model_name", "")) if config else "",
+            "current_case_content": case_run.case_hash == current_case_hash,
+            "triggered_by": trigger.display_name if trigger else "未知用户",
+            "created_at": case_run.created_at.isoformat(),
+            "completed_at": case_run.completed_at.isoformat() if case_run.completed_at else None,
+            "candidates": [
+                {
+                    **judge_candidate_payload(candidate_run),
+                    "candidate_hash": candidate_run.candidate_hash,
+                    "current_content": current_candidate_hashes.get(candidate_run.candidate_id) == candidate_run.candidate_hash,
+                }
+                for candidate_run in candidate_runs
+            ],
+        })
+    return {"case_id": case.id, "runs": result}
 
 
 @app.get("/api/projects/{project_id}/members")

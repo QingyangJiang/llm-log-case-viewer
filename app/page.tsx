@@ -60,6 +60,8 @@ type ProviderMode = "local" | "external";
 type PetMood = "idle" | "happy" | "proud" | "curious" | "worried";
 type PetColor = "lime" | "aqua" | "peach" | "lavender" | "sky" | "coral" | "gold" | "midnight";
 type PetAccessory = "none" | "leaf" | "bow" | "glasses" | "star" | "headphones" | "cap" | "crown" | "halo" | "medal";
+type PetEvolutionPath = "" | "starlight" | "guardian" | "forest" | "storm" | "wonky";
+type PetEvolutionEvent = { at: string; spent: number; guaranteed: boolean; success: boolean; stage: number; path: PetEvolutionPath; trait: string };
 type PetProfile = {
   name: string;
   color: PetColor;
@@ -70,6 +72,15 @@ type PetProfile = {
   current_level_xp?: number;
   next_level_xp?: number;
   earned_event_keys?: string[];
+  evolution_chances: number;
+  evolution_credited_level: number;
+  evolution_stage: number;
+  evolution_path: PetEvolutionPath;
+  evolution_name?: string;
+  evolution_quality?: string;
+  evolution_variant: number;
+  evolution_traits: string[];
+  evolution_history: PetEvolutionEvent[];
 };
 type AiResult = {
   resultId: string;
@@ -122,6 +133,40 @@ type MetricScope = {
 };
 type MetricsData = { dimension: MetricDimension; dimensions: MetricDimension[]; models: string[]; total_case_count: number; scopes: MetricScope[] };
 type ChatMessage = ModelApiMessage & { id: string };
+type JudgeConfig = {
+  configured: boolean;
+  has_api_key: boolean;
+  version: number;
+  protocol: "anthropic" | "openai";
+  base_url: string;
+  model_name: string;
+  stage1_temperature: number;
+  stage2_temperature: number;
+  stage3_temperature: number;
+  stage1_max_tokens: number;
+  stage2_max_tokens: number;
+  stage3_max_tokens: number;
+  concurrency: number;
+  sample_count: number;
+  adaptive_sampling: boolean;
+  input_limit: number;
+  seed: number;
+  timeout_seconds: number;
+  max_retries: number;
+  rubric: string;
+  decomposer_prompt: string;
+  detector_prompt: string;
+  verifier_prompt: string;
+};
+type JudgeCandidateResult = { id: number; candidate_id: string; status: string; stage2?: JsonObject | null; stage3?: JsonObject | null; stage2_raw?: string; stage3_raw?: string; error?: string; started_at?: string | null; completed_at?: string | null };
+type JudgeCaseResult = { case_id: number; external_id: string; status: string; stage1?: JsonObject | null; stage1_raw?: string; error?: string; config_version: number; candidates: Record<string, JudgeCandidateResult> };
+type JudgeHistoryRun = { id: number; status: string; stage1?: JsonObject | null; stage1_raw?: string; error?: string; config_version: number; model_name: string; current_case_content: boolean; triggered_by: string; created_at: string; completed_at?: string | null; candidates: (JudgeCandidateResult & { candidate_hash: string; current_content: boolean })[] };
+type JudgeStatusData = {
+  config: JudgeConfig;
+  summary: { not_started: number; queued: number; running: number; succeeded: number; failed: number; stale: number; cancelled: number };
+  running: boolean;
+  cases: Record<string, JudgeCaseResult>;
+};
 
 const DEFAULT_DIMENSIONS: AnnotationDimension[] = [
   { key: "correctness", label: "正确性", description: "事实、结论与工具使用是否正确", min: 1, max: 5, required: true },
@@ -130,7 +175,32 @@ const DEFAULT_DIMENSIONS: AnnotationDimension[] = [
   { key: "clarity", label: "表达质量", description: "结构、语言和可读性", min: 1, max: 5, required: true },
 ];
 const DEFAULT_BADCASE_TAGS = ["事实错误", "未遵循指令", "工具调用错误", "推理问题", "遗漏关键信息", "表达问题", "安全风险", "其他"];
-const DEFAULT_PET: PetProfile = { name: "小镜", color: "lime", accessory: "none", xp: 0, level: 1, current_level_xp: 0, next_level_xp: 20, earned_event_keys: [] };
+const EMPTY_JUDGE_CONFIG: JudgeConfig = {
+  configured: false,
+  has_api_key: false,
+  version: 0,
+  protocol: "anthropic",
+  base_url: "https://model.nioint.com/token-x/v1",
+  model_name: "DeepSeek-V4-Flash",
+  stage1_temperature: 0,
+  stage2_temperature: 0,
+  stage3_temperature: 0.1,
+  stage1_max_tokens: 4096,
+  stage2_max_tokens: 4096,
+  stage3_max_tokens: 4096,
+  concurrency: 2,
+  sample_count: 3,
+  adaptive_sampling: false,
+  input_limit: 0,
+  seed: 0,
+  timeout_seconds: 300,
+  max_retries: 1,
+  rubric: "Tier 1：8–10，完整完成；Tier 2：4–7，部分完成；Tier 3：1–3，未完成。",
+  decomposer_prompt: "",
+  detector_prompt: "",
+  verifier_prompt: "",
+};
+const DEFAULT_PET: PetProfile = { name: "小镜", color: "lime", accessory: "none", xp: 0, level: 1, current_level_xp: 0, next_level_xp: 20, earned_event_keys: [], evolution_chances: 0, evolution_credited_level: 1, evolution_stage: 0, evolution_path: "", evolution_variant: 0, evolution_traits: [], evolution_history: [] };
 const PET_COLORS: { id: PetColor; label: string; value: string; level: number }[] = [
   { id: "lime", label: "青柠", value: "#d9ff78", level: 1 },
   { id: "aqua", label: "薄荷", value: "#9de8dc", level: 2 },
@@ -162,6 +232,14 @@ const PET_LEVELS = [
   { level: 10, title: "首席标注官", unlock: "星夜色 · 光环" },
   { level: 12, title: "传奇质检师", unlock: "专属勋章" },
 ];
+const PET_EVOLUTION_PATHS: Record<Exclude<PetEvolutionPath, "">, { name: string; motif: string; traits: string[][]; tone: string }> = {
+  starlight: { name: "星辉灵兽", motif: "✦", traits: [["星尘额纹", "新月耳尖", "彗星小角"], ["月光羽翼", "星轨尾焰", "银河披风"], ["星环冠冕", "极光领域", "星核辉光"]], tone: "璀璨" },
+  guardian: { name: "守护机甲", motif: "◆", traits: [["合金耳甲", "战术目镜", "棱镜面罩"], ["折叠钢翼", "推进尾翼", "护盾肩甲"], ["量子核心", "冠军冠冕", "脉冲力场"]], tone: "坚毅" },
+  forest: { name: "森灵幻兽", motif: "♧", traits: [["新芽鹿角", "苔藓耳尖", "花蕾额纹"], ["叶脉羽翼", "花藤披风", "蒲公英尾"], ["萤火光环", "古树冠冕", "四季领域"]], tone: "温柔" },
+  storm: { name: "风暴精灵", motif: "ϟ", traits: [["闪电耳羽", "雷云额纹", "电光小角"], ["疾风羽翼", "旋风尾环", "雷霆披风"], ["风眼冠冕", "暴雨领域", "蓝电核心"]], tone: "迅捷" },
+  wonky: { name: "歪歪异变体", motif: "≋", traits: [["参差尖牙", "皱皱触角", "大小眼花纹"], ["斑驳小翅膀", "歪斜尾鳍", "补丁披风"], ["倾斜纸冠", "毛边光圈", "咕嘟气泡场"]], tone: "有点难看" },
+};
+const PET_MAX_EVOLUTION_STAGE = 3;
 
 function petLevelFromXp(xp: number) {
   return Math.floor(Math.sqrt(Math.max(0, xp) / 20)) + 1;
@@ -180,6 +258,10 @@ function normalizedPetProfile(value: Partial<PetProfile> | null | undefined): Pe
   const level = petLevelFromXp(xp);
   const color = PET_COLORS.some((item) => item.id === value?.color && item.level <= level) ? value!.color as PetColor : "lime";
   const accessory = PET_ACCESSORIES.some((item) => item.id === value?.accessory && item.level <= level) ? value!.accessory as PetAccessory : "none";
+  const storedCreditedLevel = Number.isFinite(value?.evolution_credited_level) ? Math.max(1, Math.floor(Number(value?.evolution_credited_level))) : 1;
+  const storedChances = Number.isFinite(value?.evolution_chances) ? Math.max(0, Math.floor(Number(value?.evolution_chances))) : 0;
+  const evolutionPath = typeof value?.evolution_path === "string" && value.evolution_path in PET_EVOLUTION_PATHS ? value.evolution_path as PetEvolutionPath : "";
+  const evolutionStage = evolutionPath ? Math.min(PET_MAX_EVOLUTION_STAGE, Math.max(0, Math.floor(Number(value?.evolution_stage) || 0))) : 0;
   return {
     name: typeof value?.name === "string" && value.name.trim() ? value.name.trim().slice(0, 20) : "小镜",
     color,
@@ -190,6 +272,58 @@ function normalizedPetProfile(value: Partial<PetProfile> | null | undefined): Pe
     current_level_xp: 20 * (level - 1) ** 2,
     next_level_xp: 20 * level ** 2,
     earned_event_keys: Array.isArray(value?.earned_event_keys) ? value.earned_event_keys.filter((item): item is string => typeof item === "string").slice(-1000) : [],
+    evolution_chances: storedChances + Math.max(0, level - storedCreditedLevel),
+    evolution_credited_level: Math.max(level, storedCreditedLevel),
+    evolution_stage: evolutionStage,
+    evolution_path: evolutionPath,
+    evolution_name: evolutionPath ? PET_EVOLUTION_PATHS[evolutionPath].name : "未变身",
+    evolution_quality: evolutionPath ? PET_EVOLUTION_PATHS[evolutionPath].tone : "base",
+    evolution_variant: Math.max(0, Math.min(3, Math.floor(Number(value?.evolution_variant) || 0))),
+    evolution_traits: Array.isArray(value?.evolution_traits) ? value.evolution_traits.filter((item): item is string => typeof item === "string").slice(0, PET_MAX_EVOLUTION_STAGE) : [],
+    evolution_history: Array.isArray(value?.evolution_history) ? value.evolution_history.filter((item): item is PetEvolutionEvent => isObject(item) && typeof item.at === "string" && typeof item.success === "boolean").slice(0, 50) : [],
+  };
+}
+
+function petRandomInt(max: number) {
+  if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+    const values = new Uint32Array(1);
+    crypto.getRandomValues(values);
+    return values[0] % max;
+  }
+  return Math.floor(Math.random() * max);
+}
+
+function evolveLocalPet(profile: PetProfile, spend: 1 | 5) {
+  const success = spend === 5 || petRandomInt(10) === 0;
+  let path = profile.evolution_path;
+  let variant = profile.evolution_variant;
+  let traits = [...profile.evolution_traits];
+  let stage = profile.evolution_stage;
+  let trait = "";
+  if (success) {
+    if (!path) {
+      const paths = Object.keys(PET_EVOLUTION_PATHS) as Exclude<PetEvolutionPath, "">[];
+      path = paths[petRandomInt(paths.length)];
+      variant = petRandomInt(4);
+    }
+    const traitPool = PET_EVOLUTION_PATHS[path].traits[Math.min(stage, PET_MAX_EVOLUTION_STAGE - 1)];
+    trait = traitPool[petRandomInt(traitPool.length)];
+    traits = [...traits, trait].slice(0, PET_MAX_EVOLUTION_STAGE);
+    stage = Math.min(PET_MAX_EVOLUTION_STAGE, stage + 1);
+  }
+  const event: PetEvolutionEvent = { at: new Date().toISOString(), spent, guaranteed: spend === 5, success, stage, path, trait };
+  return {
+    success,
+    trait,
+    profile: normalizedPetProfile({
+      ...profile,
+      evolution_chances: profile.evolution_chances - spend,
+      evolution_stage: stage,
+      evolution_path: path,
+      evolution_variant: variant,
+      evolution_traits: traits,
+      evolution_history: [event, ...profile.evolution_history].slice(0, 50),
+    }),
   };
 }
 const dimensionsToText = (dimensions?: AnnotationDimension[]) => (dimensions?.length ? dimensions : DEFAULT_DIMENSIONS)
@@ -1024,7 +1158,20 @@ function Icon({ children }: { children: ReactNode }) {
   return <span className="icon" aria-hidden="true">{children}</span>;
 }
 
-function CompanionPet({ visible, message, mood, completed, total, pulse, hasNext, profile, settingsOpen, draftName, busy, persistenceLabel, onPet, onNext, onHide, onShow, onToggleSettings, onDraftName, onSelectColor, onSelectAccessory, onSaveProfile }: {
+function PetCreatureVisual({ profile, accessory }: { profile: PetProfile; accessory?: string }) {
+  const path = profile.evolution_path;
+  const pathInfo = path ? PET_EVOLUTION_PATHS[path] : null;
+  return <span className={`pet-creature evolution-${path || "base"} evolution-stage-${profile.evolution_stage} evolution-variant-${profile.evolution_variant}`} aria-hidden="true">
+    {profile.evolution_stage >= 3 ? <span className="pet-evolution-aura" /> : null}
+    {profile.evolution_stage >= 1 && pathInfo ? <span className="pet-evolution-mark">{pathInfo.motif}</span> : null}
+    {profile.evolution_stage >= 2 ? <><span className="pet-evolution-wing left" /><span className="pet-evolution-wing right" /></> : null}
+    {profile.evolution_stage >= 3 ? <span className="pet-evolution-crown" /> : null}
+    {accessory ? <span className={`pet-accessory accessory-${profile.accessory}`}>{accessory}</span> : null}
+    <i className="pet-ear left" /><i className="pet-ear right" /><b className="pet-eye left" /><b className="pet-eye right" /><em /><span className="pet-tail" />
+  </span>;
+}
+
+function CompanionPet({ visible, message, mood, completed, total, pulse, hasNext, profile, settingsOpen, draftName, busy, persistenceLabel, onPet, onEvolve, onNext, onHide, onShow, onToggleSettings, onDraftName, onSelectColor, onSelectAccessory, onSaveProfile }: {
   visible: boolean;
   message: string;
   mood: PetMood;
@@ -1038,6 +1185,7 @@ function CompanionPet({ visible, message, mood, completed, total, pulse, hasNext
   busy: boolean;
   persistenceLabel: string;
   onPet: () => void;
+  onEvolve: (spend: 1 | 5) => void;
   onNext: () => void;
   onHide: () => void;
   onShow: () => void;
@@ -1056,15 +1204,15 @@ function CompanionPet({ visible, message, mood, completed, total, pulse, hasNext
   const accessory = PET_ACCESSORIES.find((item) => item.id === profile.accessory)?.symbol;
   return (
     <><section className={`companion-card mood-${mood}`} aria-label={`标注搭子${profile.name}`} style={{ "--pet-color": petColor } as CSSProperties}>
-      <header><span>CASE BUDDY · {profile.name}</span><div className="pet-header-actions"><b>LV.{profile.level}</b><button type="button" onClick={onToggleSettings} aria-label="自定义标注搭子">✎</button><button type="button" onClick={onHide} aria-label="收起标注搭子">×</button></div></header>
+      <header><span>CASE BUDDY · {profile.name}</span><div className="pet-header-actions"><b>LV.{profile.level}</b>{profile.evolution_chances > 0 && profile.evolution_stage < PET_MAX_EVOLUTION_STAGE ? <b className="pet-chance-badge">变身×{profile.evolution_chances}</b> : null}<button type="button" onClick={onToggleSettings} aria-label="自定义标注搭子">✎</button><button type="button" onClick={onHide} aria-label="收起标注搭子">×</button></div></header>
       <div className="companion-main">
         <button className="pet-stage" type="button" onClick={onPet} aria-label="摸摸小镜" key={pulse}>
           <span className="pet-spark spark-one" aria-hidden="true">✦</span><span className="pet-spark spark-two" aria-hidden="true">·</span>
-          <span className="pet-creature" aria-hidden="true">{accessory ? <span className={`pet-accessory accessory-${profile.accessory}`}>{accessory}</span> : null}<i className="pet-ear left" /><i className="pet-ear right" /><b className="pet-eye left" /><b className="pet-eye right" /><em /><span className="pet-tail" /></span>
+          <PetCreatureVisual profile={profile} accessory={accessory} />
         </button>
         <div className="pet-dialog">
           <p aria-live="polite">{message}</p>
-          <div><button type="button" onClick={onPet}>摸摸</button><button type="button" onClick={onNext} disabled={!hasNext}>下一条未完成</button></div>
+          <div><button type="button" onClick={onPet}>摸摸</button>{profile.evolution_chances > 0 && profile.evolution_stage < PET_MAX_EVOLUTION_STAGE ? <button className="pet-evolve-shortcut" type="button" onClick={onToggleSettings}>变身 · {profile.evolution_chances}</button> : null}<button type="button" onClick={onNext} disabled={!hasNext}>下一条未完成</button></div>
         </div>
       </div>
       <footer><div><span><strong>Lv.{profile.level}</strong> · {formatXp(profile.xp)} EXP</span><i><b style={{ width: `${levelProgress}%` }} /></i></div><div><span><strong>{completed}</strong> / {total || 0} 完成</span><i><b style={{ width: `${progress}%` }} /></i></div></footer>
@@ -1076,14 +1224,21 @@ function CompanionPet({ visible, message, mood, completed, total, pulse, hasNext
           <aside className="pet-studio-profile">
             <button className="pet-stage pet-stage-large" type="button" onClick={onPet} aria-label={`摸摸${profile.name}`}>
               <span className="pet-spark spark-one" aria-hidden="true">✦</span><span className="pet-spark spark-two" aria-hidden="true">·</span>
-              <span className="pet-creature" aria-hidden="true">{accessory ? <span className={`pet-accessory accessory-${profile.accessory}`}>{accessory}</span> : null}<i className="pet-ear left" /><i className="pet-ear right" /><b className="pet-eye left" /><b className="pet-eye right" /><em /><span className="pet-tail" /></span>
+              <PetCreatureVisual profile={profile} accessory={accessory} />
             </button>
-            <div className="pet-profile-name"><strong>{profile.name}</strong><span>Lv.{profile.level} · {profile.title ?? petTitle(profile.level)}</span></div>
+            <div className="pet-profile-name"><strong>{profile.name}</strong><span>Lv.{profile.level} · {profile.title ?? petTitle(profile.level)}</span>{profile.evolution_stage ? <small>{profile.evolution_name} · {profile.evolution_stage} 阶</small> : null}</div>
             <div className="pet-xp-card"><div><span>当前经验</span><strong>{formatXp(profile.xp)} EXP</strong></div><i><b style={{ width: `${levelProgress}%` }} /></i><small>距离 Lv.{profile.level + 1} 还需 {formatXp(Math.max(0, levelEnd - profile.xp))} EXP</small></div>
             <div className="pet-exp-rules"><strong>经验获取</strong><span><b>+0.2</b> 摸摸 · 每小时最多 2 EXP</span><span><b>+6</b> 提交一个候选结果标注</span><span><b>+4</b> 首次发现并标记 Badcase</span></div>
           </aside>
           <div className="pet-studio-editor">
             <label className="pet-name-field"><span>搭子名字</span><input value={draftName} maxLength={20} onChange={(event) => onDraftName(event.target.value)} aria-label="宠物名字" /><small>{draftName.length}/20</small></label>
+            <section className={`pet-evolution-lab ${profile.evolution_path ? `path-${profile.evolution_path}` : ""}`}>
+              <header><div><span>EVOLUTION LAB</span><strong>{profile.evolution_stage ? `${profile.evolution_name} · ${profile.evolution_stage} 阶形态` : "随机变身实验"}</strong></div><b>{profile.evolution_chances} 次机会</b></header>
+              <div className="pet-evolution-track">{[1, 2, 3].map((stage) => <i className={profile.evolution_stage >= stage ? "active" : ""} key={stage}><span>{stage}</span><small>{stage === 1 ? "基础变身" : stage === 2 ? "形态强化" : "终极强化"}</small></i>)}</div>
+              {profile.evolution_traits.length ? <div className="pet-evolution-traits">{profile.evolution_traits.map((trait) => <span key={trait}>{trait}</span>)}</div> : <p>首次成功会随机进入 5 条路线；其中也可能变成有点难看的“歪歪异变体”。后续成功只会沿当前路线继续强化。</p>}
+              {profile.evolution_stage < PET_MAX_EVOLUTION_STAGE ? <div className="pet-evolution-actions"><button type="button" disabled={busy || profile.evolution_chances < 1} onClick={() => onEvolve(1)}><strong>单次尝试</strong><small>消耗 1 次 · 10% 成功</small></button><button className="guaranteed" type="button" disabled={busy || profile.evolution_chances < 5} onClick={() => onEvolve(5)}><strong>五次合成</strong><small>消耗 5 次 · 必定成功</small></button></div> : <div className="pet-evolution-complete">三次变身完成 · 已达到当前终极形态</div>}
+              {profile.evolution_history.length ? <details className="pet-evolution-history"><summary>最近变身记录</summary>{profile.evolution_history.slice(0, 8).map((event, index) => <div key={`${event.at}-${index}`}><span>{event.success ? `成功 · ${event.trait || PET_EVOLUTION_PATHS[event.path as Exclude<PetEvolutionPath, "">]?.name || "新形态"}` : "失败 · 机会化作了星尘"}</span><small>{event.spent === 5 ? "五次合成" : "单次尝试"} · {new Date(event.at).toLocaleString()}</small></div>)}</details> : null}
+            </section>
             <div className="pet-option-group pet-color-options"><div className="pet-option-title"><span>毛色</span><small>{PET_COLORS.filter((item) => item.level <= profile.level).length} / {PET_COLORS.length} 已解锁</small></div><div>{PET_COLORS.map((item) => <button type="button" key={item.id} className={profile.color === item.id ? "active" : ""} disabled={profile.level < item.level} onClick={() => onSelectColor(item.id)} style={{ "--swatch": item.value } as CSSProperties}><i />{item.label}{profile.level < item.level ? <small>Lv.{item.level}</small> : <small>✓</small>}</button>)}</div></div>
             <div className="pet-option-group pet-accessory-options"><div className="pet-option-title"><span>配饰</span><small>{PET_ACCESSORIES.filter((item) => item.level <= profile.level).length} / {PET_ACCESSORIES.length} 已解锁</small></div><div>{PET_ACCESSORIES.map((item) => <button type="button" key={item.id} className={profile.accessory === item.id ? "active" : ""} disabled={profile.level < item.level} onClick={() => onSelectAccessory(item.id)}><b>{item.symbol || "—"}</b><span>{item.label}</span>{profile.level < item.level ? <small>Lv.{item.level}</small> : <small>✓</small>}</button>)}</div></div>
             <div className="pet-level-roadmap"><div className="pet-option-title"><span>等级路线</span><small>持续标注，逐级成长</small></div><div>{PET_LEVELS.map((item) => <article key={item.level} className={profile.level >= item.level ? "unlocked" : profile.level + 1 === item.level ? "next" : ""}><b>Lv.{item.level}</b><div><strong>{item.title}</strong><small>{item.unlock}</small></div><span>{profile.level >= item.level ? "已解锁" : `${20 * (item.level - 1) ** 2} EXP`}</span></article>)}</div></div>
@@ -1278,9 +1433,99 @@ function ToolDefinition({ tool, index, protocol, results, onAi, onCopyResult, on
   );
 }
 
-function CandidateAnnotationCard({ candidate, referInfo, dimensions, badcaseTags, existing, historyCount, disabled, locked, onSave }: {
+const JUDGE_STATUS_LABELS: Record<string, string> = {
+  not_started: "未运行",
+  queued: "排队中",
+  claimed: "准备运行",
+  running_stage_1: "正在拆解",
+  running_stage_2: "正在检错",
+  running_stage_3: "正在复核打分",
+  succeeded: "已完成",
+  partial_failed: "部分失败",
+  failed: "失败",
+  stale: "已过期",
+  cancelled: "已取消",
+};
+
+const JUDGE_FIELD_LABELS: Record<string, string> = {
+  full_goal: "完整目标",
+  current_stage: "当前阶段",
+  current_stage_note: "当前阶段说明",
+  decomposition_reasoning: "拆解理由",
+  subtasks: "固定子任务",
+  id: "编号",
+  desc: "任务",
+  phase: "阶段",
+  status: "完成状态",
+  findings: "问题定位",
+  type: "问题类型",
+  severity: "严重程度",
+  location: "具体位置",
+  detail: "问题说明",
+  correct_points: "正确点",
+  detector_summary: "检错总结",
+  corrections: "复核裁决",
+  finding_ref: "对应问题",
+  verdict: "复核结论",
+  evidence: "证据",
+  note: "说明",
+  review_note: "复核总结",
+  tier: "最终档位",
+  score: "最终分数",
+  score_rationale: "评分依据",
+  reasoning: "综合理由",
+  overall_comment: "总体评价",
+  parse_error: "解析提醒",
+  raw_output: "模型原始输出",
+};
+
+function JudgeStructuredValue({ value, depth = 0 }: { value: unknown; depth?: number }) {
+  if (value === null || value === undefined || value === "") return <span className="judge-empty">—</span>;
+  if (typeof value === "boolean") return <span>{value ? "是" : "否"}</span>;
+  if (typeof value === "string" || typeof value === "number") return <span>{String(value)}</span>;
+  if (depth >= 4) return <JsonCode value={value} compact />;
+  if (Array.isArray(value)) {
+    if (!value.length) return <span className="judge-empty">无</span>;
+    return <div className="judge-array">{value.map((item, index) => <div className="judge-array-item" key={index}>{isObject(item) ? <JudgeStructuredValue value={item} depth={depth + 1} /> : <span>{String(item)}</span>}</div>)}</div>;
+  }
+  if (isObject(value)) {
+    return <dl className="judge-fields">{Object.entries(value).filter(([key]) => !key.startsWith("_")).map(([key, item]) => (
+      <div className={`judge-field judge-field-${key}`} key={key}>
+        <dt>{JUDGE_FIELD_LABELS[key] ?? key.replaceAll("_", " ")}</dt>
+        <dd>{key === "raw_output" && typeof item === "string" ? <details className="judge-raw"><summary>查看模型原始输出</summary><pre>{item}</pre></details> : <JudgeStructuredValue value={item} depth={depth + 1} />}</dd>
+      </div>
+    ))}</dl>;
+  }
+  return <span>{String(value)}</span>;
+}
+
+function JudgeCandidatePanel({ result }: { result?: JudgeCandidateResult }) {
+  if (!result) return <section className="judge-candidate-panel idle"><header><div><span>AUTO JUDGE</span><strong>自动判分</strong></div><em>未运行</em></header><p>运行后将在这里依次展示检错、复核与最终分数。</p></section>;
+  const consensus = isObject(result.stage3?.consensus) ? result.stage3.consensus : undefined;
+  const final = isObject(result.stage3?.final) ? result.stage3.final : undefined;
+  const unstable = consensus?.stable === false || result.stage3?.input_truncated === true || Boolean(result.stage2?.parse_error) || Boolean(final?.parse_error);
+  return (
+    <section className={`judge-candidate-panel status-${result.status}`}>
+      <header>
+        <div><span>AUTO JUDGE</span><strong>自动判分</strong></div>
+        <div className="judge-result-head">{consensus?.tier ? <b>Tier {String(consensus.tier)}</b> : null}{consensus?.score ? <strong>{String(consensus.score)} 分</strong> : null}<em>{JUDGE_STATUS_LABELS[result.status] ?? result.status}</em></div>
+      </header>
+      {unstable ? <p className="judge-caution">结果存在分歧或结构化解析提醒，建议仔细核查。</p> : null}
+      {result.error ? <p className="judge-error">{result.error}</p> : null}
+      {consensus ? <p className="judge-consensus-meta">{String(consensus.sample_count ?? 0)} 次采样{Array.isArray(consensus.score_range) ? ` · 分数范围 ${consensus.score_range.join("–")}` : ""}</p> : null}
+      {result.stage2 ? <section className="judge-stage"><header><span>STAGE 2</span><strong>逐项检错</strong></header><JudgeStructuredValue value={result.stage2} /></section> : null}
+      {result.stage3 ? <section className="judge-stage final"><header><span>STAGE 3</span><strong>复核与评分</strong></header><JudgeStructuredValue value={final ?? result.stage3} /></section> : null}
+      {result.error && (result.stage2_raw || result.stage3_raw) ? <details className="judge-failure-raw"><summary>查看失败阶段原始输出</summary><pre>{result.stage3_raw || result.stage2_raw}</pre></details> : null}
+      {!result.stage2 && !result.error ? <p className="judge-progress">{JUDGE_STATUS_LABELS[result.status] ?? "等待运行"}…</p> : null}
+    </section>
+  );
+}
+
+function CandidateAnnotationCard({ candidate, referInfo, judgeAvailable, judgeResult, dimensions, badcaseTags, existing, historyCount, disabled, locked, onSave }: {
   candidate: CandidateOutput;
   referInfo?: JsonObject;
+  judgeAvailable: boolean;
+  judgeResult?: JudgeCandidateResult;
   dimensions: AnnotationDimension[];
   badcaseTags: string[];
   existing?: CaseAnnotation;
@@ -1357,6 +1602,7 @@ function CandidateAnnotationCard({ candidate, referInfo, dimensions, badcaseTags
         {candidate.metadata ? <details className="candidate-metadata"><summary>模型元数据</summary><JsonCode value={candidate.metadata} compact /></details> : null}
       </section>
       {referInfo ? <section className="candidate-reference"><header><span>REFER INFO</span><strong>标注参考信息</strong></header><JsonCode value={referInfo} compact /></section> : null}
+      {judgeAvailable ? <JudgeCandidatePanel result={judgeResult} /> : null}
       <section className="annotation-form">
         <div className="score-grid">
           {dimensions.map((dimension) => {
@@ -1383,11 +1629,19 @@ function CandidateAnnotationCard({ candidate, referInfo, dimensions, badcaseTags
   );
 }
 
-function CandidateWorkspace({ item, caseIndex, records, annotator, onSave, canReturn = false, onReturn }: {
+function CandidateWorkspace({ item, caseIndex, records, annotator, judgeAvailable, judgeResult, judgeHistory, judgeHistoryBusy, judgeConfigured, judgeBusy, onRunJudge, onLoadJudgeHistory, onSave, canReturn = false, onReturn }: {
   item: LogCase;
   caseIndex: number;
   records: CaseAnnotation[];
   annotator: { id: string; name: string };
+  judgeAvailable: boolean;
+  judgeResult?: JudgeCaseResult;
+  judgeHistory: JudgeHistoryRun[];
+  judgeHistoryBusy: boolean;
+  judgeConfigured: boolean;
+  judgeBusy: boolean;
+  onRunJudge: () => void;
+  onLoadJudgeHistory: () => void;
   onSave: (candidate: CandidateOutput, value: { scores: Record<string, number>; badcase: boolean; badcaseTags: string[]; note: string }, status: "draft" | "submitted", silent?: boolean) => Promise<boolean>;
   canReturn?: boolean;
   onReturn?: (annotationId: string) => void;
@@ -1399,13 +1653,15 @@ function CandidateWorkspace({ item, caseIndex, records, annotator, onSave, canRe
   if (!candidates.length) return <div className="empty-panel"><span>◇</span><h3>这个 Case 没有候选模型结果</h3><p>在 JSONL 中增加 candidates 数组后，即可并排查看 reasoning、response 并进行多维标注。</p></div>;
   return (
     <section className="candidate-workspace">
-      <header className="candidate-workspace-head"><div><span>MODEL COMPARISON</span><h3>{candidates.length} 个候选结果</h3></div><p>当前标注员：<strong>{annotator.name || annotator.id || "未设置"}</strong> · 可暂存草稿后继续</p></header>
+      <header className="candidate-workspace-head"><div><span>MODEL COMPARISON</span><h3>{candidates.length} 个候选结果</h3></div><div className="candidate-workspace-actions"><p>当前标注员：<strong>{annotator.name || annotator.id || "未设置"}</strong> · 可暂存草稿后继续</p>{judgeAvailable ? <button type="button" disabled={!judgeConfigured || judgeBusy} onClick={onRunJudge}>{judgeBusy ? "正在提交…" : judgeResult?.status === "succeeded" ? "判分已完成" : "✦ 运行自动判分"}</button> : null}</div></header>
+      {judgeAvailable ? (judgeResult?.stage1 ? <section className="judge-case-panel"><header><div><span>STAGE 1 · SHARED RUBRIC</span><h3>任务拆解</h3></div><em>配置 v{judgeResult.config_version}</em></header><JudgeStructuredValue value={judgeResult.stage1} /></section> : judgeResult && judgeResult.status !== "not_started" ? <section className="judge-case-panel pending"><strong>{JUDGE_STATUS_LABELS[judgeResult.status] ?? judgeResult.status}</strong><p>{judgeResult.error || "阶段一完成后会先在这里展示固定子任务。"}</p>{judgeResult.stage1_raw ? <details className="judge-failure-raw"><summary>查看阶段一原始输出</summary><pre>{judgeResult.stage1_raw}</pre></details> : null}</section> : !judgeConfigured ? <section className="judge-case-panel setup"><strong>自动判分尚未配置</strong><p>请联系管理员在团队设置中配置判分模型。</p></section> : null) : null}
+      {judgeAvailable ? <details className="judge-history" onToggle={(event) => { if (event.currentTarget.open && !judgeHistoryBusy) onLoadJudgeHistory(); }}><summary>{judgeHistoryBusy ? "正在读取判分历史…" : `判分历史${judgeHistory.length ? ` · ${judgeHistory.length} 个版本` : ""}`}</summary>{judgeHistory.map((run) => <details className="judge-history-run" key={run.id}><summary><span>配置 v{run.config_version} · {run.model_name || "未知模型"}</span><em>{run.current_case_content ? "当前 Case 内容" : "旧 Case 内容"} · {new Date(run.created_at).toLocaleString()}</em></summary><div><p>由 {run.triggered_by} 触发 · {JUDGE_STATUS_LABELS[run.status] ?? run.status}</p>{run.error ? <p className="judge-error">{run.error}</p> : null}{run.stage1 ? <section className="judge-stage"><header><span>STAGE 1</span><strong>任务拆解</strong></header><JudgeStructuredValue value={run.stage1} /></section> : null}{run.candidates.map((candidate) => <section className="judge-history-candidate" key={candidate.id}><header><strong>{candidate.candidate_id}</strong><span>{candidate.current_content ? "当前候选内容" : "旧候选内容"}</span></header><JudgeCandidatePanel result={candidate} /></section>)}</div></details>)}</details> : null}
       <div className={`candidate-grid columns-${Math.min(candidates.length, 4)}`}>
         {candidates.map((candidate) => {
           const existing = records.find((record) => record.candidate_id === candidate.id && record.annotator.id === annotator.id);
           const historyCount = new Set(records.filter((record) => record.candidate_id === candidate.id && record.status === "submitted").map((record) => record.annotator.id)).size;
           const locked = Boolean(existing?.status === "submitted" && !existing.sync_state && item.annotation_config?.lock_submitted && !canReturn);
-          return <CandidateAnnotationCard candidate={candidate} referInfo={referInfo} dimensions={dimensions} badcaseTags={badcaseTags} existing={existing} historyCount={historyCount} disabled={!annotator.id.trim() || !annotator.name.trim()} locked={locked} onSave={(value, status, silent) => onSave(candidate, value, status, silent)} key={`${caseAnnotationKey(item, caseIndex)}:${candidate.id}:${annotator.id}`} />;
+          return <CandidateAnnotationCard candidate={candidate} referInfo={referInfo} judgeAvailable={judgeAvailable} judgeResult={judgeResult?.candidates[candidate.id]} dimensions={dimensions} badcaseTags={badcaseTags} existing={existing} historyCount={historyCount} disabled={!annotator.id.trim() || !annotator.name.trim()} locked={locked} onSave={(value, status, silent) => onSave(candidate, value, status, silent)} key={`${caseAnnotationKey(item, caseIndex)}:${candidate.id}:${annotator.id}`} />;
         })}
       </div>
       {records.length ? (
@@ -1508,6 +1764,14 @@ export default function Home() {
   const [activeProjectId, setActiveProjectId] = useState<number | null>(null);
   const [teamBusy, setTeamBusy] = useState(false);
   const [teamError, setTeamError] = useState("");
+  const [judgeConfigDraft, setJudgeConfigDraft] = useState<JudgeConfig>(EMPTY_JUDGE_CONFIG);
+  const [judgeApiKey, setJudgeApiKey] = useState("");
+  const [judgeStatus, setJudgeStatus] = useState<JudgeStatusData | null>(null);
+  const [judgeHistoryByCase, setJudgeHistoryByCase] = useState<Record<string, JudgeHistoryRun[]>>({});
+  const [judgeHistoryBusyCaseId, setJudgeHistoryBusyCaseId] = useState<number | null>(null);
+  const [judgeBusy, setJudgeBusy] = useState(false);
+  const [judgeTestBusy, setJudgeTestBusy] = useState(false);
+  const [judgeError, setJudgeError] = useState("");
   const [loginUsername, setLoginUsername] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
   const [newProjectName, setNewProjectName] = useState("");
@@ -1540,6 +1804,7 @@ export default function Home() {
   const [chatOpen, setChatOpen] = useState(false);
   const [chatInput, setChatInput] = useState("");
   const [chatIncludeCase, setChatIncludeCase] = useState(true);
+  const [chatIncludeJudge, setChatIncludeJudge] = useState(true);
   const [chatThreads, setChatThreads] = useState<Record<string, ChatMessage[]>>({});
   const [chatBusy, setChatBusy] = useState(false);
   const [chatError, setChatError] = useState("");
@@ -1643,6 +1908,10 @@ export default function Home() {
 
   const selectedPair = filtered.find(({ index }) => String(index) === selectedKey) ?? filtered[0];
   const selected = selectedPair?.item;
+  const selectedServerCaseId = selected?.__server_case_id;
+  const selectedJudgeResult = selectedServerCaseId ? judgeStatus?.cases[String(selectedServerCaseId)] : undefined;
+  const judgeHistory = selectedServerCaseId ? judgeHistoryByCase[String(selectedServerCaseId)] ?? [] : [];
+  const judgeHistoryBusy = judgeHistoryBusyCaseId === selectedServerCaseId;
   const chatThreadKey = chatIncludeCase && selectedPair
     ? `${datasetKey}:case:${selectedPair.index}`
     : `${datasetKey}:general`;
@@ -1902,6 +2171,43 @@ export default function Home() {
     return overview;
   };
 
+  const refreshJudgeProject = async (projectId: number, refreshConfig = false) => {
+    const [status, config] = await Promise.all([
+      apiRequest<JudgeStatusData>(`/api/projects/${projectId}/judge/status`),
+      refreshConfig ? apiRequest<JudgeConfig>(`/api/projects/${projectId}/judge/config`) : Promise.resolve(null),
+    ]);
+    setJudgeStatus(status);
+    if (config) setJudgeConfigDraft({ ...EMPTY_JUDGE_CONFIG, ...config });
+    else if (!judgeConfigDraft.configured && status.config) setJudgeConfigDraft({ ...EMPTY_JUDGE_CONFIG, ...status.config });
+    return status;
+  };
+
+  const loadJudgeHistory = async () => {
+    if (!activeProjectId || !selectedServerCaseId) return;
+    const caseId = selectedServerCaseId;
+    setJudgeHistoryBusyCaseId(caseId);
+    setJudgeError("");
+    try {
+      const result = await apiRequest<{ runs: JudgeHistoryRun[] }>(`/api/projects/${activeProjectId}/judge/history?case_id=${caseId}`);
+      setJudgeHistoryByCase((current) => ({ ...current, [String(caseId)]: result.runs }));
+    } catch (error) {
+      setJudgeError(error instanceof Error ? error.message : "判分历史读取失败");
+    } finally {
+      setJudgeHistoryBusyCaseId((current) => current === caseId ? null : current);
+    }
+  };
+
+  useEffect(() => {
+    if (!activeProjectId || !serverUser) return;
+    let cancelled = false;
+    const interval = window.setInterval(() => {
+      void apiRequest<JudgeStatusData>(`/api/projects/${activeProjectId}/judge/status`)
+        .then((status) => { if (!cancelled) setJudgeStatus(status); })
+        .catch(() => undefined);
+    }, judgeStatus?.running ? 2000 : 10000);
+    return () => { cancelled = true; window.clearInterval(interval); };
+  }, [activeProjectId, serverUser, judgeStatus?.running]);
+
   useEffect(() => {
     const timer = window.setTimeout(() => {
       const annotator = safeStorageGet<{ id?: string; name?: string }>("case-lens-annotator", {});
@@ -2123,6 +2429,11 @@ export default function Home() {
       setActiveProjectId(null);
       setProjectMembers([]);
       setAssignmentOverview(null);
+      setJudgeStatus(null);
+      setJudgeConfigDraft(EMPTY_JUDGE_CONFIG);
+      setJudgeApiKey("");
+      setJudgeHistoryByCase({});
+      setJudgeHistoryBusyCaseId(null);
       const localProfile = normalizedPetProfile(safeStorageGet<Partial<PetProfile>>("case-lens-pet-profile", DEFAULT_PET));
       setPetProfile(localProfile);
       setPetDraftName(localProfile.name);
@@ -2175,7 +2486,10 @@ export default function Home() {
       setConversationMatchCursor(-1);
       detailScrollPositions.current = {};
       setShowBackToTop(false);
+      setJudgeHistoryByCase({});
+      setJudgeHistoryBusyCaseId(null);
       setTab(items.some((item) => item.candidates?.length) ? "candidates" : "conversation");
+      await refreshJudgeProject(project.id, true);
       if (serverUser?.role === "admin") await refreshAssignmentAdmin(project.id);
       setTeamOpen(false);
     } catch (error) {
@@ -2355,6 +2669,85 @@ export default function Home() {
     }
   };
 
+  const saveJudgeConfig = async () => {
+    if (!activeProjectId) return;
+    setJudgeBusy(true);
+    setJudgeError("");
+    try {
+      const config = Object.fromEntries(Object.entries(judgeConfigDraft).filter(([key]) => !["configured", "has_api_key", "version", "signature", "created_at"].includes(key)));
+      const saved = await apiRequest<JudgeConfig>(`/api/projects/${activeProjectId}/judge/config`, {
+        method: "PUT",
+        body: JSON.stringify({ ...config, api_key: judgeApiKey.trim() || undefined }),
+      });
+      setJudgeConfigDraft({ ...EMPTY_JUDGE_CONFIG, ...saved });
+      setJudgeApiKey("");
+      await refreshJudgeProject(activeProjectId);
+      setNotice(`自动判分配置 v${saved.version} 已保存`);
+    } catch (error) {
+      setJudgeError(error instanceof Error ? error.message : "判分配置保存失败");
+    } finally {
+      setJudgeBusy(false);
+    }
+  };
+
+  const testJudgeConnection = async () => {
+    if (!activeProjectId) return;
+    setJudgeTestBusy(true);
+    setJudgeError("");
+    try {
+      const result = await apiRequest<{ ok: boolean; response: string; version: number }>(`/api/projects/${activeProjectId}/judge/test`, { method: "POST", body: "{}" });
+      setNotice(`判分模型 v${result.version} 连接成功：${result.response}`);
+    } catch (error) {
+      setJudgeError(error instanceof Error ? error.message : "判分模型连接失败");
+    } finally {
+      setJudgeTestBusy(false);
+    }
+  };
+
+  const runJudge = async (caseIds: number[] = []) => {
+    if (!activeProjectId || !serverUser) return;
+    if (!judgeStatus?.config.configured) {
+      setJudgeError("管理员尚未配置自动判分模型");
+      return;
+    }
+    if (caseIds.length > 1 && !window.confirm(`将对当前筛选出的 ${caseIds.length} 条 Case 预跑自动判分；已有相同有效结果会自动跳过。是否继续？`)) return;
+    if (!caseIds.length && !window.confirm("将对当前可访问项目中的全部 Case 预跑自动判分；已有相同有效结果会自动跳过。是否继续？")) return;
+    setJudgeBusy(true);
+    setJudgeError("");
+    try {
+      const result = await apiRequest<{ queued: number; reused: number; skipped: number; case_count: number }>(`/api/projects/${activeProjectId}/judge/run`, {
+        method: "POST",
+        body: JSON.stringify({ case_ids: caseIds }),
+      });
+      await refreshJudgeProject(activeProjectId);
+      setJudgeHistoryByCase({});
+      setNotice(`已处理 ${result.case_count} 条 Case：新排队 ${result.queued}，复用运行中 ${result.reused}，跳过已有结果 ${result.skipped}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "自动判分触发失败";
+      setJudgeError(message);
+      setNotice(message);
+    } finally {
+      setJudgeBusy(false);
+    }
+  };
+
+  const cancelQueuedJudge = async () => {
+    if (!activeProjectId || !judgeStatus?.summary.queued) return;
+    if (!window.confirm(`将取消尚未开始的 ${judgeStatus.summary.queued} 个候选任务；已发出的模型请求会继续完成。是否继续？`)) return;
+    setJudgeBusy(true);
+    setJudgeError("");
+    try {
+      const result = await apiRequest<{ cancelled: number; running_not_cancelled: number }>(`/api/projects/${activeProjectId}/judge/cancel`, { method: "POST", body: JSON.stringify({ case_ids: [] }) });
+      await refreshJudgeProject(activeProjectId);
+      setJudgeHistoryByCase({});
+      setNotice(`已取消 ${result.cancelled} 个候选任务${result.running_not_cancelled ? `；${result.running_not_cancelled} 条运行中请求未中断` : ""}`);
+    } catch (error) {
+      setJudgeError(error instanceof Error ? error.message : "取消任务失败");
+    } finally {
+      setJudgeBusy(false);
+    }
+  };
+
   const assignRandomCases = async () => {
     if (!activeProjectId || !assignmentUserId) return;
     setTeamBusy(true);
@@ -2445,7 +2838,10 @@ export default function Home() {
     petProfileRef.current = next;
     setPetProfile(next);
     setPetDraftName(next.name);
-    if (next.level > current.level) wakePet(`升级到 Lv.${next.level}！新装扮已解锁。`, "proud");
+    if (next.level > current.level) {
+      const gainedChances = Math.max(1, next.evolution_chances - current.evolution_chances);
+      wakePet(`升级到 Lv.${next.level}！获得 ${gainedChances} 次变身机会。`, "proud");
+    }
     else if (earned > 0) wakePet(`${fallbackMessage} +${earned} EXP`, "proud");
     return next;
   };
@@ -2486,6 +2882,30 @@ export default function Home() {
       wakePet(reactions[petPulse % reactions.length], "happy");
     } finally {
       pettingBusyRef.current = false;
+    }
+  };
+
+  const evolveCompanion = async (spend: 1 | 5) => {
+    const current = petProfileRef.current;
+    if (petBusy || current.evolution_stage >= PET_MAX_EVOLUTION_STAGE || current.evolution_chances < spend) return;
+    if (spend === 5 && !window.confirm("将合成并消耗 5 次变身机会，本次必定成功，但变身方向和强化特征仍然随机。继续吗？")) return;
+    setPetBusy(true);
+    try {
+      if (serverUser) {
+        const result = await apiRequest<{ profile: PetProfile; success: boolean; spent: number; guaranteed: boolean; trait: string }>("/api/pet/evolve", { method: "POST", body: JSON.stringify({ spend }) });
+        const next = applyPetProfile(result.profile);
+        if (result.success) wakePet(`${next.evolution_name}变身成功！获得「${result.trait}」。`, next.evolution_path === "wonky" ? "worried" : "proud");
+        else wakePet("这次只冒出一点星尘……机会已经消耗。", "worried");
+      } else {
+        const result = evolveLocalPet(current, spend);
+        const next = applyPetProfile(result.profile);
+        if (result.success) wakePet(`${next.evolution_name}变身成功！获得「${result.trait}」。`, next.evolution_path === "wonky" ? "worried" : "proud");
+        else wakePet("这次只冒出一点星尘……机会已经消耗。", "worried");
+      }
+    } catch (error) {
+      wakePet(error instanceof Error ? error.message : "变身失败，请稍后再试", "worried");
+    } finally {
+      setPetBusy(false);
     }
   };
 
@@ -2819,7 +3239,10 @@ export default function Home() {
     chatAbort.current = controller;
     try {
       const chatInputBudget = Math.max(512, contextWindow - outputReserve - 900);
-      const rawCaseContext = chatIncludeCase && selected ? caseToChatContext(selected) : "";
+      const rawJudgeContext = chatIncludeCase && chatIncludeJudge && selectedJudgeResult && (selectedJudgeResult.stage1 || Object.keys(selectedJudgeResult.candidates).length)
+        ? `\n\n--- AUTO JUDGE RESULT · CONFIG V${selectedJudgeResult.config_version} ---\n${stringify({ stage1: selectedJudgeResult.stage1, candidates: selectedJudgeResult.candidates })}\n--- END AUTO JUDGE RESULT ---`
+        : "";
+      const rawCaseContext = chatIncludeCase && selected ? `${caseToChatContext(selected)}${rawJudgeContext}` : "";
       const clippedCaseContext = rawCaseContext
         ? clipTextToTokens(rawCaseContext, Math.max(384, Math.floor(chatInputBudget * 0.68))).text
         : "";
@@ -3130,7 +3553,7 @@ export default function Home() {
               <div className="annotator-fields"><input value={annotatorId} disabled={Boolean(serverUser)} onChange={(event) => setAnnotatorId(event.target.value)} placeholder="用户 ID，如 jiangqy" aria-label="标注员 ID" /><input value={annotatorName} disabled={Boolean(serverUser)} onChange={(event) => setAnnotatorName(event.target.value)} placeholder="显示姓名" aria-label="标注员姓名" /></div>
               <div className="annotator-actions"><button onClick={downloadAnnotationTemplate}>下载输入模板</button><button onClick={exportAnnotationRows}>仅导出标注记录</button></div>
             </div>
-            <CompanionPet visible={petVisible} message={petMessage || defaultPetMessage} mood={petMessage ? petMood : defaultPetMood} completed={Math.min(submittedCases, annotatableCases)} total={annotatableCases} pulse={petPulse} hasNext={pendingCases > 0} profile={petProfile} settingsOpen={petSettingsOpen} draftName={petDraftName} busy={petBusy} persistenceLabel={serverUser ? "团队账号" : "当前浏览器"} onPet={() => void petTheCompanion()} onNext={goToNextPendingCase} onHide={() => setPetVisible(false)} onShow={() => { setPetVisible(true); wakePet("我回来啦，继续一起标！", "happy"); }} onToggleSettings={() => setPetSettingsOpen((current) => !current)} onDraftName={setPetDraftName} onSelectColor={(color) => previewPetStyle({ color })} onSelectAccessory={(accessory) => previewPetStyle({ accessory })} onSaveProfile={() => void savePetCustomization()} />
+            <CompanionPet visible={petVisible} message={petMessage || defaultPetMessage} mood={petMessage ? petMood : defaultPetMood} completed={Math.min(submittedCases, annotatableCases)} total={annotatableCases} pulse={petPulse} hasNext={pendingCases > 0} profile={petProfile} settingsOpen={petSettingsOpen} draftName={petDraftName} busy={petBusy} persistenceLabel={serverUser ? "团队账号" : "当前浏览器"} onPet={() => void petTheCompanion()} onEvolve={(spend) => void evolveCompanion(spend)} onNext={goToNextPendingCase} onHide={() => setPetVisible(false)} onShow={() => { setPetVisible(true); wakePet("我回来啦，继续一起标！", "happy"); }} onToggleSettings={() => setPetSettingsOpen((current) => !current)} onDraftName={setPetDraftName} onSelectColor={(color) => previewPetStyle({ color })} onSelectAccessory={(accessory) => previewPetStyle({ accessory })} onSaveProfile={() => void savePetCustomization()} />
             <label className="search-box"><Icon>⌕</Icon><input ref={searchInput} value={query} onChange={(event) => { setQuery(event.target.value); setVisibleLimit(400); }} placeholder="搜索 ID、模型或消息…" /><kbd>⌘K</kbd></label>
             <div className="filters">
               <select value={protocolFilter} onChange={(event) => { setProtocolFilter(event.target.value as "all" | Protocol); setVisibleLimit(400); }} aria-label="协议筛选">
@@ -3239,7 +3662,7 @@ export default function Home() {
                     {!selected.messages?.length ? <div className="empty-panel"><span>≡</span><h3>这个 Case 没有 messages</h3><p>可切到“原始 JSON”检查实际字段结构。</p></div> : null}
                   </div>
                 ) : null}
-                {tab === "candidates" ? <CandidateWorkspace item={selected} caseIndex={selectedPair?.index ?? 0} records={annotations[caseAnnotationKey(selected, selectedPair?.index ?? 0)] ?? []} annotator={{ id: annotatorId, name: annotatorName }} onSave={saveCandidateAnnotation} canReturn={serverUser?.role === "admin"} onReturn={(annotationId) => void returnServerAnnotation(annotationId)} /> : null}
+                {tab === "candidates" ? <CandidateWorkspace item={selected} caseIndex={selectedPair?.index ?? 0} records={annotations[caseAnnotationKey(selected, selectedPair?.index ?? 0)] ?? []} annotator={{ id: annotatorId, name: annotatorName }} judgeAvailable={Boolean(activeProjectId && serverUser)} judgeResult={selectedJudgeResult} judgeHistory={judgeHistory} judgeHistoryBusy={judgeHistoryBusy} judgeConfigured={Boolean(activeProjectId && judgeStatus?.config.configured)} judgeBusy={judgeBusy} onRunJudge={() => { if (selected.__server_case_id) void runJudge([selected.__server_case_id]); }} onLoadJudgeHistory={() => void loadJudgeHistory()} onSave={saveCandidateAnnotation} canReturn={serverUser?.role === "admin"} onReturn={(annotationId) => void returnServerAnnotation(annotationId)} /> : null}
                 {tab === "tools" ? (
                   <div className="tool-definitions">
                     {(selected.tools ?? []).map((tool, index) => <ToolDefinition tool={tool} index={index} protocol={selectedProtocol} results={aiResults.filter((result) => result.caseIndex === selectedPair?.index && result.anchorId === `tool-definition-${index + 1}`)} onAi={(task) => openAiPanel({ kind: "tool-definition", index }, task)} onCopyResult={(result) => void copyAiResult(result)} onDownloadResult={exportAiResult} key={index} />)}
@@ -3313,7 +3736,7 @@ export default function Home() {
             <div>{chatMessages.length ? <button onClick={clearChatThread} disabled={chatBusy}>清空</button> : null}<button className="close" onClick={() => setChatOpen(false)} aria-label="收起问答栏">×</button></div>
           </header>
           <div className="chat-context-bar">
-            <label><input type="checkbox" checked={chatIncludeCase} disabled={chatBusy} onChange={(event) => setChatIncludeCase(event.target.checked)} /><span><strong>{chatIncludeCase ? "携带当前 Case" : "普通问答"}</strong><small>{chatIncludeCase && selected ? `Case · ${String(selected.id ?? "未命名")}` : "不发送日志内容"}</small></span></label>
+            <div className="chat-context-options"><label><input type="checkbox" checked={chatIncludeCase} disabled={chatBusy} onChange={(event) => setChatIncludeCase(event.target.checked)} /><span><strong>{chatIncludeCase ? "携带当前 Case" : "普通问答"}</strong><small>{chatIncludeCase && selected ? `Case · ${String(selected.id ?? "未命名")}` : "不发送日志内容"}</small></span></label>{chatIncludeCase && selectedJudgeResult?.stage1 ? <label className="judge-context-toggle"><input type="checkbox" checked={chatIncludeJudge} disabled={chatBusy} onChange={(event) => setChatIncludeJudge(event.target.checked)} /><span><strong>自动判分</strong><small>{chatIncludeJudge ? "已包含" : "本次不发送"}</small></span></label> : null}</div>
             <button onClick={() => openAiPanel({ kind: "case" }, "summary")} aria-label="打开模型设置">⚙</button>
           </div>
           <div className="chat-model-strip"><span>{providerMode === "local" ? "LOCAL" : "EXTERNAL"}</span><strong>{aiModel || "未配置模型"}</strong><small>{apiProtocol === "anthropic" ? "Anthropic Messages" : "OpenAI Compatible"} · Markdown</small></div>
@@ -3321,7 +3744,7 @@ export default function Home() {
             {!chatMessages.length ? (
               <div className="chat-empty">
                 <span>◌</span><h3>{chatIncludeCase && selected ? "询问当前 Case" : "开始一个新对话"}</h3>
-                <p>{chatIncludeCase && selected ? "当前对话会携带消息、Tools、候选结果和参考信息。" : "当前模式不会发送 Case 日志。"}</p>
+                <p>{chatIncludeCase && selected ? `当前对话会携带消息、Tools、候选结果、参考信息${selectedJudgeResult?.stage1 && chatIncludeJudge ? "和自动判分结果" : ""}。` : "当前模式不会发送 Case 日志。"}</p>
                 <div>
                   {(chatIncludeCase && selected ? ["总结当前 Case 的任务和执行过程", "比较各候选模型结果的关键差异", "找出可能的事实错误和 Badcase 风险"] : ["介绍一下你能提供哪些帮助", "帮我梳理一个评测方案", "解释一个技术概念"]).map((prompt) => <button onClick={() => void sendChatMessage(prompt)} disabled={chatBusy} key={prompt}>{prompt}</button>)}
                 </div>
@@ -3364,6 +3787,7 @@ export default function Home() {
                   <div className="project-list">{serverProjects.map((project) => <article className={`${activeProjectId === project.id ? "active" : ""} ${project.archived ? "archived" : ""}`} key={project.id}><div><strong>{project.name}{project.archived ? <em>已归档</em> : null}</strong><small>{project.case_count} Cases · 我已提交 {project.my_submitted_count}</small></div><button disabled={teamBusy} onClick={() => void loadServerProject(project)}>打开</button></article>)}</div>
                   {!serverProjects.length ? <p className="team-empty">还没有项目{serverUser.role === "admin" ? "，请先创建" : "，请联系管理员"}。</p> : null}
                 </section>
+                {activeProjectId ? <section className="team-section judge-overview"><div className="team-section-title"><span>J</span><strong>三阶段自动判分</strong></div>{judgeStatus ? <><div className="judge-summary"><div><strong>{judgeStatus.summary.succeeded}</strong><small>已完成</small></div><div><strong>{judgeStatus.summary.running + judgeStatus.summary.queued}</strong><small>进行中</small></div><div><strong>{judgeStatus.summary.not_started}</strong><small>未运行</small></div><div><strong>{judgeStatus.summary.failed + judgeStatus.summary.stale + judgeStatus.summary.cancelled}</strong><small>需处理</small></div></div><p>{judgeStatus.config.configured ? `${judgeStatus.config.model_name} · 配置 v${judgeStatus.config.version} · 结果全项目共享` : "管理员尚未配置判分模型"}</p><div className="judge-batch-actions"><button className="team-primary" disabled={judgeBusy || !judgeStatus.config.configured || !filtered.length} onClick={() => void runJudge(filtered.flatMap(({ item }) => item.__server_case_id ? [item.__server_case_id] : []))}>{judgeBusy ? "正在提交…" : `预跑当前筛选 · ${filtered.length}`}</button><button disabled={judgeBusy || !judgeStatus.config.configured} onClick={() => void runJudge()}>预跑全部</button>{judgeStatus.summary.queued ? <button className="judge-cancel" disabled={judgeBusy} onClick={() => void cancelQueuedJudge()}>取消排队 · {judgeStatus.summary.queued}</button> : null}</div></> : <p>正在读取判分状态…</p>}</section> : null}
                 {serverUser.role === "admin" ? (
                   <>
                     <section className="team-section">
@@ -3388,6 +3812,34 @@ export default function Home() {
                             <label><input type="checkbox" checked={assignmentOverview?.settings.lock_submitted === true} onChange={(event) => void updateProjectSettings({ lock_submitted: event.target.checked })} /><span><strong>提交后锁定</strong><small>防止标注员再次覆盖已提交记录</small></span></label>
                           </div>
                           <details className="config-editor"><summary>编辑评分维度、Badcase 标签与模型顺序</summary><label><span>每行：key | 名称 | 描述 | 最小值 | 最大值 | required</span><textarea rows={6} value={dimensionConfigText} onChange={(event) => setDimensionConfigText(event.target.value)} /></label><label><span>Badcase 标签（逗号或换行分隔）</span><textarea rows={3} value={badcaseTagText} onChange={(event) => setBadcaseTagText(event.target.value)} /></label><label><span>模型展示顺序（每行一个 model）</span><textarea rows={5} value={modelOrderText} onChange={(event) => setModelOrderText(event.target.value)} placeholder={"model-a\nmodel-b\nmodel-c\nmodel-d"} /><small>优先匹配 candidate.model，也兼容 id 或 label；未列出的候选保持 JSONL 原顺序追加。</small></label><button className="team-primary" disabled={teamBusy} onClick={() => void saveAnnotationConfig()}>保存标注模板</button></details>
+                        </section>
+                        <section className="team-section judge-config-section">
+                          <div className="team-section-title"><span>J</span><strong>管理员：自动判分配置</strong></div>
+                          <p className="team-help">三个阶段使用同一个服务端模型，API Key 只保存在后端；保存后生成新的配置版本，旧结果仍可追溯。</p>
+                          <div className="judge-config-grid">
+                            <label><span>API 协议</span><select value={judgeConfigDraft.protocol} onChange={(event) => setJudgeConfigDraft((current) => ({ ...current, protocol: event.target.value as "anthropic" | "openai" }))}><option value="anthropic">Anthropic · /messages</option><option value="openai">OpenAI · /chat/completions</option></select></label>
+                            <label><span>模型名称</span><input value={judgeConfigDraft.model_name} onChange={(event) => setJudgeConfigDraft((current) => ({ ...current, model_name: event.target.value }))} /></label>
+                            <label className="wide"><span>API Base URL</span><input value={judgeConfigDraft.base_url} onChange={(event) => setJudgeConfigDraft((current) => ({ ...current, base_url: event.target.value }))} /></label>
+                            <label className="wide"><span>API Key</span><input type="password" value={judgeApiKey} onChange={(event) => setJudgeApiKey(event.target.value)} placeholder={judgeConfigDraft.has_api_key ? "已保存；留空表示保持不变" : "输入服务端判分密钥"} autoComplete="new-password" /></label>
+                          </div>
+                          <div className="judge-stage-config">
+                            {([1, 2, 3] as const).map((stage) => {
+                              const temperatureKey = `stage${stage}_temperature` as const;
+                              const maxTokensKey = `stage${stage}_max_tokens` as const;
+                              return <fieldset key={stage}><legend>阶段 {stage}</legend><label><span>温度</span><input type="number" min={0} max={2} step={0.1} value={judgeConfigDraft[temperatureKey]} onChange={(event) => setJudgeConfigDraft((current) => ({ ...current, [temperatureKey]: Number(event.target.value) }))} /></label><label><span>最大输出</span><input type="number" min={128} max={131072} value={judgeConfigDraft[maxTokensKey]} onChange={(event) => setJudgeConfigDraft((current) => ({ ...current, [maxTokensKey]: Number(event.target.value) }))} /></label></fieldset>;
+                            })}
+                          </div>
+                          <div className="judge-config-grid compact">
+                            <label><span>并发 Case</span><input type="number" min={1} max={8} value={judgeConfigDraft.concurrency} onChange={(event) => setJudgeConfigDraft((current) => ({ ...current, concurrency: Number(event.target.value) }))} /></label>
+                            <label><span>阶段三采样</span><input type="number" min={1} max={9} value={judgeConfigDraft.sample_count} onChange={(event) => setJudgeConfigDraft((current) => ({ ...current, sample_count: Number(event.target.value) }))} /></label>
+                            <label><span>输入上限 Tokens</span><input type="number" min={0} value={judgeConfigDraft.input_limit} onChange={(event) => setJudgeConfigDraft((current) => ({ ...current, input_limit: Number(event.target.value) }))} /><small>0 表示不截断</small></label>
+                            <label><span>超时秒数</span><input type="number" min={10} max={1800} value={judgeConfigDraft.timeout_seconds} onChange={(event) => setJudgeConfigDraft((current) => ({ ...current, timeout_seconds: Number(event.target.value) }))} /></label>
+                            <label><span>失败重试</span><input type="number" min={0} max={5} value={judgeConfigDraft.max_retries} onChange={(event) => setJudgeConfigDraft((current) => ({ ...current, max_retries: Number(event.target.value) }))} /></label>
+                            <label><span>随机种子</span><input type="number" min={0} value={judgeConfigDraft.seed} onChange={(event) => setJudgeConfigDraft((current) => ({ ...current, seed: Number(event.target.value) }))} /></label>
+                            <label className="judge-check"><input type="checkbox" checked={judgeConfigDraft.adaptive_sampling} onChange={(event) => setJudgeConfigDraft((current) => ({ ...current, adaptive_sampling: event.target.checked }))} /><span>分歧时追加 2 次采样</span></label>
+                          </div>
+                          <details className="judge-prompt-editor"><summary>编辑评分量表与三个阶段 Prompt</summary><label><span>评分量表</span><textarea rows={3} value={judgeConfigDraft.rubric} onChange={(event) => setJudgeConfigDraft((current) => ({ ...current, rubric: event.target.value }))} /></label><label><span>阶段一 · 拆解 System Prompt</span><textarea rows={8} value={judgeConfigDraft.decomposer_prompt} onChange={(event) => setJudgeConfigDraft((current) => ({ ...current, decomposer_prompt: event.target.value }))} /></label><label><span>阶段二 · 检错 System Prompt</span><textarea rows={8} value={judgeConfigDraft.detector_prompt} onChange={(event) => setJudgeConfigDraft((current) => ({ ...current, detector_prompt: event.target.value }))} /></label><label><span>阶段三 · 复核评分 System Prompt</span><textarea rows={8} value={judgeConfigDraft.verifier_prompt} onChange={(event) => setJudgeConfigDraft((current) => ({ ...current, verifier_prompt: event.target.value }))} /></label></details>
+                          <div className="judge-config-actions"><button className="team-primary" disabled={judgeBusy || !judgeConfigDraft.base_url.trim() || !judgeConfigDraft.model_name.trim()} onClick={() => void saveJudgeConfig()}>{judgeBusy ? "保存中…" : judgeConfigDraft.configured ? "保存为新版本" : "保存判分配置"}</button><button disabled={judgeTestBusy || !judgeConfigDraft.configured} onClick={() => void testJudgeConnection()}>{judgeTestBusy ? "测试中…" : "测试已保存配置"}</button></div>
                         </section>
                         <section className="team-section assignment-section">
                           <div className="team-section-title"><span>04</span><strong>Case 分配与进度</strong></div>
@@ -3421,6 +3873,7 @@ export default function Home() {
               </>
             )}
             {teamError ? <p className="team-error">{teamError}</p> : null}
+            {judgeError ? <p className="team-error">自动判分：{judgeError}</p> : null}
           </aside>
         </>
       ) : null}
