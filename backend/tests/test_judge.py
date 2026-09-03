@@ -42,15 +42,64 @@ class JudgeHelpersTest(unittest.TestCase):
 
     def test_stage3_uses_median_score_and_majority_tier(self) -> None:
         result = api.aggregate_stage3([
-            {"tier": 1, "score": 8, "overall_comment": "a"},
-            {"tier": 2, "score": 7, "overall_comment": "b"},
-            {"tier": 1, "score": 9, "overall_comment": "c"},
+            {"tier": 1, "score": 8, "overall_comment": "a", "subtasks": [{"status": "done"}]},
+            {"tier": 2, "score": 7, "overall_comment": "b", "subtasks": [{"status": "partial"}]},
+            {"tier": 1, "score": 9, "overall_comment": "c", "subtasks": [{"status": "done"}]},
         ])
 
         self.assertEqual(result["consensus"]["score"], 8)
         self.assertEqual(result["consensus"]["tier"], 1)
         self.assertEqual(result["consensus"]["score_range"], [7, 9])
         self.assertFalse(result["consensus"]["stable"])
+        self.assertEqual(result["final"]["final_status"], "done")
+        self.assertEqual([sample["final_status"] for sample in result["samples"]], ["done", "partial", "done"])
+
+    def test_final_status_requirement_only_extends_verifier_prompt(self) -> None:
+        original = "原有 Stage 3 Prompt\n保持全部评分规则。"
+        extended = api.verifier_prompt_with_final_status(original)
+
+        self.assertTrue(extended.startswith(original))
+        self.assertIn("final_status", extended)
+        self.assertEqual(api.verifier_prompt_with_final_status(extended), extended)
+
+    def test_verifier_prompt_inserts_documented_tier_block_before_unchanged_suffix(self) -> None:
+        extended = api.verifier_prompt_with_final_status("规则：{tier_block}", "Tier 1：8–10")
+        self.assertIn("规则：Tier 1：8–10", extended)
+        self.assertTrue(extended.endswith(api.FINAL_STATUS_PROMPT_SUFFIX))
+
+    def test_documented_user_prompt_sections_are_preserved(self) -> None:
+        payload = {"messages": [{"role": "system", "content": "s"}, {"role": "user", "content": "q"}], "tools": []}
+        stage1 = api.stage1_user_prompt(payload, 0)
+        stage2 = api.stage2_user_prompt(payload, {"response": "r"}, {"subtasks": []}, 0)
+        stage3 = api.stage3_user_prompt(payload, {"response": "r"}, {"subtasks": []}, {"subtasks": []}, api.default_judge_config(), 0)
+        self.assertIn("=== QUERY — THE LATEST USER MESSAGE", stage1)
+        self.assertIn("=== FIXED SUBTASKS (from Stage 1", stage2)
+        self.assertIn("=== STAGE 2 LOCALIZATION", stage3)
+
+    def test_legacy_prompt_migration_creates_traceable_new_version(self) -> None:
+        test_engine = api.create_engine("sqlite://", connect_args={"check_same_thread": False})
+        session_factory = api.sessionmaker(test_engine, expire_on_commit=False)
+        api.Base.metadata.create_all(test_engine)
+        with session_factory() as db:
+            user = api.User(username="prompt-admin", display_name="Prompt Admin", password_hash="unused", role="admin")
+            db.add(user)
+            db.flush()
+            project = api.Project(name="Prompt Project", annotation_config={}, created_by=user.id)
+            db.add(project)
+            db.flush()
+            legacy_config = {**api.default_judge_config(), "decomposer_prompt": api.LEGACY_DECOMPOSER_PROMPT, "detector_prompt": api.LEGACY_DETECTOR_PROMPT, "verifier_prompt": api.LEGACY_VERIFIER_PROMPT}
+            db.add(api.JudgeConfigVersion(project_id=project.id, version=1, config=legacy_config, api_key="", signature=api.judge_config_signature(legacy_config), active=True, created_by=user.id))
+            db.commit()
+            self.assertEqual(api.migrate_legacy_judge_prompts(db), 1)
+            active = api.active_judge_config(db, project.id)
+            self.assertEqual(active.version, 2)
+            self.assertEqual(active.config["verifier_prompt"], api.DEFAULT_VERIFIER_PROMPT)
+            self.assertEqual(api.migrate_legacy_judge_prompts(db), 0)
+
+    def test_stage3_final_status_excludes_not_due_subtasks(self) -> None:
+        self.assertEqual(api.stage3_final_status({"subtasks": [{"status": "done"}, {"status": "not_due"}]}), "done")
+        self.assertEqual(api.stage3_final_status({"subtasks": [{"status": "missed"}, {"status": "not_due"}]}), "missed")
+        self.assertEqual(api.stage3_final_status({"subtasks": [{"status": "done"}, {"status": "missed"}]}), "partial")
 
     def test_json_parser_keeps_unparseable_output_for_review(self) -> None:
         parsed = api.parse_json_object("not json")

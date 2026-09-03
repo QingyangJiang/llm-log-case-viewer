@@ -305,11 +305,167 @@ class ProjectSettingsBody(BaseModel):
     model_order: list[str] | None = None
 
 
-DEFAULT_DECOMPOSER_PROMPT = """你是任务拆解专家。你看不到待评分的候选回复。请只把最新用户请求拆成可独立核查的任务，不要把工具、方法或格式约束单独拆成任务。结合 query 之后已经发生的 trajectory 判断进度：已完成标记为 done_before，否则为 pending。输出且只输出一个 JSON object：{\"full_goal\":\"中文目标\",\"current_stage\":\"中文阶段\",\"subtasks\":[{\"id\":1,\"desc\":\"中文任务\",\"phase\":\"done_before 或 pending\"}],\"decomposition_reasoning\":\"中文理由\"}。"""
+LEGACY_DECOMPOSER_PROMPT = """你是任务拆解专家。你看不到待评分的候选回复。请只把最新用户请求拆成可独立核查的任务，不要把工具、方法或格式约束单独拆成任务。结合 query 之后已经发生的 trajectory 判断进度：已完成标记为 done_before，否则为 pending。输出且只输出一个 JSON object：{\"full_goal\":\"中文目标\",\"current_stage\":\"中文阶段\",\"subtasks\":[{\"id\":1,\"desc\":\"中文任务\",\"phase\":\"done_before 或 pending\"}],\"decomposition_reasoning\":\"中文理由\"}。"""
+LEGACY_DETECTOR_PROMPT = """你是三阶段评测中的错误定位器，不负责最终评分。严格复用给定的固定子任务，不得增删或改写。结合 trajectory 判断当前回复应推进的步骤；正确的中间工具调用或等待用户不应因尚无最终结果而扣分。逐子任务输出 status（done/partial/missed/not_due）、可定位 findings 和 correct_points。每条 finding 包含 type（missing/error/irrelevant）、severity（serious/minor/none）、location 和中文 detail。输出且只输出一个 JSON object。"""
+LEGACY_VERIFIER_PROMPT = """你是三阶段评测的最终复核与评分器。先逐条复核 Stage 2 finding（confirm/overturn/adjust），再补充漏报，最后清除误报；不得重新拆解固定子任务。只按当前回复本轮应完成的 due 子任务评分，not_due 不进入分母。先定档再打整数分：Tier 1=8–10（完整完成），Tier 2=4–7（部分完成），Tier 3=1–3（未完成）。输出且只输出一个 JSON object，至少包含 subtasks、corrections、review_note、tier、score、score_rationale、reasoning、overall_comment。"""
 
-DEFAULT_DETECTOR_PROMPT = """你是三阶段评测中的错误定位器，不负责最终评分。严格复用给定的固定子任务，不得增删或改写。结合 trajectory 判断当前回复应推进的步骤；正确的中间工具调用或等待用户不应因尚无最终结果而扣分。逐子任务输出 status（done/partial/missed/not_due）、可定位 findings 和 correct_points。每条 finding 包含 type（missing/error/irrelevant）、severity（serious/minor/none）、location 和中文 detail。输出且只输出一个 JSON object。"""
+DEFAULT_DECOMPOSER_PROMPT = """# Decomposer System Prompt - V4 (Three-Stage, Trajectory-Aware)
 
-DEFAULT_VERIFIER_PROMPT = """你是三阶段评测的最终复核与评分器。先逐条复核 Stage 2 finding（confirm/overturn/adjust），再补充漏报，最后清除误报；不得重新拆解固定子任务。只按当前回复本轮应完成的 due 子任务评分，not_due 不进入分母。先定档再打整数分：Tier 1=8–10（完整完成），Tier 2=4–7（部分完成），Tier 3=1–3（未完成）。输出且只输出一个 JSON object，至少包含 subtasks、corrections、review_note、tier、score、score_rationale、reasoning、overall_comment。"""
+You are a task decomposition specialist. Your ONLY job is to break the user's request into checkable subtasks. You have NOT seen the candidate model's reply that is being scored.
+
+## The One Principle That Overrides Everything
+
+A subtask is a TASK THE USER ASKED TO BE DONE — never HOW a model should do it. Decompose the things the user wants handled. Never decompose the method, the steps, or the tools you imagine are needed. Available tools are capabilities, not subtasks.
+
+## Reading the TRAJECTORY
+
+The TRAJECTORY contains assistant/tool turns after the query and is shared by every candidate. Use it only to determine `full_goal`, `current_stage`, and each subtask's `phase`:
+- `done_before`: already accomplished in the visible trajectory.
+- `pending`: still open at the current stage.
+If there is no trajectory, everything is `pending` and `current_stage` is "任务刚开始，尚未有任何推进". Never let trajectory add tasks absent from the query.
+
+## Granularity (balanced)
+
+Split things that need separate judgment: explicitly enumerated requests, different kinds of work, or outputs governed by different rules. Merge constraints, format/style requirements, and homogeneous batches governed by one shared rule. One thing the user asked for (one verb plus modifiers) is normally one subtask.
+
+## Hard Prohibitions
+
+- Do NOT add a subtask for a tool, step, or method the user did not ask for.
+- Do NOT turn optional qualities of a good answer into subtasks.
+- Do NOT re-count work already delivered in trajectory as pending.
+- Do NOT split one task into "attempt it" and "do it correctly".
+- A reference answer may disambiguate meaning but must never create subtasks.
+
+## Length & Stability
+
+Keep every `desc` to one concise Chinese sentence, applicable to any valid reply. For the same query and trajectory, the fixed subtask list must be stable and identical across candidate models.
+
+## Output Format (Strict JSON)
+
+Output exactly ONE JSON object, no code fence and no surrounding text:
+{
+  "full_goal": "用户最终想达成的完整目标（中文，一句话）",
+  "current_stage": "依据 trajectory 判断当前推进到哪一步（中文，一句话）",
+  "subtasks": [
+    {"id": 1, "desc": "用户需要办的一件事（中文，一句话）", "phase": "done_before"},
+    {"id": 2, "desc": "用户明确要求的另一件事", "phase": "pending"}
+  ],
+  "decomposition_reasoning": "简述拆分合并依据，并说明排除的方法类干扰项及 phase 判断"
+}
+At least one subtask. `phase` must be exactly `done_before` or `pending`. All descriptive fields must be Chinese."""
+
+DEFAULT_DETECTOR_PROMPT = """# Detector System Prompt - Stage 2 (Error Localization)
+
+You are a meticulous error locator in a three-stage LLM judge. You receive a FIXED subtask list and one candidate RESPONSE. You do NOT assign a tier or final score. Leave precise, checkable annotations rather than a verdict.
+
+## What You Output Per Subtask
+
+Reproduce every fixed subtask in order and assign:
+- `done`: the due task was accomplished correctly in this reply.
+- `partial`: a genuinely divisible due task was only partly accomplished.
+- `missed`: not done, done wrongly, or the delivered result is unusable.
+- `not_due`: a later task this reply was not yet expected or able to perform.
+Also output located `findings` and one concise `correct_points` sentence.
+
+## Progress, Mid-flight Work, and Recovery
+
+A correct tool call awaiting its result, or a correct request for clarification/authorization, is valid in-progress behaviour. Judge the due action `done` and dependent later subtasks `not_due`; do not penalize the absence of a future result. Wrong tools, wrong arguments, repeated calls, needless detours, or a violated explicit constraint are errors. A recovery action only restores the current step and never completes downstream work.
+
+## Status Discipline
+
+- A complete but directionally wrong or unusable deliverable is `missed`, not `partial`.
+- An atomic due subtask is binary: `done` or `missed`.
+- Use `partial` only when independently checkable due pieces are split between success and failure.
+- Mark an explicit instruction/constraint violation as `error`; if it is the sole due obligation, status is `missed`.
+- Object mismatch counts only when the requested object and the acted-on object are provably distinct from quoted evidence.
+- `not_due` must not excuse work that should have been handled now.
+
+## Finding Structure
+
+Every finding is locatable and has:
+{
+  "type": "missing | error | irrelevant",
+  "severity": "serious | minor | none",
+  "location": "回复原文片段、tool_call 序号或具体参数",
+  "detail": "具体、可复核的中文说明"
+}
+`serious` changes or blocks the next action; `minor` is real but outcome-neutral; `none` is harmless extra content and never deducts. Fabricated factual content is serious. A serious finding on a due subtask cannot remain `done`.
+
+Everything above "----- 以下为评测系统附加的元信息" is raw model output, including `[模型发起的工具调用 tool_calls]`; everything below it belongs to the harness and must never be blamed on the model.
+
+## Discipline
+
+Judge only this response against the fixed subtasks. Do not re-decompose, merge, split, reword, add, or remove them. Method is free unless the user explicitly constrained it. Do not infer requirements from schema field names. Record only anchored findings and never output tier or score.
+
+## Output Format (Strict JSON)
+
+Output exactly ONE JSON object, no code fence and no surrounding text:
+{
+  "current_stage_note": "本轮回复被期望推进到哪一步（中文）",
+  "subtasks": [{
+    "id": 1,
+    "desc": "<verbatim from input>",
+    "status": "done",
+    "findings": [{"type":"error","severity":"serious","location":"可定位证据","detail":"中文说明"}],
+    "correct_points": "本项做对了什么（中文）"
+  }],
+  "detector_summary": "整体错在哪里、对在哪里（中文）"
+}
+Before output, verify same subtask count/id/desc, legal statuses, anchored findings, and no tier or score."""
+
+DEFAULT_VERIFIER_PROMPT = """# Verifier System Prompt - Stage 3 (Review & Score)
+
+You are the final reviewer in a three-stage LLM judge. You receive the FIXED Stage 1 ruler, Stage 2 localization, context, query, trajectory, tools, reference, and candidate RESPONSE. Do not re-grade from scratch: verify Stage 2, correct it, fill what it missed, then score.
+
+Score is an integer 1–10 in strictly ordered tiers supplied as `{tier_block}`. Decide the tier first, then the score within it.
+
+## Mandatory Three-Step Review
+
+1. Adjudicate every Stage 2 finding as `confirm`, `overturn`, or `adjust`, each with your own quoted evidence.
+2. Independently scan fixed subtasks for genuine missed findings and add them with verdict `add` and an anchor.
+3. Clear false alarms, especially restoring `not_due` when a later task was not yet this reply's responsibility.
+
+## Scoring the Current Step
+
+Score only due subtasks; exclude `not_due` from the denominator. Correct mid-flight tool use or waiting for the user is Tier 1. Wrong tools/arguments, repeated calls, detours, explicit-constraint violations, or wrong content are deductions. A wrong complete product is `missed`, not `partial`; an atomic subtask is never partial. A recovery action does not complete downstream work.
+
+## Tier Rules
+
+- All due subtasks `done` → Tier 1. If misleading actionable content remains, use Tier 2 / score 7.
+- Any due subtask `partial` or `missed` → Tier 2.
+- All due subtasks `missed` → Tier 3.
+- If every subtask is `not_due` and the reply is a correct advance → Tier 1.
+
+Within Tier 1: 9 clean, 8 harmless blemish, 10 genuine extra value. Tier 2: 6–7 mostly done, 5–6 about half, 4–5 a small part. Tier 3: 3 right direction without delivery, 2 off-target, 1 empty/garbled/unjustified refusal.
+
+## Discipline
+
+Reproduce every fixed subtask's exact id and desc with its final status. No external failure excuses a real miss. Every rationale must be locatable. Judge equivalent actions consistently. The final tier and score are yours alone.
+
+## Output Format (Strict JSON)
+
+Output exactly ONE JSON object, no code fence and no surrounding text:
+{
+  "subtasks": [{"id":1,"desc":"<verbatim>","status":"done"}],
+  "corrections": [
+    {"finding_ref":"subtask 1 的第1条","verdict":"confirm|overturn|adjust","evidence":"引用片段/tool_call","note":"中文裁决理由"},
+    {"finding_ref":"新增(漏报)","verdict":"add","evidence":"引用片段","note":"中文说明"}
+  ],
+  "review_note": "三步复核整体结论（中文）",
+  "tier": 1,
+  "score": 9,
+  "score_rationale": "档内取值理由（中文）",
+  "reasoning": "逐子任务最终依据（中文）",
+  "overall_comment": "一句话总评（中文）"
+}
+Before output, verify exact subtask reproduction, complete corrections, due-only tier logic, and an in-tier integer score."""
+
+FINAL_STATUS_PROMPT_SUFFIX = """\n\n输出结构补充（除此之外，原 Prompt 的规则与口径保持不变）：顶层必须增加 `final_status`，且只能取 `done`、`partial`、`missed`。根据 Stage 3 复核后的 due 子任务最终状态填写：全部 done 为 done，全部 missed 为 missed，其他情况为 partial；not_due 不参与判断，若全部为 not_due 且本轮推进正确则为 done。"""
+
+
+def verifier_prompt_with_final_status(prompt: str, rubric: str = "") -> str:
+    restored = prompt.replace("{tier_block}", rubric) if rubric else prompt
+    return restored if "final_status" in restored.lower() else f"{restored.rstrip()}{FINAL_STATUS_PROMPT_SUFFIX}"
 
 
 def default_judge_config() -> dict[str, Any]:
@@ -441,7 +597,9 @@ PET_COLORS = {"lime": 1, "aqua": 2, "peach": 3, "lavender": 4, "sky": 5, "coral"
 PET_ACCESSORIES = {"none": 1, "leaf": 2, "bow": 3, "glasses": 4, "star": 5, "headphones": 6, "cap": 7, "crown": 8, "halo": 10, "medal": 12}
 # One unit is 0.2 EXP, which keeps fractional petting rewards exact in the database.
 PET_XP_UNITS = {"pet": 1, "annotation": 30, "badcase": 20}
-PET_LEVEL_TITLES = {1: "实习搭子", 2: "认真观察员", 4: "Badcase 侦探", 6: "质量守门员", 8: "评测专家", 10: "首席标注官", 12: "传奇质检师"}
+PET_MAX_LEVEL = 50
+PET_STEADY_LEVEL_COST = 140
+PET_LEVEL_TITLES = {1: "实习搭子", 2: "认真观察员", 4: "Badcase 侦探", 6: "质量守门员", 8: "评测专家", 10: "首席标注官", 15: "资深裁决师", 20: "传奇质检师", 30: "评测领航员", 40: "质量宗师", 50: "Case Lens 守护者"}
 PET_EVOLUTION_PATHS: dict[str, dict[str, Any]] = {
     "starlight": {"name": "星辉灵兽", "quality": "radiant", "traits": [["星尘额纹", "新月耳尖", "彗星小角"], ["月光羽翼", "星轨尾焰", "银河披风"], ["星环冠冕", "极光领域", "星核辉光"]]},
     "guardian": {"name": "守护机甲", "quality": "bold", "traits": [["合金耳甲", "战术目镜", "棱镜面罩"], ["折叠钢翼", "推进尾翼", "护盾肩甲"], ["量子核心", "冠军冠冕", "脉冲力场"]]},
@@ -452,8 +610,18 @@ PET_EVOLUTION_PATHS: dict[str, dict[str, Any]] = {
 PET_MAX_EVOLUTION_STAGE = 3
 
 
+def pet_level_start_xp(level: int) -> int:
+    normalized = max(1, int(level))
+    if normalized <= 5:
+        return 20 * (normalized - 1) ** 2
+    return 320 + PET_STEADY_LEVEL_COST * (normalized - 5)
+
+
 def pet_level(xp: float) -> int:
-    return int((max(0, xp) / 20) ** 0.5) + 1
+    safe_xp = max(0, xp)
+    if safe_xp < pet_level_start_xp(5):
+        return min(4, int((safe_xp / 20) ** 0.5) + 1)
+    return min(PET_MAX_LEVEL, 5 + int((safe_xp - pet_level_start_xp(5)) // PET_STEADY_LEVEL_COST))
 
 
 def get_or_create_pet(db: Session, user_id: int) -> tuple[PetProfile, PetProgressV2, PetEvolution]:
@@ -494,8 +662,8 @@ def pet_dict(profile: PetProfile, progress: PetProgressV2, evolution: PetEvoluti
         "xp": xp,
         "level": level,
         "title": pet_title(level),
-        "current_level_xp": 20 * (level - 1) ** 2,
-        "next_level_xp": 20 * level ** 2,
+        "current_level_xp": pet_level_start_xp(level),
+        "next_level_xp": pet_level_start_xp(level if level >= PET_MAX_LEVEL else level + 1),
         "evolution_chances": evolution.available_chances,
         "evolution_credited_level": evolution.credited_level,
         "evolution_stage": evolution.stage,
@@ -888,6 +1056,40 @@ def judge_config_payload(record: JudgeConfigVersion | None, include_details: boo
     }
 
 
+def migrate_legacy_judge_prompts(db: Session) -> int:
+    """Version legacy compact prompts without mutating historical configurations."""
+    migrated = 0
+    for previous in db.scalars(select(JudgeConfigVersion).where(JudgeConfigVersion.active.is_(True))).all():
+        config = dict(previous.config or {})
+        replacements = {
+            "decomposer_prompt": (LEGACY_DECOMPOSER_PROMPT, DEFAULT_DECOMPOSER_PROMPT),
+            "detector_prompt": (LEGACY_DETECTOR_PROMPT, DEFAULT_DETECTOR_PROMPT),
+            "verifier_prompt": (LEGACY_VERIFIER_PROMPT, DEFAULT_VERIFIER_PROMPT),
+        }
+        changed = False
+        for key, (legacy, restored) in replacements.items():
+            if config.get(key) == legacy:
+                config[key] = restored
+                changed = True
+        if not changed:
+            continue
+        version = (db.scalar(select(func.max(JudgeConfigVersion.version)).where(JudgeConfigVersion.project_id == previous.project_id)) or 0) + 1
+        previous.active = False
+        db.add(JudgeConfigVersion(
+            project_id=previous.project_id,
+            version=version,
+            config=config,
+            api_key="",
+            signature=judge_config_signature(config),
+            active=True,
+            created_by=previous.created_by,
+        ))
+        migrated += 1
+    if migrated:
+        db.commit()
+    return migrated
+
+
 def text_value(value: Any) -> str:
     if isinstance(value, str):
         return value
@@ -1035,19 +1237,103 @@ def call_judge_model(config: dict[str, Any], api_key: str, system_prompt: str, u
 
 def stage1_user_prompt(payload: dict[str, Any], token_limit: int) -> str:
     sections = judge_case_sections(payload)
-    value = f"""请拆解以下 Case。\n\n=== CONTEXT ===\n{sections['context']}\n\n=== QUERY ===\n{sections['query']}\n\n=== TRAJECTORY ===\n{sections['trajectory']}\n\n=== TOOLS ===\n{sections['tools']}\n\n=== REFERENCE ANSWER ===\n{sections['reference_answer']}"""
+    value = f"""Decompose the user's request into a fixed subtask list, using the trajectory to
+tag progress. You have NOT seen the candidate reply being scored.
+
+=== CONVERSATION CONTEXT (turns BEFORE the query — background only) ===
+{sections['context']}
+
+=== QUERY — THE LATEST USER MESSAGE (subtasks come FROM the user's needs here) ===
+{sections['query']}
+
+=== TRAJECTORY (assistant/tool turns AFTER the query — shared setup, not any model's scored reply) ===
+{sections['trajectory']}
+
+=== AVAILABLE TOOLS (capabilities only) ===
+{sections['tools']}
+
+=== REFERENCE ANSWER (if any) ===
+{sections['reference_answer']}
+
+=== END ===
+
+Decompose tasks only from QUERY. Use CONTEXT for interpretation and TRAJECTORY only for `phase` and `current_stage`. Tools and reference answers must not create subtasks. Output exactly ONE JSON object with Chinese `full_goal`, `current_stage`, every `desc`, and `decomposition_reasoning`; each phase is exactly `done_before` or `pending`."""
     return clip_judge_text(value, token_limit)
 
 
 def stage2_user_prompt(payload: dict[str, Any], candidate: dict[str, Any], stage1: dict[str, Any], token_limit: int) -> str:
     sections = judge_case_sections(payload)
-    value = f"""请定位候选回复在固定子任务上的问题。\n\n=== FIXED SUBTASKS ===\n{text_value(stage1.get('subtasks', []))}\n\n=== STAGE 1 NOTES ===\n{text_value(stage1)}\n\n=== CONTEXT ===\n{sections['context']}\n\n=== QUERY ===\n{sections['query']}\n\n=== TRAJECTORY ===\n{sections['trajectory']}\n\n=== TOOLS ===\n{sections['tools']}\n\n=== REFERENCE ANSWER ===\n{sections['reference_answer']}\n\n=== CANDIDATE RESPONSE ===\n{text_value({'reasoning': candidate.get('reasoning'), 'response': candidate.get('response')})}"""
+    value = f"""Locate, per fixed subtask, how the model RESPONSE did. You assign status +
+located findings only — no tier, no score.
+
+=== FIXED SUBTASKS (from Stage 1 — DO NOT MODIFY, ADD, or REMOVE) ===
+{text_value(stage1.get('subtasks', []))}
+
+=== STAGE 1 NOTES (full goal & where the task stands) ===
+{text_value(stage1)}
+
+=== CONVERSATION CONTEXT (turns before the query — background) ===
+{sections['context']}
+
+=== QUERY — THE LATEST USER MESSAGE (what the subtasks came from) ===
+{sections['query']}
+
+=== TRAJECTORY (assistant/tool turns after the query — shared setup) ===
+{sections['trajectory']}
+
+=== AVAILABLE TOOLS ===
+{sections['tools']}
+
+=== REFERENCE ANSWER (if any) ===
+{sections['reference_answer']}
+
+=== MODEL RESPONSE TO EVALUATE (response) ===
+{text_value({'reasoning': candidate.get('reasoning'), 'response': candidate.get('response')})}
+
+=== END ===
+
+Reproduce every fixed subtask with exact `id` and `desc`. Use the trajectory to determine what was due. Correct in-progress work is not an error; wrong tools, arguments, repeats, detours, or content are. Everything below "----- 以下为评测系统附加的元信息" belongs to the harness. Output exactly ONE JSON object in the documented Stage 2 structure, with Chinese narrative fields and no tier or score."""
     return clip_judge_text(value, token_limit)
 
 
 def stage3_user_prompt(payload: dict[str, Any], candidate: dict[str, Any], stage1: dict[str, Any], stage2: dict[str, Any], config: dict[str, Any], token_limit: int) -> str:
     sections = judge_case_sections(payload)
-    value = f"""请复核错误定位并给出最终档位和整数分。\n\n=== RUBRIC ===\n{config.get('rubric')}\n\n=== FIXED SUBTASKS / STAGE 1 ===\n{text_value(stage1)}\n\n=== STAGE 2 LOCALIZATION ===\n{text_value(stage2)}\n\n=== CONTEXT ===\n{sections['context']}\n\n=== QUERY ===\n{sections['query']}\n\n=== TRAJECTORY ===\n{sections['trajectory']}\n\n=== TOOLS ===\n{sections['tools']}\n\n=== REFERENCE ANSWER ===\n{sections['reference_answer']}\n\n=== CANDIDATE RESPONSE ===\n{text_value({'reasoning': candidate.get('reasoning'), 'response': candidate.get('response')})}"""
+    value = f"""Verify Stage 2's error localization, correct it, then decide the final tier and
+score. Do the three review steps in order; do not rubber-stamp.
+
+=== FIXED SUBTASKS (from Stage 1 — the ruler; DO NOT MODIFY/ADD/REMOVE) ===
+{text_value(stage1.get('subtasks', []))}
+
+=== STAGE 1 NOTES (full goal & where the task stands) ===
+{text_value(stage1)}
+
+=== STAGE 2 LOCALIZATION (per-subtask status + located findings to verify) ===
+{text_value(stage2)}
+
+=== CONVERSATION CONTEXT (turns before the query — background) ===
+{sections['context']}
+
+=== QUERY — THE LATEST USER MESSAGE ===
+{sections['query']}
+
+=== TRAJECTORY (assistant/tool turns after the query — shared setup) ===
+{sections['trajectory']}
+
+=== AVAILABLE TOOLS ===
+{sections['tools']}
+
+=== REFERENCE ANSWER (if any) ===
+{sections['reference_answer']}
+
+=== MODEL RESPONSE TO EVALUATE (response) ===
+{text_value({'reasoning': candidate.get('reasoning'), 'response': candidate.get('response')})}
+
+=== TIER RULES ===
+{config.get('rubric')}
+
+=== END ===
+
+Adjudicate every Stage 2 finding, scan for missed issues, and clear false alarms in that order. Score due subtasks only; `not_due` is excluded. Everything below "----- 以下为评测系统附加的元信息" belongs to the harness. Output exactly ONE JSON object in the documented Stage 3 structure, with Chinese narrative fields, exact fixed subtasks, a legal tier, and an integer score."""
     return clip_judge_text(value, token_limit)
 
 
@@ -1063,7 +1349,26 @@ def find_result_value(value: Any, keys: set[str]) -> Any:
     return None
 
 
+def stage3_final_status(sample: dict[str, Any]) -> str:
+    explicit = str(sample.get("final_status", "")).strip().lower()
+    if explicit in {"done", "partial", "missed"}:
+        return explicit
+    subtasks = sample.get("subtasks") if isinstance(sample.get("subtasks"), list) else []
+    due_statuses = [
+        str(item.get("status", "")).strip().lower()
+        for item in subtasks
+        if isinstance(item, dict) and str(item.get("status", "")).strip().lower() != "not_due"
+    ]
+    due_statuses = [status for status in due_statuses if status in {"done", "partial", "missed"}]
+    if not due_statuses or all(status == "done" for status in due_statuses):
+        return "done"
+    if all(status == "missed" for status in due_statuses):
+        return "missed"
+    return "partial"
+
+
 def aggregate_stage3(samples: list[dict[str, Any]]) -> dict[str, Any]:
+    samples = [{**sample, "final_status": stage3_final_status(sample)} for sample in samples]
     scores: list[int] = []
     tiers: list[int] = []
     for sample in samples:
@@ -1192,7 +1497,7 @@ def execute_judge_case_run(case_run_id: int) -> None:
                 stage3_input = stage3_user_prompt(case.payload, candidate, case_run.stage1_result or {}, candidate_run.stage2_result or {}, config, int(config.get("input_limit", 0)))
                 for sample_index in range(int(config.get("sample_count", 3))):
                     try:
-                        raw = call_judge_model(config, config_record.api_key, str(config["verifier_prompt"]), stage3_input, float(config["stage3_temperature"]), int(config["stage3_max_tokens"]))
+                        raw = call_judge_model(config, config_record.api_key, verifier_prompt_with_final_status(str(config["verifier_prompt"]), str(config.get("rubric", ""))), stage3_input, float(config["stage3_temperature"]), int(config["stage3_max_tokens"]))
                         raw_samples.append(raw)
                         samples.append(parse_json_object(raw))
                     except Exception as exc:
@@ -1203,7 +1508,7 @@ def execute_judge_case_run(case_run_id: int) -> None:
                 if bool(config.get("adaptive_sampling")) and not consensus["consensus"]["stable"]:
                     for _ in range(min(2, 9 - len(samples))):
                         try:
-                            raw = call_judge_model(config, config_record.api_key, str(config["verifier_prompt"]), stage3_input, float(config["stage3_temperature"]), int(config["stage3_max_tokens"]))
+                            raw = call_judge_model(config, config_record.api_key, verifier_prompt_with_final_status(str(config["verifier_prompt"]), str(config.get("rubric", ""))), stage3_input, float(config["stage3_temperature"]), int(config["stage3_max_tokens"]))
                             raw_samples.append(raw)
                             samples.append(parse_json_object(raw))
                         except Exception as exc:
@@ -1380,6 +1685,7 @@ def startup() -> None:
                 raise RuntimeError("首次启动必须设置 ADMIN_PASSWORD")
             db.add(User(username=username, display_name=os.getenv("ADMIN_DISPLAY_NAME", "管理员"), password_hash=hash_password(password), role="admin"))
             db.commit()
+        migrate_legacy_judge_prompts(db)
         recoverable = db.scalars(
             select(JudgeCaseRun).where(JudgeCaseRun.status.in_(["queued", "claimed", "running_stage_1", "running_stage_2", "running_stage_3"]))
         ).all()

@@ -231,8 +231,14 @@ const PET_LEVELS = [
   { level: 6, title: "质量守门员", unlock: "珊瑚色 · 耳机" },
   { level: 8, title: "评测专家", unlock: "鎏金色 · 王冠" },
   { level: 10, title: "首席标注官", unlock: "星夜色 · 光环" },
-  { level: 12, title: "传奇质检师", unlock: "专属勋章" },
+  { level: 15, title: "资深裁决师", unlock: "长期成长里程碑" },
+  { level: 20, title: "传奇质检师", unlock: "传奇质检徽记" },
+  { level: 30, title: "评测领航员", unlock: "高阶成长里程碑" },
+  { level: 40, title: "质量宗师", unlock: "宗师成长里程碑" },
+  { level: 50, title: "Case Lens 守护者", unlock: "满级荣誉" },
 ];
+const PET_MAX_LEVEL = 50;
+const PET_STEADY_LEVEL_COST = 140;
 const PET_EVOLUTION_PATHS: Record<Exclude<PetEvolutionPath, "">, { name: string; motif: string; traits: string[][]; tone: string }> = {
   starlight: { name: "星辉灵兽", motif: "✦", traits: [["星尘额纹", "新月耳尖", "彗星小角"], ["月光羽翼", "星轨尾焰", "银河披风"], ["星环冠冕", "极光领域", "星核辉光"]], tone: "璀璨" },
   guardian: { name: "守护机甲", motif: "◆", traits: [["合金耳甲", "战术目镜", "棱镜面罩"], ["折叠钢翼", "推进尾翼", "护盾肩甲"], ["量子核心", "冠军冠冕", "脉冲力场"]], tone: "坚毅" },
@@ -242,8 +248,15 @@ const PET_EVOLUTION_PATHS: Record<Exclude<PetEvolutionPath, "">, { name: string;
 };
 const PET_MAX_EVOLUTION_STAGE = 3;
 
+function petLevelStartXp(level: number) {
+  const normalized = Math.max(1, Math.floor(level));
+  return normalized <= 5 ? 20 * (normalized - 1) ** 2 : 320 + PET_STEADY_LEVEL_COST * (normalized - 5);
+}
+
 function petLevelFromXp(xp: number) {
-  return Math.floor(Math.sqrt(Math.max(0, xp) / 20)) + 1;
+  const safeXp = Math.max(0, xp);
+  if (safeXp < petLevelStartXp(5)) return Math.min(4, Math.floor(Math.sqrt(safeXp / 20)) + 1);
+  return Math.min(PET_MAX_LEVEL, 5 + Math.floor((safeXp - petLevelStartXp(5)) / PET_STEADY_LEVEL_COST));
 }
 
 function petTitle(level: number) {
@@ -270,8 +283,8 @@ function normalizedPetProfile(value: Partial<PetProfile> | null | undefined): Pe
     xp,
     level,
     title: typeof value?.title === "string" ? value.title : petTitle(level),
-    current_level_xp: 20 * (level - 1) ** 2,
-    next_level_xp: 20 * level ** 2,
+    current_level_xp: petLevelStartXp(level),
+    next_level_xp: petLevelStartXp(level >= PET_MAX_LEVEL ? level : level + 1),
     earned_event_keys: Array.isArray(value?.earned_event_keys) ? value.earned_event_keys.filter((item): item is string => typeof item === "string").slice(-1000) : [],
     evolution_chances: storedChances + Math.max(0, level - storedCreditedLevel),
     evolution_credited_level: Math.max(level, storedCreditedLevel),
@@ -1180,17 +1193,24 @@ function clipJudgeText(value: string, tokenLimit: number) {
 
 function judgeStage1Prompt(item: LogCase, tokenLimit: number) {
   const section = judgeCaseSections(item);
-  return clipJudgeText(`请拆解以下 Case。\n\n=== CONTEXT ===\n${section.context}\n\n=== QUERY ===\n${section.query}\n\n=== TRAJECTORY ===\n${section.trajectory}\n\n=== TOOLS ===\n${section.tools}\n\n=== REFERENCE ANSWER ===\n${section.referenceAnswer}`, tokenLimit);
+  return clipJudgeText(`Decompose the user's request into a fixed subtask list, using the trajectory to\ntag progress. You have NOT seen the candidate reply being scored.\n\n=== CONVERSATION CONTEXT (turns BEFORE the query — background only) ===\n${section.context}\n\n=== QUERY — THE LATEST USER MESSAGE (subtasks come FROM the user's needs here) ===\n${section.query}\n\n=== TRAJECTORY (assistant/tool turns AFTER the query — shared setup, not any model's scored reply) ===\n${section.trajectory}\n\n=== AVAILABLE TOOLS (capabilities only) ===\n${section.tools}\n\n=== REFERENCE ANSWER (if any) ===\n${section.referenceAnswer}\n\n=== END ===\n\nDecompose tasks only from QUERY. Use CONTEXT for interpretation and TRAJECTORY only for \`phase\` and \`current_stage\`. Tools and reference answers must not create subtasks. Output exactly ONE JSON object with Chinese \`full_goal\`, \`current_stage\`, every \`desc\`, and \`decomposition_reasoning\`; each phase is exactly \`done_before\` or \`pending\`.`, tokenLimit);
 }
 
 function judgeStage2Prompt(item: LogCase, candidate: CandidateOutput, stage1: JsonObject, tokenLimit: number) {
   const section = judgeCaseSections(item);
-  return clipJudgeText(`请定位候选回复在固定子任务上的问题。\n\n=== FIXED SUBTASKS ===\n${judgeText(stage1.subtasks ?? [])}\n\n=== STAGE 1 NOTES ===\n${judgeText(stage1)}\n\n=== CONTEXT ===\n${section.context}\n\n=== QUERY ===\n${section.query}\n\n=== TRAJECTORY ===\n${section.trajectory}\n\n=== TOOLS ===\n${section.tools}\n\n=== REFERENCE ANSWER ===\n${section.referenceAnswer}\n\n=== CANDIDATE RESPONSE ===\n${judgeText({ reasoning: candidate.reasoning, response: candidate.response })}`, tokenLimit);
+  return clipJudgeText(`Locate, per fixed subtask, how the model RESPONSE did. You assign status +\nlocated findings only — no tier, no score.\n\n=== FIXED SUBTASKS (from Stage 1 — DO NOT MODIFY, ADD, or REMOVE) ===\n${judgeText(stage1.subtasks ?? [])}\n\n=== STAGE 1 NOTES (full goal & where the task stands) ===\n${judgeText(stage1)}\n\n=== CONVERSATION CONTEXT (turns before the query — background) ===\n${section.context}\n\n=== QUERY — THE LATEST USER MESSAGE (what the subtasks came from) ===\n${section.query}\n\n=== TRAJECTORY (assistant/tool turns after the query — shared setup) ===\n${section.trajectory}\n\n=== AVAILABLE TOOLS ===\n${section.tools}\n\n=== REFERENCE ANSWER (if any) ===\n${section.referenceAnswer}\n\n=== MODEL RESPONSE TO EVALUATE (response) ===\n${judgeText({ reasoning: candidate.reasoning, response: candidate.response })}\n\n=== END ===\n\nReproduce every fixed subtask with exact \`id\` and \`desc\`. Use the trajectory to determine what was due. Correct in-progress work is not an error; wrong tools, arguments, repeats, detours, or content are. Everything below "----- 以下为评测系统附加的元信息" belongs to the harness. Output exactly ONE JSON object in the documented Stage 2 structure, with Chinese narrative fields and no tier or score.`, tokenLimit);
 }
 
 function judgeStage3Prompt(item: LogCase, candidate: CandidateOutput, stage1: JsonObject, stage2: JsonObject, config: JudgeConfig, tokenLimit: number) {
   const section = judgeCaseSections(item);
-  return clipJudgeText(`请复核错误定位并给出最终档位和整数分。\n\n=== RUBRIC ===\n${config.rubric}\n\n=== FIXED SUBTASKS / STAGE 1 ===\n${judgeText(stage1)}\n\n=== STAGE 2 LOCALIZATION ===\n${judgeText(stage2)}\n\n=== CONTEXT ===\n${section.context}\n\n=== QUERY ===\n${section.query}\n\n=== TRAJECTORY ===\n${section.trajectory}\n\n=== TOOLS ===\n${section.tools}\n\n=== REFERENCE ANSWER ===\n${section.referenceAnswer}\n\n=== CANDIDATE RESPONSE ===\n${judgeText({ reasoning: candidate.reasoning, response: candidate.response })}`, tokenLimit);
+  return clipJudgeText(`Verify Stage 2's error localization, correct it, then decide the final tier and\nscore. Do the three review steps in order; do not rubber-stamp.\n\n=== FIXED SUBTASKS (from Stage 1 — the ruler; DO NOT MODIFY/ADD/REMOVE) ===\n${judgeText(stage1.subtasks ?? [])}\n\n=== STAGE 1 NOTES (full goal & where the task stands) ===\n${judgeText(stage1)}\n\n=== STAGE 2 LOCALIZATION (per-subtask status + located findings to verify) ===\n${judgeText(stage2)}\n\n=== CONVERSATION CONTEXT (turns before the query — background) ===\n${section.context}\n\n=== QUERY — THE LATEST USER MESSAGE ===\n${section.query}\n\n=== TRAJECTORY (assistant/tool turns after the query — shared setup) ===\n${section.trajectory}\n\n=== AVAILABLE TOOLS ===\n${section.tools}\n\n=== REFERENCE ANSWER (if any) ===\n${section.referenceAnswer}\n\n=== MODEL RESPONSE TO EVALUATE (response) ===\n${judgeText({ reasoning: candidate.reasoning, response: candidate.response })}\n\n=== TIER RULES ===\n${config.rubric}\n\n=== END ===\n\nAdjudicate every Stage 2 finding, scan for missed issues, and clear false alarms in that order. Score due subtasks only; \`not_due\` is excluded. Everything below "----- 以下为评测系统附加的元信息" belongs to the harness. Output exactly ONE JSON object in the documented Stage 3 structure, with Chinese narrative fields, exact fixed subtasks, a legal tier, and an integer score.`, tokenLimit);
+}
+
+const FINAL_STATUS_PROMPT_SUFFIX = `\n\n输出结构补充（除此之外，原 Prompt 的规则与口径保持不变）：顶层必须增加 \`final_status\`，且只能取 \`done\`、\`partial\`、\`missed\`。根据 Stage 3 复核后的 due 子任务最终状态填写：全部 done 为 done，全部 missed 为 missed，其他情况为 partial；not_due 不参与判断，若全部为 not_due 且本轮推进正确则为 done。`;
+
+function judgeVerifierPrompt(prompt: string, rubric = "") {
+  const restored = rubric ? prompt.replaceAll("{tier_block}", rubric) : prompt;
+  return restored.toLocaleLowerCase().includes("final_status") ? restored : `${restored.trimEnd()}${FINAL_STATUS_PROMPT_SUFFIX}`;
 }
 
 function findJudgeValue(value: unknown, keys: Set<string>): unknown {
@@ -1288,9 +1308,9 @@ function CompanionPet({ visible, message, mood, completed, total, pulse, hasNext
 }) {
   if (!visible) return <button className="pet-summon" type="button" onClick={onShow}><span aria-hidden="true">◉ᴗ◉</span> 唤回{profile.name}</button>;
   const progress = total ? Math.min(100, Math.round(completed / total * 100)) : 0;
-  const levelStart = profile.current_level_xp ?? 20 * (profile.level - 1) ** 2;
-  const levelEnd = profile.next_level_xp ?? 20 * profile.level ** 2;
-  const levelProgress = Math.min(100, Math.round((profile.xp - levelStart) / Math.max(1, levelEnd - levelStart) * 100));
+  const levelStart = profile.current_level_xp ?? petLevelStartXp(profile.level);
+  const levelEnd = profile.next_level_xp ?? petLevelStartXp(profile.level >= PET_MAX_LEVEL ? profile.level : profile.level + 1);
+  const levelProgress = profile.level >= PET_MAX_LEVEL ? 100 : Math.min(100, Math.round((profile.xp - levelStart) / Math.max(1, levelEnd - levelStart) * 100));
   const petColor = PET_COLORS.find((item) => item.id === profile.color)?.value ?? PET_COLORS[0].value;
   const accessory = PET_ACCESSORIES.find((item) => item.id === profile.accessory)?.symbol;
   return (
@@ -1318,7 +1338,7 @@ function CompanionPet({ visible, message, mood, completed, total, pulse, hasNext
               <PetCreatureVisual profile={profile} accessory={accessory} />
             </button>
             <div className="pet-profile-name"><strong>{profile.name}</strong><span>Lv.{profile.level} · {profile.title ?? petTitle(profile.level)}</span>{profile.evolution_stage ? <small>{profile.evolution_name} · {profile.evolution_stage} 阶</small> : null}</div>
-            <div className="pet-xp-card"><div><span>当前经验</span><strong>{formatXp(profile.xp)} EXP</strong></div><i><b style={{ width: `${levelProgress}%` }} /></i><small>距离 Lv.{profile.level + 1} 还需 {formatXp(Math.max(0, levelEnd - profile.xp))} EXP</small></div>
+            <div className="pet-xp-card"><div><span>当前经验</span><strong>{formatXp(profile.xp)} EXP</strong></div><i><b style={{ width: `${levelProgress}%` }} /></i><small>{profile.level >= PET_MAX_LEVEL ? "已达到 Lv.50 满级" : `距离 Lv.${profile.level + 1} 还需 ${formatXp(Math.max(0, levelEnd - profile.xp))} EXP`}</small></div>
             <div className="pet-exp-rules"><strong>经验获取</strong><span><b>+0.2</b> 摸摸 · 每小时最多 2 EXP</span><span><b>+6</b> 提交一个候选结果标注</span><span><b>+4</b> 首次发现并标记 Badcase</span></div>
           </aside>
           <div className="pet-studio-editor">
@@ -1332,7 +1352,7 @@ function CompanionPet({ visible, message, mood, completed, total, pulse, hasNext
             </section>
             <div className="pet-option-group pet-color-options"><div className="pet-option-title"><span>毛色</span><small>{PET_COLORS.filter((item) => item.level <= profile.level).length} / {PET_COLORS.length} 已解锁</small></div><div>{PET_COLORS.map((item) => <button type="button" key={item.id} className={profile.color === item.id ? "active" : ""} disabled={profile.level < item.level} onClick={() => onSelectColor(item.id)} style={{ "--swatch": item.value } as CSSProperties}><i />{item.label}{profile.level < item.level ? <small>Lv.{item.level}</small> : <small>✓</small>}</button>)}</div></div>
             <div className="pet-option-group pet-accessory-options"><div className="pet-option-title"><span>配饰</span><small>{PET_ACCESSORIES.filter((item) => item.level <= profile.level).length} / {PET_ACCESSORIES.length} 已解锁</small></div><div>{PET_ACCESSORIES.map((item) => <button type="button" key={item.id} className={profile.accessory === item.id ? "active" : ""} disabled={profile.level < item.level} onClick={() => onSelectAccessory(item.id)}><b>{item.symbol || "—"}</b><span>{item.label}</span>{profile.level < item.level ? <small>Lv.{item.level}</small> : <small>✓</small>}</button>)}</div></div>
-            <div className="pet-level-roadmap"><div className="pet-option-title"><span>等级路线</span><small>持续标注，逐级成长</small></div><div>{PET_LEVELS.map((item) => <article key={item.level} className={profile.level >= item.level ? "unlocked" : profile.level + 1 === item.level ? "next" : ""}><b>Lv.{item.level}</b><div><strong>{item.title}</strong><small>{item.unlock}</small></div><span>{profile.level >= item.level ? "已解锁" : `${20 * (item.level - 1) ** 2} EXP`}</span></article>)}</div></div>
+            <div className="pet-level-roadmap"><div className="pet-option-title"><span>等级路线 · 上限 50</span><small>Lv.5 后每级固定需要 {PET_STEADY_LEVEL_COST} EXP</small></div><div>{PET_LEVELS.map((item) => <article key={item.level} className={profile.level >= item.level ? "unlocked" : profile.level < item.level && !PET_LEVELS.some((other) => other.level > profile.level && other.level < item.level) ? "next" : ""}><b>Lv.{item.level}</b><div><strong>{item.title}</strong><small>{item.unlock}</small></div><span>{profile.level >= item.level ? "已解锁" : `${petLevelStartXp(item.level)} EXP`}</span></article>)}</div></div>
           </div>
         </div>
         <footer><span>装扮会保存在{persistenceLabel}中</span><div><button type="button" onClick={onToggleSettings}>稍后再说</button><button className="pet-save" type="button" onClick={onSaveProfile} disabled={busy || !draftName.trim()}>{busy ? "保存中…" : "保存装扮"}</button></div></footer>
@@ -1563,6 +1583,7 @@ const JUDGE_FIELD_LABELS: Record<string, string> = {
   evidence: "证据",
   note: "说明",
   review_note: "复核总结",
+  final_status: "最终状态",
   tier: "最终档位",
   score: "最终分数",
   score_rationale: "评分依据",
@@ -1590,6 +1611,129 @@ function JudgeStructuredValue({ value, depth = 0 }: { value: unknown; depth?: nu
     ))}</dl>;
   }
   return <span>{String(value)}</span>;
+}
+
+const JUDGE_SUBTASK_STATUS_LABELS: Record<string, string> = {
+  done: "已完成",
+  partial: "部分完成",
+  missed: "未完成",
+  not_due: "本轮未到",
+  done_before: "此前已完成",
+  pending: "待推进",
+};
+
+const JUDGE_FINDING_TYPE_LABELS: Record<string, string> = { missing: "缺失", error: "错误", irrelevant: "无关内容" };
+const JUDGE_SEVERITY_LABELS: Record<string, string> = { serious: "严重", minor: "轻微", none: "不扣分" };
+const JUDGE_VERDICT_LABELS: Record<string, string> = { confirm: "确认", overturn: "推翻", adjust: "调整", add: "补充漏报" };
+
+function judgeToken(value: unknown, fallback = "unknown") {
+  const token = String(value ?? "").trim().toLocaleLowerCase().replace(/[^a-z0-9_-]/g, "");
+  return token || fallback;
+}
+
+function judgeDisplayText(value: unknown) {
+  if (value === null || value === undefined || value === "") return "—";
+  return typeof value === "string" || typeof value === "number" || typeof value === "boolean" ? String(value) : judgeText(value);
+}
+
+function judgeObjectList(value: unknown): JsonObject[] {
+  return Array.isArray(value) ? value.filter(isObject) : [];
+}
+
+function inferredJudgeFinalStatus(value: JsonObject) {
+  const explicit = judgeToken(value.final_status, "");
+  if (["done", "partial", "missed"].includes(explicit)) return explicit;
+  const due = judgeObjectList(value.subtasks)
+    .map((item) => judgeToken(item.status, ""))
+    .filter((status) => status && status !== "not_due" && ["done", "partial", "missed"].includes(status));
+  if (!due.length || due.every((status) => status === "done")) return "done";
+  if (due.every((status) => status === "missed")) return "missed";
+  return "partial";
+}
+
+function JudgeStatusPill({ value }: { value: unknown }) {
+  const token = judgeToken(value);
+  return <span className={`judge-status-pill status-${token}`}>{JUDGE_SUBTASK_STATUS_LABELS[token] ?? judgeDisplayText(value)}</span>;
+}
+
+function judgeStatusCounts(value: unknown) {
+  const counts: Record<string, number> = { done: 0, partial: 0, missed: 0, not_due: 0 };
+  judgeObjectList(value).forEach((item) => {
+    const status = judgeToken(item.status, "");
+    if (status in counts) counts[status] += 1;
+  });
+  return counts;
+}
+
+function JudgeStatusOverview({ value }: { value: unknown }) {
+  const counts = judgeStatusCounts(value);
+  return <div className="judge-status-overview" aria-label="子任务状态汇总">
+    {Object.entries(counts).filter(([, count]) => count > 0).map(([status, count]) => <span className={`status-${status}`} key={status}><b>{count}</b>{JUDGE_SUBTASK_STATUS_LABELS[status] ?? status}</span>)}
+  </div>;
+}
+
+function JudgeStage2View({ value }: { value: JsonObject }) {
+  const subtasks = judgeObjectList(value.subtasks);
+  return (
+    <div className="judge-readable-stage judge-stage2-readable">
+      {value.current_stage_note ? <div className="judge-stage-callout"><span>本轮应推进</span><p>{judgeDisplayText(value.current_stage_note)}</p></div> : null}
+      {value.detector_summary ? <div className="judge-stage-summary"><span>检错总结</span><strong>{judgeDisplayText(value.detector_summary)}</strong></div> : null}
+      {subtasks.length ? <div className="judge-readable-subtasks">
+        {subtasks.map((subtask, index) => {
+          const findings = judgeObjectList(subtask.findings);
+          return <article className="judge-readable-subtask" key={`${judgeDisplayText(subtask.id)}-${index}`}>
+            <header><b>{String(subtask.id ?? index + 1).padStart(2, "0")}</b><h4>{judgeDisplayText(subtask.desc)}</h4><JudgeStatusPill value={subtask.status} /></header>
+            {findings.length ? <div className="judge-finding-list">{findings.map((finding, findingIndex) => {
+              const severity = judgeToken(finding.severity);
+              const type = judgeToken(finding.type);
+              return <section className={`judge-finding severity-${severity}`} key={findingIndex}>
+                <header><span>{JUDGE_FINDING_TYPE_LABELS[type] ?? judgeDisplayText(finding.type)}</span><em>{JUDGE_SEVERITY_LABELS[severity] ?? judgeDisplayText(finding.severity)}</em></header>
+                {finding.location ? <div className="judge-evidence-line"><span>定位</span><code>{judgeDisplayText(finding.location)}</code></div> : null}
+                <p>{judgeDisplayText(finding.detail)}</p>
+              </section>;
+            })}</div> : <p className="judge-clean-result">✓ 未定位到需要扣分的问题</p>}
+            {subtask.correct_points ? <div className="judge-correct-points"><span>做对了</span><p>{judgeDisplayText(subtask.correct_points)}</p></div> : null}
+          </article>;
+        })}
+      </div> : <JudgeStructuredValue value={value} />}
+      {value.parse_error || value.raw_output ? <div className="judge-readable-fallback"><JudgeStructuredValue value={{ parse_error: value.parse_error, raw_output: value.raw_output }} /></div> : null}
+    </div>
+  );
+}
+
+function JudgeStage3View({ value, consensus }: { value: JsonObject; consensus?: JsonObject }) {
+  const subtasks = judgeObjectList(value.subtasks);
+  const corrections = judgeObjectList(value.corrections);
+  const finalStatus = inferredJudgeFinalStatus(value);
+  const tier = consensus?.tier ?? value.tier;
+  const score = consensus?.score ?? value.score;
+  return (
+    <div className="judge-readable-stage judge-stage3-readable">
+      <div className="judge-final-scoreboard">
+        <div><span>最终状态</span><JudgeStatusPill value={finalStatus} /></div>
+        <div><span>最终档位</span><strong>{tier ? `Tier ${judgeDisplayText(tier)}` : "—"}</strong></div>
+        <div className="score"><span>最终分数</span><strong>{score ? judgeDisplayText(score) : "—"}<small>{score ? " / 10" : ""}</small></strong></div>
+      </div>
+      {subtasks.length ? <JudgeStatusOverview value={subtasks} /> : null}
+      {value.overall_comment ? <div className="judge-overall-comment"><span>总体评价</span><p>{judgeDisplayText(value.overall_comment)}</p></div> : null}
+      {subtasks.length ? <section className="judge-review-section"><header><span>01</span><div><strong>逐项最终状态</strong><small>以 Stage 3 复核后的结论为准</small></div></header><div className="judge-final-subtasks">{subtasks.map((subtask, index) => <article key={`${judgeDisplayText(subtask.id)}-${index}`}><b>{String(subtask.id ?? index + 1).padStart(2, "0")}</b><p>{judgeDisplayText(subtask.desc)}</p><JudgeStatusPill value={subtask.status} /></article>)}</div></section> : null}
+      {corrections.length ? <section className="judge-review-section"><header><span>02</span><div><strong>Stage 2 逐条裁决</strong><small>确认、推翻、调整与补充漏报</small></div></header><div className="judge-correction-list">{corrections.map((correction, index) => {
+        const verdict = judgeToken(correction.verdict);
+        return <article className={`verdict-${verdict}`} key={index}>
+          <header><span>{JUDGE_VERDICT_LABELS[verdict] ?? judgeDisplayText(correction.verdict)}</span><strong>{judgeDisplayText(correction.finding_ref)}</strong></header>
+          {correction.evidence ? <div className="judge-evidence-line"><span>证据</span><code>{judgeDisplayText(correction.evidence)}</code></div> : null}
+          {correction.note ? <p>{judgeDisplayText(correction.note)}</p> : null}
+        </article>;
+      })}</div></section> : null}
+      <section className="judge-review-section judge-review-reasoning"><header><span>03</span><div><strong>结论依据</strong><small>档内取值与综合复核说明</small></div></header><div>
+        {value.score_rationale ? <article><span>评分依据</span><p>{judgeDisplayText(value.score_rationale)}</p></article> : null}
+        {value.review_note ? <article><span>复核总结</span><p>{judgeDisplayText(value.review_note)}</p></article> : null}
+        {value.reasoning ? <article><span>综合理由</span><p>{judgeDisplayText(value.reasoning)}</p></article> : null}
+      </div></section>
+      {!subtasks.length && !corrections.length ? <div className="judge-readable-fallback"><JudgeStructuredValue value={value} /></div> : null}
+      {value.parse_error || value.raw_output ? <div className="judge-readable-fallback"><JudgeStructuredValue value={{ parse_error: value.parse_error, raw_output: value.raw_output }} /></div> : null}
+    </div>
+  );
 }
 
 function JudgeReviewPanel({ candidates, results, busy, runningTarget, onRunCandidate }: { candidates: CandidateOutput[]; results: Record<string, JudgeCandidateResult>; busy: boolean; runningTarget: string; onRunCandidate: (candidate: CandidateOutput) => void }) {
@@ -1631,6 +1775,8 @@ function JudgeCandidatePanel({ result }: { result?: JudgeCandidateResult }) {
   if (!result) return <section className="judge-candidate-panel idle"><header><div><span>AUTO JUDGE</span><strong>自动判分</strong></div><em>未运行</em></header><p>运行后将在这里依次展示检错、复核与最终分数。</p></section>;
   const consensus = isObject(result.stage3?.consensus) ? result.stage3.consensus : undefined;
   const final = isObject(result.stage3?.final) ? result.stage3.final : undefined;
+  const stage2Subtasks = judgeObjectList(result.stage2?.subtasks);
+  const stage2FindingCount = stage2Subtasks.reduce((total, item) => total + judgeObjectList(item.findings).length, 0);
   const unstable = consensus?.stable === false || result.stage3?.input_truncated === true || Boolean(result.stage2?.parse_error) || Boolean(final?.parse_error);
   return (
     <section className={`judge-candidate-panel status-${result.status}`}>
@@ -1641,8 +1787,8 @@ function JudgeCandidatePanel({ result }: { result?: JudgeCandidateResult }) {
       {unstable ? <p className="judge-caution">结果存在分歧或结构化解析提醒，建议仔细核查。</p> : null}
       {result.error ? <p className="judge-error">{result.error}</p> : null}
       {consensus ? <p className="judge-consensus-meta">{String(consensus.sample_count ?? 0)} 次采样{Array.isArray(consensus.score_range) ? ` · 分数范围 ${consensus.score_range.join("–")}` : ""}</p> : null}
-      {result.stage2 ? <section className="judge-stage"><header><span>STAGE 2</span><strong>逐项检错</strong></header><JudgeStructuredValue value={result.stage2} /></section> : null}
-      {result.stage3 ? <section className="judge-stage final"><header><span>STAGE 3</span><strong>复核与评分</strong></header><JudgeStructuredValue value={final ?? result.stage3} /></section> : null}
+      {result.stage2 ? <details className="judge-stage judge-stage-collapsible"><summary><div><span>STAGE 2</span><strong>逐项检错</strong><small>{stage2Subtasks.length} 个子任务 · {stage2FindingCount ? `定位到 ${stage2FindingCount} 项问题` : "未定位到扣分问题"}</small><JudgeStatusOverview value={stage2Subtasks} /></div><b>展开详情</b></summary><JudgeStage2View value={result.stage2} /></details> : null}
+      {result.stage3 ? <section className="judge-stage final"><header><span>STAGE 3</span><strong>复核与评分</strong><small>最终状态、裁决与评分依据</small></header><JudgeStage3View value={final ?? result.stage3} consensus={consensus} /></section> : null}
       {result.error && (result.stage2_raw || result.stage3_raw) ? <details className="judge-failure-raw"><summary>查看失败阶段原始输出</summary><pre>{result.stage3_raw || result.stage2_raw}</pre></details> : null}
       {!result.stage2 && !result.error ? <p className="judge-progress">{JUDGE_STATUS_LABELS[result.status] ?? "等待运行"}…</p> : null}
     </section>
@@ -2953,13 +3099,13 @@ export default function Home() {
         const parsedSamples: JsonObject[] = [];
         for (let sample = 0; sample < config.sample_count; sample += 1) {
           setNotice(`正在复核 ${candidate.model || candidate.id}：${sample + 1}/${config.sample_count}…`);
-          const raw = await requestJudgeModel(config, config.verifier_prompt, stage3Prompt, config.stage3_temperature, config.stage3_max_tokens, controller.signal);
+          const raw = await requestJudgeModel(config, judgeVerifierPrompt(config.verifier_prompt, config.rubric), stage3Prompt, config.stage3_temperature, config.stage3_max_tokens, controller.signal);
           result.stage3_raw.push(raw);
           parsedSamples.push(parseJudgeObject(raw));
         }
         if (config.adaptive_sampling && !judgeSamplesStable(parsedSamples)) {
           for (let extra = 0; extra < 2; extra += 1) {
-            const raw = await requestJudgeModel(config, config.verifier_prompt, stage3Prompt, config.stage3_temperature, config.stage3_max_tokens, controller.signal);
+            const raw = await requestJudgeModel(config, judgeVerifierPrompt(config.verifier_prompt, config.rubric), stage3Prompt, config.stage3_temperature, config.stage3_max_tokens, controller.signal);
             result.stage3_raw.push(raw);
           }
         }
@@ -3045,13 +3191,13 @@ export default function Home() {
                 const parsedSamples: JsonObject[] = [];
                 for (let sample = 0; sample < config.sample_count; sample += 1) {
                   setNotice(`本机判分 ${completed + failed + 1}/${pending.length}：${candidate.model || candidate.id} 复核 ${sample + 1}/${config.sample_count}…`);
-                  const raw = await requestJudgeModel(config, config.verifier_prompt, stage3Prompt, config.stage3_temperature, config.stage3_max_tokens, controller.signal);
+                  const raw = await requestJudgeModel(config, judgeVerifierPrompt(config.verifier_prompt, config.rubric), stage3Prompt, config.stage3_temperature, config.stage3_max_tokens, controller.signal);
                   result.stage3_raw.push(raw);
                   parsedSamples.push(parseJudgeObject(raw));
                 }
                 if (config.adaptive_sampling && !judgeSamplesStable(parsedSamples)) {
                   for (let extra = 0; extra < 2; extra += 1) {
-                    const raw = await requestJudgeModel(config, config.verifier_prompt, stage3Prompt, config.stage3_temperature, config.stage3_max_tokens, controller.signal);
+                    const raw = await requestJudgeModel(config, judgeVerifierPrompt(config.verifier_prompt, config.rubric), stage3Prompt, config.stage3_temperature, config.stage3_max_tokens, controller.signal);
                     result.stage3_raw.push(raw);
                   }
                 }

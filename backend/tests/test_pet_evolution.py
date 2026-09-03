@@ -34,6 +34,15 @@ class PetEvolutionTest(unittest.TestCase):
         _, _, same_evolution = api.get_or_create_pet(self.db, self.user.id)
         self.assertEqual(same_evolution.available_chances, 2)
 
+    def test_level_curve_caps_at_50_and_stays_flat_after_level_five(self) -> None:
+        self.assertEqual(api.pet_level_start_xp(4), 180)
+        self.assertEqual(api.pet_level_start_xp(5), 320)
+        self.assertEqual(api.pet_level_start_xp(6), 460)
+        self.assertEqual(api.pet_level_start_xp(50), 6620)
+        self.assertEqual(api.pet_level(459.9), 5)
+        self.assertEqual(api.pet_level(460), 6)
+        self.assertEqual(api.pet_level(100000), 50)
+
     def test_single_attempt_is_consumed_and_can_fail(self) -> None:
         api.get_or_create_pet(self.db, self.user.id)
         self.db.commit()

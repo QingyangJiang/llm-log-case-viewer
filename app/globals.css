@@ -513,9 +513,14 @@ kbd { display: inline-flex; min-width: 22px; height: 22px; align-items: center; 
 .judge-candidate-panel.idle > header { border-bottom: 0; background: transparent; }
 .judge-candidate-panel.idle > p,.judge-progress { margin: 0; padding: 0 10px 11px; color: var(--muted); font-size: 8px; line-height: 1.5; }
 .judge-stage { border-top: 1px solid #cbd3ce; }
-.judge-stage > header { padding: 8px 10px; border-bottom: 1px solid #d8ded9; background: white; }
+.judge-stage > header,.judge-stage-collapsible > summary { padding: 8px 10px; border-bottom: 1px solid #d8ded9; background: white; }
 .judge-stage > .judge-fields { padding: 9px 10px 11px; }
 .judge-stage.final > header { background: #f0f8e2; }
+.judge-stage-collapsible > summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; cursor: pointer; list-style: none; }
+.judge-stage-collapsible > summary::-webkit-details-marker { display: none; }
+.judge-stage-collapsible > summary > b { color: #456052; font-size: 11px; }
+.judge-stage-collapsible > summary > b::after { content: " ＋"; }
+.judge-stage-collapsible[open] > summary > b::after { content: " －"; }
 .judge-caution,.judge-error { margin: 9px 10px; padding: 8px 9px; border-left: 3px solid #d18a2d; background: #fff5e7; color: #765323; font-size: 8px; line-height: 1.5; }
 .judge-error { border-left-color: #b8463f; background: #fff0ef; color: #7c302b; }
 .judge-consensus-meta { margin: 7px 10px; color: #617069; font-family: var(--font-geist-mono),monospace; font-size: 7px; }
@@ -582,6 +587,79 @@ kbd { display: inline-flex; min-width: 22px; height: 22px; align-items: center; 
 .judge-review-detail :is(.judge-field-desc,.judge-field-detail,.judge-field-evidence,.judge-field-location,.judge-field-note,.judge-field-review_note,.judge-field-detector_summary,.judge-field-score_rationale,.judge-field-reasoning,.judge-field-overall_comment,.judge-field-correct_points) { grid-template-columns: 1fr; gap: 4px; }
 .judge-review-detail .judge-caution,.judge-review-detail .judge-error { margin: 11px 13px; font-size: 12px; }
 .judge-review-detail .judge-consensus-meta { margin: 9px 13px; font-size: 11px; }
+.judge-stage > header > small,.judge-stage-collapsible > summary small { display: block; margin-top: 3px; color: #75827b; font-size: 11px; }
+.judge-stage-collapsible > summary span { display: block; color: #567064; font-family: var(--font-geist-mono),monospace; font-size: 11px; letter-spacing: .12em; }
+.judge-stage-collapsible > summary strong { display: block; margin-top: 2px; font-size: 14px; }
+.judge-readable-stage { padding: 14px; display: grid; gap: 14px; background: #f7faf7; }
+.judge-stage-callout,.judge-stage-summary,.judge-overall-comment { padding: 13px 15px; border-left: 4px solid #698273; background: white; }
+.judge-stage-callout > span,.judge-stage-summary > span,.judge-overall-comment > span { display: block; margin-bottom: 5px; color: #68766f; font-size: 11px; font-weight: 800; letter-spacing: .06em; }
+.judge-stage-callout p,.judge-overall-comment p { margin: 0; color: #26322d; font-size: 14px; line-height: 1.65; }
+.judge-stage-summary { border-left-color: var(--accent-strong); background: #f2f8df; }
+.judge-stage-summary strong { color: #26322d; font-size: 15px; line-height: 1.6; }
+.judge-readable-subtasks { display: grid; gap: 12px; }
+.judge-readable-subtask { overflow: hidden; border: 1px solid #aeb9b3; background: white; box-shadow: 2px 2px 0 #e0e5e1; }
+.judge-readable-subtask > header { min-height: 52px; padding: 10px 12px; display: grid; grid-template-columns: 34px minmax(0,1fr) auto; align-items: center; gap: 10px; border-bottom: 1px solid #d5dcd7; background: #f2f5f2; }
+.judge-readable-subtask > header > b,.judge-final-subtasks article > b { color: #52665b; font-family: var(--font-geist-mono),monospace; font-size: 12px; }
+.judge-readable-subtask h4 { margin: 0; color: #24312b; font-size: 14px; line-height: 1.55; }
+.judge-status-pill { width: max-content; padding: 4px 8px; border: 1px solid #9da9a2; background: #edf1ee; color: #4a5a51; font-size: 11px; font-weight: 800; white-space: nowrap; }
+.judge-status-pill.status-done,.judge-status-pill.status-done_before { border-color: #73a27f; background: #e8f5e8; color: #24613a; }
+.judge-status-pill.status-partial { border-color: #d09a44; background: #fff2d8; color: #805a1d; }
+.judge-status-pill.status-missed { border-color: #c46f68; background: #fde9e7; color: #8c3530; }
+.judge-status-pill.status-not_due,.judge-status-pill.status-pending { border-color: #9da8b2; background: #eef1f3; color: #57636d; }
+.judge-finding-list { padding: 12px; display: grid; gap: 10px; }
+.judge-finding { padding: 11px 12px; border: 1px solid #d5dcd7; border-left: 4px solid #b8c0bb; background: #fbfcfb; }
+.judge-finding.severity-serious { border-left-color: #b94c43; background: #fff8f7; }
+.judge-finding.severity-minor { border-left-color: #d29637; background: #fffbf3; }
+.judge-finding.severity-none { border-left-color: #809a88; }
+.judge-finding > header,.judge-correction-list article > header { display: flex; align-items: center; gap: 8px; }
+.judge-finding > header span,.judge-correction-list article > header span { padding: 3px 6px; background: #26332d; color: white; font-size: 11px; font-weight: 800; }
+.judge-finding > header em { color: #6b7770; font-size: 11px; font-style: normal; }
+.judge-finding > p,.judge-correction-list article > p { margin: 9px 0 0; color: #2d3933; font-size: 14px; line-height: 1.65; }
+.judge-evidence-line { margin-top: 9px; display: grid; grid-template-columns: 38px minmax(0,1fr); gap: 8px; align-items: start; }
+.judge-evidence-line > span { color: #6c7871; font-size: 11px; font-weight: 800; }
+.judge-evidence-line > code { padding: 7px 9px; border: 1px solid #d3dad5; background: #f1f4f2; color: #33433b; font-family: var(--font-geist-mono),monospace; font-size: 12px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+.judge-clean-result { margin: 0; padding: 12px; color: #2f6b43; font-size: 13px; }
+.judge-correct-points { margin: 0 12px 12px; padding: 10px 12px; display: grid; grid-template-columns: 58px minmax(0,1fr); gap: 9px; border: 1px solid #bcd2c0; background: #eef8ef; }
+.judge-correct-points span { color: #2d6840; font-size: 11px; font-weight: 800; }
+.judge-correct-points p { margin: 0; color: #314139; font-size: 13px; line-height: 1.6; }
+.judge-final-scoreboard { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); border: 1px solid #91a097; background: white; }
+.judge-final-scoreboard > div { min-height: 74px; padding: 12px 14px; display: flex; align-items: flex-start; justify-content: center; flex-direction: column; gap: 7px; border-right: 1px solid #cbd3ce; }
+.judge-final-scoreboard > div:last-child { border-right: 0; }
+.judge-final-scoreboard span { color: #68766f; font-size: 11px; font-weight: 800; }
+.judge-final-scoreboard strong { color: #284838; font-family: var(--font-geist-mono),monospace; font-size: 19px; }
+.judge-final-scoreboard .score strong { color: #1f683f; font-size: 25px; }
+.judge-final-scoreboard .score small { font-size: 12px; font-weight: 650; }
+.judge-status-overview { display: flex; flex-wrap: wrap; gap: 6px; }
+.judge-readable-stage > .judge-status-overview { margin-top: -7px; padding: 9px 11px; border: 1px solid #cad4cd; background: #eef3ef; }
+.judge-stage-collapsible > summary .judge-status-overview { margin-top: 7px; }
+.judge-status-overview > span { display: inline-flex; align-items: center; gap: 5px; padding: 3px 7px; border: 1px solid #aab5ae; background: #f1f4f2; color: #536159; font-size: 10px; font-weight: 750; letter-spacing: 0; }
+.judge-status-overview > span b { font-family: var(--font-geist-mono),monospace; font-size: 11px; }
+.judge-status-overview > span.status-done { border-color: #86ad8e; background: #e9f5ea; color: #28613b; }
+.judge-status-overview > span.status-partial { border-color: #d0a158; background: #fff3db; color: #7a571f; }
+.judge-status-overview > span.status-missed { border-color: #c8837d; background: #fde9e7; color: #853a34; }
+.judge-status-overview > span.status-not_due { border-color: #aab3bc; background: #eef1f3; color: #59636c; }
+.judge-overall-comment { border: 1px solid #bad092; border-left: 4px solid var(--accent-strong); background: #f2f8df; }
+.judge-review-section { border: 1px solid #bac3bd; background: white; }
+.judge-review-section > header { padding: 10px 12px; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid #d3dad5; background: #edf2ee; }
+.judge-review-section > header > span { display: grid; width: 28px; height: 28px; place-items: center; background: #29372f; color: white; font-family: var(--font-geist-mono),monospace; font-size: 11px; }
+.judge-review-section > header strong,.judge-review-section > header small { display: block; }
+.judge-review-section > header strong { color: #29362f; font-size: 14px; }
+.judge-review-section > header small { margin-top: 2px; color: #748078; font-size: 11px; }
+.judge-final-subtasks { display: grid; }
+.judge-final-subtasks article { min-height: 48px; padding: 9px 12px; display: grid; grid-template-columns: 34px minmax(0,1fr) auto; align-items: center; gap: 10px; border-bottom: 1px solid #e0e5e1; }
+.judge-final-subtasks article:last-child { border-bottom: 0; }
+.judge-final-subtasks p { margin: 0; color: #2b3731; font-size: 13px; line-height: 1.55; }
+.judge-correction-list { padding: 11px; display: grid; gap: 9px; }
+.judge-correction-list article { padding: 11px 12px; border: 1px solid #d1d8d3; border-left: 4px solid #7c9184; background: #fbfcfb; }
+.judge-correction-list article.verdict-overturn { border-left-color: #b95d51; }
+.judge-correction-list article.verdict-adjust { border-left-color: #d09537; }
+.judge-correction-list article.verdict-add { border-left-color: #607fb3; }
+.judge-correction-list article > header strong { min-width: 0; color: #526159; font-size: 12px; overflow-wrap: anywhere; }
+.judge-review-reasoning > div { padding: 11px; display: grid; gap: 9px; }
+.judge-review-reasoning article { padding: 11px 12px; border-left: 3px solid #9bab9f; background: #f6f8f6; }
+.judge-review-reasoning article span { color: #617068; font-size: 11px; font-weight: 800; }
+.judge-review-reasoning article p { margin: 5px 0 0; color: #2c3932; font-size: 14px; line-height: 1.65; }
+.judge-readable-fallback { padding: 11px; border: 1px dashed #b7c1ba; background: white; }
 .judge-overview { border-color: #82937f; background: #f6faef; }
 .judge-overview > p { margin: 9px 0 0; color: var(--muted); font-size: 8px; line-height: 1.5; }
 .judge-local-runtime { margin-top: 10px; padding: 10px; display: grid; gap: 7px; border: 1px solid #aab8a2; background: #fff; }
@@ -640,4 +718,11 @@ kbd { display: inline-flex; min-width: 22px; height: 22px; align-items: center; 
   .judge-review-tabs { grid-template-columns: 1fr; }
   .judge-review-detail { padding: 9px; }
   .judge-review-detail .judge-field { grid-template-columns: 1fr; gap: 4px; }
+  .judge-readable-stage { padding: 9px; }
+  .judge-readable-subtask > header,.judge-final-subtasks article { grid-template-columns: 28px minmax(0,1fr); }
+  .judge-readable-subtask > header .judge-status-pill,.judge-final-subtasks article .judge-status-pill { grid-column: 2; }
+  .judge-final-scoreboard { grid-template-columns: 1fr; }
+  .judge-final-scoreboard > div { min-height: 58px; border-right: 0; border-bottom: 1px solid #cbd3ce; }
+  .judge-final-scoreboard > div:last-child { border-bottom: 0; }
+  .judge-correct-points { grid-template-columns: 1fr; }
 }
