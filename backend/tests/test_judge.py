@@ -136,6 +136,76 @@ class JudgeHelpersTest(unittest.TestCase):
             self.assertEqual(saved_candidate.status, "succeeded")
             self.assertEqual(saved_candidate.stage3_result["consensus"]["score"], 9)
 
+    def test_browser_result_is_validated_and_persisted_without_server_model_call(self) -> None:
+        test_engine = api.create_engine("sqlite://", connect_args={"check_same_thread": False})
+        test_session = api.sessionmaker(test_engine, expire_on_commit=False)
+        api.Base.metadata.create_all(test_engine)
+        config = {**api.default_judge_config(), "sample_count": 1}
+        with test_session() as db:
+            user = api.User(username="browser-admin", display_name="Browser Admin", password_hash="unused", role="admin")
+            db.add(user)
+            db.flush()
+            project = api.Project(name="Browser Judge", annotation_config={}, created_by=user.id)
+            db.add(project)
+            db.flush()
+            case = api.Case(
+                project_id=project.id,
+                external_id="case-browser",
+                ordinal=0,
+                payload={
+                    "id": "case-browser",
+                    "messages": [{"role": "user", "content": "answer"}],
+                    "candidates": [{"id": "candidate-browser", "model": "demo", "response": "done"}],
+                },
+            )
+            db.add(case)
+            db.flush()
+            db.add(api.JudgeConfigVersion(
+                project_id=project.id,
+                version=1,
+                config=config,
+                api_key="",
+                signature=api.judge_config_signature(config),
+                active=True,
+                created_by=user.id,
+            ))
+            db.commit()
+            result = api.save_client_judge_result(
+                project.id,
+                api.JudgeClientResultBody(
+                    case_id=case.id,
+                    config_version=1,
+                    stage1_raw='{"subtasks":[{"id":1,"desc":"answer","phase":"pending"}]}',
+                    candidates=[api.JudgeClientCandidateBody(
+                        candidate_id="candidate-browser",
+                        stage2_raw='{"subtasks":[{"id":1,"status":"done"}]}',
+                        stage3_raw=['{"tier":1,"score":9,"overall_comment":"ok"}'],
+                    )],
+                ),
+                user,
+                db,
+            )
+            self.assertTrue(result["ok"])
+            saved = db.scalar(api.select(api.JudgeCandidateRun))
+            self.assertEqual(saved.status, "succeeded")
+            self.assertEqual(saved.stage3_result["consensus"]["score"], 9)
+
+    def test_shared_judge_config_never_returns_api_key(self) -> None:
+        config = {**api.default_judge_config(), "model_name": "shared-model"}
+        record = api.JudgeConfigVersion(
+            project_id=1,
+            version=2,
+            config=config,
+            api_key="must-not-leak",
+            signature=api.judge_config_signature(config),
+            active=True,
+            created_by=1,
+            created_at=api.utcnow(),
+        )
+        payload = api.judge_config_payload(record, include_details=True)
+        self.assertNotIn("api_key", payload)
+        self.assertEqual(payload["base_url"], "http://127.0.0.1:19001/v1")
+
 
 if __name__ == "__main__":
     unittest.main()

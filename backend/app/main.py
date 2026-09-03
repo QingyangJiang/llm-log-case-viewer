@@ -41,6 +41,7 @@ DATA_DIR = Path(os.getenv("DATA_DIR", "/data"))
 SESSION_HOURS = int(os.getenv("SESSION_HOURS", "24"))
 SECURE_COOKIES = os.getenv("SECURE_COOKIES", "false").lower() == "true"
 MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "2048"))
+JUDGE_LOCAL_RELAY_BASE = "http://127.0.0.1:19001/v1"
 
 
 def utcnow() -> datetime:
@@ -314,7 +315,7 @@ DEFAULT_VERIFIER_PROMPT = """你是三阶段评测的最终复核与评分器。
 def default_judge_config() -> dict[str, Any]:
     return {
         "protocol": "anthropic",
-        "base_url": "https://model.nioint.com/token-x/v1",
+        "base_url": JUDGE_LOCAL_RELAY_BASE,
         "model_name": "DeepSeek-V4-Flash",
         "stage1_temperature": 0.0,
         "stage2_temperature": 0.0,
@@ -362,6 +363,21 @@ class JudgeConfigBody(BaseModel):
 
 class JudgeRunBody(BaseModel):
     case_ids: list[int] = Field(default_factory=list, max_length=10_000)
+
+
+class JudgeClientCandidateBody(BaseModel):
+    candidate_id: str = Field(min_length=1, max_length=300)
+    stage2_raw: str = Field(default="", max_length=2_000_000)
+    stage3_raw: list[str] = Field(default_factory=list, max_length=11)
+    error: str = Field(default="", max_length=2000)
+
+
+class JudgeClientResultBody(BaseModel):
+    case_id: int
+    config_version: int = Field(ge=1)
+    stage1_raw: str = Field(default="", max_length=2_000_000)
+    candidates: list[JudgeClientCandidateBody] = Field(default_factory=list, max_length=1000)
+    error: str = Field(default="", max_length=2000)
 
 
 class ProjectMembersBody(BaseModel):
@@ -1338,7 +1354,9 @@ def project_judge_status_payload(db: Session, project: Project, user: User) -> d
             "candidates": candidate_payloads,
         }
     return {
-        "config": judge_config_payload(config_record, include_details=user.role == "admin"),
+        # Browser-side judging needs shared prompts and runtime settings. The
+        # API key is stored separately and is never returned here.
+        "config": judge_config_payload(config_record, include_details=True),
         "summary": summary,
         "running": bool(summary["queued"] or summary["running"]),
         "cases": result_cases,
@@ -1366,14 +1384,16 @@ def startup() -> None:
             select(JudgeCaseRun).where(JudgeCaseRun.status.in_(["queued", "claimed", "running_stage_1", "running_stage_2", "running_stage_3"]))
         ).all()
         for case_run in recoverable:
-            case_run.status = "queued"
+            case_run.status = "cancelled"
+            case_run.completed_at = utcnow()
+            case_run.error = "旧版服务端判分任务已取消；请由用户浏览器连接本机中继后重新运行"
         recoverable_candidate_ids = [case_run.id for case_run in recoverable]
         if recoverable_candidate_ids:
-            for candidate_run in db.scalars(select(JudgeCandidateRun).where(JudgeCandidateRun.case_run_id.in_(recoverable_candidate_ids), JudgeCandidateRun.status.in_(["running_stage_2", "running_stage_3"]))).all():
-                candidate_run.status = "queued"
+            for candidate_run in db.scalars(select(JudgeCandidateRun).where(JudgeCandidateRun.case_run_id.in_(recoverable_candidate_ids), JudgeCandidateRun.status.in_(["queued", "running_stage_2", "running_stage_3"]))).all():
+                candidate_run.status = "cancelled"
+                candidate_run.completed_at = utcnow()
+                candidate_run.error = "旧版服务端判分任务已取消"
             db.commit()
-    for case_run_id in recoverable_candidate_ids:
-        schedule_judge_case_run(case_run_id)
 
 
 @app.get("/api/health")
@@ -1650,7 +1670,7 @@ def update_project_settings(project_id: int, body: ProjectSettingsBody, _: Admin
 @app.get("/api/projects/{project_id}/judge/config")
 def get_judge_config(project_id: int, user: CurrentUser, db: DB) -> dict[str, Any]:
     ensure_project_access(project_id, user, db)
-    return judge_config_payload(active_judge_config(db, project_id), include_details=user.role == "admin")
+    return judge_config_payload(active_judge_config(db, project_id), include_details=True)
 
 
 @app.put("/api/projects/{project_id}/judge/config")
@@ -1666,8 +1686,7 @@ def save_judge_config(project_id: int, body: JudgeConfigBody, admin: AdminUser, 
     previous = active_judge_config(db, project_id)
     config = body.model_dump(exclude={"api_key"})
     config["protocol"] = protocol
-    config["base_url"] = body.base_url.strip().rstrip("/；; ")
-    api_key = body.api_key.strip() if body.api_key is not None and body.api_key.strip() else (previous.api_key if previous else "")
+    config["base_url"] = JUDGE_LOCAL_RELAY_BASE
     version = (db.scalar(select(func.max(JudgeConfigVersion.version)).where(JudgeConfigVersion.project_id == project_id)) or 0) + 1
     if previous:
         previous.active = False
@@ -1675,7 +1694,8 @@ def save_judge_config(project_id: int, body: JudgeConfigBody, admin: AdminUser, 
         project_id=project_id,
         version=version,
         config=config,
-        api_key=api_key,
+        # Each user supplies their own page-memory-only key to the local relay.
+        api_key="",
         signature=judge_config_signature(config),
         active=True,
         created_by=admin.id,
@@ -1693,80 +1713,118 @@ def test_judge_config(project_id: int, _: AdminUser, db: DB) -> dict[str, Any]:
     record = active_judge_config(db, project_id)
     if not record:
         raise HTTPException(422, "请先保存判分配置")
-    try:
-        response = call_judge_model(record.config, record.api_key, "你是连接测试助手。", "只回复：连接成功", 0, 64)
-    except Exception as exc:
-        raise HTTPException(502, f"判分模型连接失败：{redact_judge_error(exc, record.api_key)}") from exc
-    return {"ok": True, "response": response[:200], "version": record.version}
+    raise HTTPException(410, "模型连接必须由当前用户浏览器测试本机中继")
 
 
 @app.post("/api/projects/{project_id}/judge/run")
 def run_project_judge(project_id: int, body: JudgeRunBody, user: CurrentUser, db: DB) -> dict[str, Any]:
-    project = ensure_project_access(project_id, user, db)
+    ensure_project_access(project_id, user, db)
+    raise HTTPException(410, "自动判分已改为由当前用户浏览器调用本机中继")
+
+
+@app.post("/api/projects/{project_id}/judge/client-result")
+def save_client_judge_result(project_id: int, body: JudgeClientResultBody, user: CurrentUser, db: DB) -> dict[str, Any]:
+    ensure_project_access(project_id, user, db)
     config_record = active_judge_config(db, project_id)
-    if not config_record:
-        raise HTTPException(422, "管理员尚未配置自动判分模型")
-    query = select(Case).where(Case.project_id == project_id)
-    if user.role != "admin":
-        query = query.join(CaseAssignment).where(CaseAssignment.user_id == user.id)
-    requested_ids = list(dict.fromkeys(body.case_ids))
-    if requested_ids:
-        query = query.where(Case.id.in_(requested_ids))
-    cases = db.scalars(query.order_by(Case.ordinal)).all()
-    if requested_ids and len(cases) != len(requested_ids):
-        raise HTTPException(403, "请求中包含无权访问或不存在的 Case")
-    if not cases:
-        raise HTTPException(422, "没有可判分的 Case")
-    if len(cases) > 10_000:
-        raise HTTPException(422, "单次最多触发 10000 条 Case")
-    queued = reused = skipped = 0
-    scheduled_case_run_ids: set[int] = set()
-    for case in cases:
-        candidates = [item for item in case.payload.get("candidates", []) if isinstance(item, dict) and item.get("id") is not None]
-        if not candidates:
-            continue
-        case_hash = canonical_hash(judge_case_content(case.payload))
-        case_run = db.scalar(select(JudgeCaseRun).where(JudgeCaseRun.case_id == case.id, JudgeCaseRun.config_id == config_record.id, JudgeCaseRun.case_hash == case_hash))
-        if not case_run:
-            case_run = JudgeCaseRun(project_id=project_id, case_id=case.id, config_id=config_record.id, case_hash=case_hash, status="queued", triggered_by=user.id)
-            db.add(case_run)
-            db.flush()
-        pending_for_case = False
-        needs_schedule = False
-        for candidate in candidates:
-            candidate_id = str(candidate["id"])
-            candidate_hash = canonical_hash(judge_candidate_content(candidate))
-            candidate_run = db.scalar(select(JudgeCandidateRun).where(JudgeCandidateRun.case_run_id == case_run.id, JudgeCandidateRun.candidate_id == candidate_id, JudgeCandidateRun.candidate_hash == candidate_hash))
-            if candidate_run and candidate_run.status == "succeeded":
-                skipped += 1
-                continue
-            if candidate_run and candidate_run.status in {"queued", "running_stage_2", "running_stage_3"}:
-                reused += 1
-                pending_for_case = True
-                continue
-            if candidate_run:
-                candidate_run.status = "queued"
-                candidate_run.error = ""
-            else:
-                candidate_run = JudgeCandidateRun(case_run_id=case_run.id, candidate_id=candidate_id, candidate_hash=candidate_hash, status="queued")
-                db.add(candidate_run)
-            queued += 1
-            pending_for_case = True
-            needs_schedule = True
-        if pending_for_case:
-            if needs_schedule or case_run.status not in {"claimed", "running_stage_1", "running_stage_2", "running_stage_3"}:
-                case_run.status = "queued"
-                case_run.error = ""
-                case_run.completed_at = None
-                scheduled_case_run_ids.add(case_run.id)
+    if not config_record or config_record.version != body.config_version:
+        raise HTTPException(409, "判分配置已更新，请刷新后重新运行")
+    case = db.get(Case, body.case_id)
+    if not case or case.project_id != project_id:
+        raise HTTPException(404, "Case 不存在")
+    if user.role != "admin" and not db.scalar(select(CaseAssignment).where(CaseAssignment.case_id == case.id, CaseAssignment.user_id == user.id)):
+        raise HTTPException(403, "无权提交该 Case 的判分结果")
+
+    case_hash = canonical_hash(judge_case_content(case.payload))
+    case_run = db.scalar(select(JudgeCaseRun).where(
+        JudgeCaseRun.case_id == case.id,
+        JudgeCaseRun.config_id == config_record.id,
+        JudgeCaseRun.case_hash == case_hash,
+    ))
+    if not case_run:
+        case_run = JudgeCaseRun(
+            project_id=project_id,
+            case_id=case.id,
+            config_id=config_record.id,
+            case_hash=case_hash,
+            status="running_stage_1",
+            triggered_by=user.id,
+            started_at=utcnow(),
+        )
+        db.add(case_run)
+        db.flush()
+    else:
+        case_run.triggered_by = user.id
+        case_run.started_at = case_run.started_at or utcnow()
+        case_run.error = ""
+
     try:
-        db.commit()
-    except IntegrityError as exc:
-        db.rollback()
-        raise HTTPException(409, "相同判分任务正在创建，请稍后重试") from exc
-    for case_run_id in scheduled_case_run_ids:
-        schedule_judge_case_run(case_run_id)
-    return {"queued": queued, "reused": reused, "skipped": skipped, "case_count": len(cases)}
+        if body.error:
+            raise ValueError(body.error)
+        stage1 = require_judge_object(parse_json_object(body.stage1_raw), "阶段一")
+        case_run.stage1_raw = body.stage1_raw
+        case_run.stage1_result = stage1
+        candidate_by_id = {
+            str(item["id"]): item
+            for item in case.payload.get("candidates", [])
+            if isinstance(item, dict) and item.get("id") is not None
+        }
+        submitted_ids: set[str] = set()
+        succeeded = 0
+        for submitted in body.candidates:
+            candidate = candidate_by_id.get(submitted.candidate_id)
+            if not candidate:
+                raise ValueError(f"候选 {submitted.candidate_id} 已不存在，请刷新后重试")
+            submitted_ids.add(submitted.candidate_id)
+            candidate_hash = canonical_hash(judge_candidate_content(candidate))
+            candidate_run = db.scalar(select(JudgeCandidateRun).where(
+                JudgeCandidateRun.case_run_id == case_run.id,
+                JudgeCandidateRun.candidate_id == submitted.candidate_id,
+                JudgeCandidateRun.candidate_hash == candidate_hash,
+            ))
+            if not candidate_run:
+                candidate_run = JudgeCandidateRun(
+                    case_run_id=case_run.id,
+                    candidate_id=submitted.candidate_id,
+                    candidate_hash=candidate_hash,
+                    status="running_stage_2",
+                    started_at=utcnow(),
+                )
+                db.add(candidate_run)
+            candidate_run.stage2_result = None
+            candidate_run.stage3_result = None
+            candidate_run.stage2_raw = submitted.stage2_raw
+            candidate_run.stage3_raw = "\n\n--- SAMPLE ---\n\n".join(submitted.stage3_raw)
+            candidate_run.error = submitted.error
+            try:
+                if submitted.error:
+                    raise ValueError(submitted.error)
+                stage2 = require_judge_object(parse_json_object(submitted.stage2_raw), "阶段二")
+                samples = [parse_json_object(raw) for raw in submitted.stage3_raw]
+                aggregate = aggregate_stage3(samples)
+                if aggregate["consensus"]["score"] is None:
+                    raise ValueError("阶段三没有任何可用的结构化评分样本")
+                candidate_run.stage2_result = stage2
+                candidate_run.stage3_result = aggregate
+                candidate_run.status = "succeeded"
+                candidate_run.error = ""
+                succeeded += 1
+            except Exception as exc:
+                candidate_run.status = "failed"
+                candidate_run.error = str(exc)[:2000]
+            candidate_run.completed_at = utcnow()
+        missing = set(candidate_by_id) - submitted_ids
+        if missing:
+            raise ValueError(f"缺少候选判分结果：{'、'.join(sorted(missing))}")
+        case_run.status = "succeeded" if succeeded == len(candidate_by_id) else "partial_failed" if succeeded else "failed"
+        case_run.completed_at = utcnow()
+        if case_run.status == "failed" and not case_run.error:
+            case_run.error = "全部候选判分失败"
+    except Exception as exc:
+        case_run.status = "failed"
+        case_run.error = str(exc)[:2000]
+        case_run.completed_at = utcnow()
+    db.commit()
+    return {"ok": case_run.status == "succeeded", "status": case_run.status, "case_id": case.id}
 
 
 @app.post("/api/projects/{project_id}/judge/cancel")

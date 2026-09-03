@@ -167,6 +167,7 @@ type JudgeStatusData = {
   running: boolean;
   cases: Record<string, JudgeCaseResult>;
 };
+const JUDGE_LOCAL_RELAY_URL = "http://127.0.0.1:19001/v1";
 
 const DEFAULT_DIMENSIONS: AnnotationDimension[] = [
   { key: "correctness", label: "正确性", description: "事实、结论与工具使用是否正确", min: 1, max: 5, required: true },
@@ -180,7 +181,7 @@ const EMPTY_JUDGE_CONFIG: JudgeConfig = {
   has_api_key: false,
   version: 0,
   protocol: "anthropic",
-  base_url: "https://model.nioint.com/token-x/v1",
+  base_url: JUDGE_LOCAL_RELAY_URL,
   model_name: "DeepSeek-V4-Flash",
   stage1_temperature: 0,
   stage2_temperature: 0,
@@ -1118,6 +1119,96 @@ function resultText(payload: unknown) {
   return "";
 }
 
+function parseJudgeObject(raw: string): JsonObject {
+  let cleaned = raw.trim();
+  if (cleaned.startsWith("```")) {
+    const lines = cleaned.split("\n");
+    lines.shift();
+    if (lines.at(-1)?.trim().startsWith("```")) lines.pop();
+    cleaned = lines.join("\n").trim();
+  }
+  try {
+    const value = JSON.parse(cleaned);
+    if (isObject(value)) return value;
+  } catch {
+    const start = cleaned.indexOf("{");
+    const end = cleaned.lastIndexOf("}");
+    if (start >= 0 && end > start) {
+      try {
+        const value = JSON.parse(cleaned.slice(start, end + 1));
+        if (isObject(value)) return value;
+      } catch {
+        // The caller reports a concise structured-output error below.
+      }
+    }
+  }
+  throw new Error("模型未返回有效的 JSON object");
+}
+
+function judgeText(value: unknown) {
+  return typeof value === "string" ? value : stringify(value);
+}
+
+function judgeCaseSections(item: LogCase) {
+  const messages = Array.isArray(item.messages) ? item.messages : [];
+  let lastUser = -1;
+  messages.forEach((message, index) => {
+    if (String(message.role ?? "").toLowerCase() === "user") lastUser = index;
+  });
+  const context = lastUser >= 0 ? messages.slice(0, lastUser) : messages;
+  const query = lastUser >= 0 ? messages[lastUser]?.content : item.query ?? "(未找到 user 消息)";
+  const trajectory = lastUser >= 0 ? messages.slice(lastUser + 1) : [];
+  const referenceAnswer = isObject(item.refer_info)
+    ? item.refer_info.reference_answer ?? item.reference_answer ?? item.refer_info
+    : item.reference_answer ?? item.refer_info ?? "(未提供)";
+  return {
+    context: context.length ? judgeText(context) : "(无前置上下文)",
+    query: judgeText(query),
+    trajectory: trajectory.length ? judgeText(trajectory) : "(无后续轨迹)",
+    tools: item.tools?.length ? judgeText(item.tools) : "(未提供)",
+    referenceAnswer: judgeText(referenceAnswer),
+  };
+}
+
+function clipJudgeText(value: string, tokenLimit: number) {
+  if (tokenLimit <= 0) return value;
+  const charLimit = Math.max(1000, tokenLimit * 4);
+  if (value.length <= charLimit) return value;
+  const head = Math.floor(charLimit * 0.7);
+  return `${value.slice(0, head)}\n\n[... 输入按配置截断 ...]\n\n${value.slice(-(charLimit - head))}`;
+}
+
+function judgeStage1Prompt(item: LogCase, tokenLimit: number) {
+  const section = judgeCaseSections(item);
+  return clipJudgeText(`请拆解以下 Case。\n\n=== CONTEXT ===\n${section.context}\n\n=== QUERY ===\n${section.query}\n\n=== TRAJECTORY ===\n${section.trajectory}\n\n=== TOOLS ===\n${section.tools}\n\n=== REFERENCE ANSWER ===\n${section.referenceAnswer}`, tokenLimit);
+}
+
+function judgeStage2Prompt(item: LogCase, candidate: CandidateOutput, stage1: JsonObject, tokenLimit: number) {
+  const section = judgeCaseSections(item);
+  return clipJudgeText(`请定位候选回复在固定子任务上的问题。\n\n=== FIXED SUBTASKS ===\n${judgeText(stage1.subtasks ?? [])}\n\n=== STAGE 1 NOTES ===\n${judgeText(stage1)}\n\n=== CONTEXT ===\n${section.context}\n\n=== QUERY ===\n${section.query}\n\n=== TRAJECTORY ===\n${section.trajectory}\n\n=== TOOLS ===\n${section.tools}\n\n=== REFERENCE ANSWER ===\n${section.referenceAnswer}\n\n=== CANDIDATE RESPONSE ===\n${judgeText({ reasoning: candidate.reasoning, response: candidate.response })}`, tokenLimit);
+}
+
+function judgeStage3Prompt(item: LogCase, candidate: CandidateOutput, stage1: JsonObject, stage2: JsonObject, config: JudgeConfig, tokenLimit: number) {
+  const section = judgeCaseSections(item);
+  return clipJudgeText(`请复核错误定位并给出最终档位和整数分。\n\n=== RUBRIC ===\n${config.rubric}\n\n=== FIXED SUBTASKS / STAGE 1 ===\n${judgeText(stage1)}\n\n=== STAGE 2 LOCALIZATION ===\n${judgeText(stage2)}\n\n=== CONTEXT ===\n${section.context}\n\n=== QUERY ===\n${section.query}\n\n=== TRAJECTORY ===\n${section.trajectory}\n\n=== TOOLS ===\n${section.tools}\n\n=== REFERENCE ANSWER ===\n${section.referenceAnswer}\n\n=== CANDIDATE RESPONSE ===\n${judgeText({ reasoning: candidate.reasoning, response: candidate.response })}`, tokenLimit);
+}
+
+function findJudgeValue(value: unknown, keys: Set<string>): unknown {
+  if (!isObject(value)) return undefined;
+  for (const [key, item] of Object.entries(value)) if (keys.has(key.toLowerCase())) return item;
+  for (const item of Object.values(value)) {
+    const found = findJudgeValue(item, keys);
+    if (found !== undefined) return found;
+  }
+  return undefined;
+}
+
+function judgeSamplesStable(samples: JsonObject[]) {
+  const scores = samples.map((sample) => Number(findJudgeValue(sample, new Set(["score", "final_score"])))).filter(Number.isFinite).map((score) => Math.max(1, Math.min(10, Math.round(score))));
+  const tiers = samples.map((sample) => Number(String(findJudgeValue(sample, new Set(["tier", "final_tier"])) ?? "").replace(/tier/ig, "").trim())).filter(Number.isFinite).map((tier) => Math.max(1, Math.min(3, Math.round(tier))));
+  return scores.length === samples.length && new Set(scores).size <= 1 && new Set(tiers).size <= 1;
+}
+
 function buildAiPlan(source: string, task: AiTask, inputBudget: number, outputReserve: number, maxChunks: number): AiPlan {
   if (task === "custom") {
     const clipped = clipTextToTokens(source, inputBudget);
@@ -1772,6 +1863,7 @@ export default function Home() {
   const [judgeBusy, setJudgeBusy] = useState(false);
   const [judgeTestBusy, setJudgeTestBusy] = useState(false);
   const [judgeError, setJudgeError] = useState("");
+  const judgeAbort = useRef<AbortController | null>(null);
   const [loginUsername, setLoginUsername] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
   const [newProjectName, setNewProjectName] = useState("");
@@ -2674,13 +2766,12 @@ export default function Home() {
     setJudgeBusy(true);
     setJudgeError("");
     try {
-      const config = Object.fromEntries(Object.entries(judgeConfigDraft).filter(([key]) => !["configured", "has_api_key", "version", "signature", "created_at"].includes(key)));
+      const config = { ...Object.fromEntries(Object.entries(judgeConfigDraft).filter(([key]) => !["configured", "has_api_key", "version", "signature", "created_at"].includes(key))), base_url: JUDGE_LOCAL_RELAY_URL };
       const saved = await apiRequest<JudgeConfig>(`/api/projects/${activeProjectId}/judge/config`, {
         method: "PUT",
-        body: JSON.stringify({ ...config, api_key: judgeApiKey.trim() || undefined }),
+        body: JSON.stringify(config),
       });
       setJudgeConfigDraft({ ...EMPTY_JUDGE_CONFIG, ...saved });
-      setJudgeApiKey("");
       await refreshJudgeProject(activeProjectId);
       setNotice(`自动判分配置 v${saved.version} 已保存`);
     } catch (error) {
@@ -2690,15 +2781,57 @@ export default function Home() {
     }
   };
 
+  const requestJudgeModel = async (config: JudgeConfig, systemPrompt: string, userContent: string, temperature: number, maxOutputTokens: number, signal: AbortSignal) => {
+    if (!judgeApiKey.trim()) throw new Error("请先填写当前页面使用的 API Key");
+    const requestUrl = modelApiEndpoint(JUDGE_LOCAL_RELAY_URL, config.protocol);
+    const request = modelApiRequest({
+      protocol: config.protocol,
+      apiKey: judgeApiKey,
+      model: config.model_name,
+      maxOutputTokens,
+      temperature,
+      seed: config.seed,
+      systemPrompt,
+      userContent,
+    });
+    const attempts = Math.max(1, config.max_retries + 1);
+    let lastError: unknown;
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      const controller = new AbortController();
+      const abort = () => controller.abort();
+      signal.addEventListener("abort", abort, { once: true });
+      const timer = window.setTimeout(abort, Math.max(10, config.timeout_seconds) * 1000);
+      try {
+        const response = await fetch(requestUrl, { method: "POST", headers: request.headers, body: request.body, signal: controller.signal });
+        if (!response.ok) {
+          const detail = await response.text();
+          throw new Error(`本机中继请求失败 ${response.status}${detail ? `：${detail.slice(0, 300)}` : ""}`);
+        }
+        const content = resultText(await response.json()).trim();
+        if (!content) throw new Error("模型返回成功，但没有可识别的文本结果");
+        return content;
+      } catch (error) {
+        if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+        lastError = error;
+        if (attempt + 1 < attempts) await waitWithSignal(700, signal);
+      } finally {
+        window.clearTimeout(timer);
+        signal.removeEventListener("abort", abort);
+      }
+    }
+    throw friendlyNetworkError(lastError, "local", config.protocol, requestUrl);
+  };
+
   const testJudgeConnection = async () => {
-    if (!activeProjectId) return;
+    if (!activeProjectId || !judgeStatus?.config.configured) return;
     setJudgeTestBusy(true);
     setJudgeError("");
+    const controller = new AbortController();
     try {
-      const result = await apiRequest<{ ok: boolean; response: string; version: number }>(`/api/projects/${activeProjectId}/judge/test`, { method: "POST", body: "{}" });
-      setNotice(`判分模型 v${result.version} 连接成功：${result.response}`);
+      const response = await requestJudgeModel(judgeStatus.config, "你是连接测试助手。", "只回复：连接成功", 0, 64, controller.signal);
+      setNotice(`本机中继连接成功：${response.slice(0, 80)}`);
     } catch (error) {
-      setJudgeError(error instanceof Error ? error.message : "判分模型连接失败");
+      setJudgeError(error instanceof Error ? error.message : "本机中继连接失败");
     } finally {
       setJudgeTestBusy(false);
     }
@@ -2710,42 +2843,105 @@ export default function Home() {
       setJudgeError("管理员尚未配置自动判分模型");
       return;
     }
-    if (caseIds.length > 1 && !window.confirm(`将对当前筛选出的 ${caseIds.length} 条 Case 预跑自动判分；已有相同有效结果会自动跳过。是否继续？`)) return;
-    if (!caseIds.length && !window.confirm("将对当前可访问项目中的全部 Case 预跑自动判分；已有相同有效结果会自动跳过。是否继续？")) return;
+    if (!judgeApiKey.trim()) {
+      setJudgeError("请在团队面板填写当前页面使用的 API Key，并先测试本机中继");
+      setTeamOpen(true);
+      return;
+    }
+    const requested = new Set(caseIds);
+    const targetCases = cases.filter((item) => item.__server_case_id && (!caseIds.length || requested.has(item.__server_case_id)));
+    if (!targetCases.length) {
+      setJudgeError("没有可判分的 Case");
+      return;
+    }
+    if (targetCases.length > 1 && !window.confirm(`将使用你电脑上的本机中继处理 ${targetCases.length} 条 Case。运行期间请保持页面和中继开启，是否继续？`)) return;
     setJudgeBusy(true);
     setJudgeError("");
+    const controller = new AbortController();
+    judgeAbort.current = controller;
+    const config = judgeStatus.config;
+    let completed = 0;
+    let skipped = 0;
+    let failed = 0;
     try {
-      const result = await apiRequest<{ queued: number; reused: number; skipped: number; case_count: number }>(`/api/projects/${activeProjectId}/judge/run`, {
-        method: "POST",
-        body: JSON.stringify({ case_ids: caseIds }),
+      const pending = targetCases.filter((item) => {
+        const existing = item.__server_case_id ? judgeStatus.cases[String(item.__server_case_id)] : undefined;
+        if (existing?.status === "succeeded" && existing.config_version === config.version) {
+          skipped += 1;
+          return false;
+        }
+        return true;
       });
+      let cursor = 0;
+      const worker = async () => {
+        while (!controller.signal.aborted) {
+          const index = cursor++;
+          const item = pending[index];
+          if (!item?.__server_case_id) return;
+          let stage1Raw = "";
+          const candidateResults: { candidate_id: string; stage2_raw: string; stage3_raw: string[]; error: string }[] = [];
+          let caseError = "";
+          try {
+            setNotice(`本机判分 ${completed + failed + 1}/${pending.length}：阶段一任务拆解…`);
+            stage1Raw = await requestJudgeModel(config, config.decomposer_prompt, judgeStage1Prompt(item, config.input_limit), config.stage1_temperature, config.stage1_max_tokens, controller.signal);
+            const stage1 = parseJudgeObject(stage1Raw);
+            for (const candidate of item.candidates ?? []) {
+              const result = { candidate_id: candidate.id, stage2_raw: "", stage3_raw: [] as string[], error: "" };
+              try {
+                setNotice(`本机判分 ${completed + failed + 1}/${pending.length}：${candidate.model || candidate.id} 检错…`);
+                result.stage2_raw = await requestJudgeModel(config, config.detector_prompt, judgeStage2Prompt(item, candidate, stage1, config.input_limit), config.stage2_temperature, config.stage2_max_tokens, controller.signal);
+                const stage2 = parseJudgeObject(result.stage2_raw);
+                const stage3Prompt = judgeStage3Prompt(item, candidate, stage1, stage2, config, config.input_limit);
+                const parsedSamples: JsonObject[] = [];
+                for (let sample = 0; sample < config.sample_count; sample += 1) {
+                  setNotice(`本机判分 ${completed + failed + 1}/${pending.length}：${candidate.model || candidate.id} 复核 ${sample + 1}/${config.sample_count}…`);
+                  const raw = await requestJudgeModel(config, config.verifier_prompt, stage3Prompt, config.stage3_temperature, config.stage3_max_tokens, controller.signal);
+                  result.stage3_raw.push(raw);
+                  parsedSamples.push(parseJudgeObject(raw));
+                }
+                if (config.adaptive_sampling && !judgeSamplesStable(parsedSamples)) {
+                  for (let extra = 0; extra < 2; extra += 1) {
+                    const raw = await requestJudgeModel(config, config.verifier_prompt, stage3Prompt, config.stage3_temperature, config.stage3_max_tokens, controller.signal);
+                    result.stage3_raw.push(raw);
+                  }
+                }
+              } catch (error) {
+                if (controller.signal.aborted) throw error;
+                result.error = error instanceof Error ? error.message : "候选判分失败";
+              }
+              candidateResults.push(result);
+            }
+          } catch (error) {
+            if (controller.signal.aborted) throw error;
+            caseError = error instanceof Error ? error.message : "Case 判分失败";
+          }
+          const saved = await apiRequest<{ ok: boolean; status: string }>(`/api/projects/${activeProjectId}/judge/client-result`, {
+            method: "POST",
+            body: JSON.stringify({ case_id: item.__server_case_id, config_version: config.version, stage1_raw: stage1Raw, candidates: candidateResults, error: caseError }),
+          });
+          if (saved.ok) completed += 1;
+          else failed += 1;
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(Math.max(1, config.concurrency), Math.max(1, pending.length)) }, () => worker()));
       await refreshJudgeProject(activeProjectId);
       setJudgeHistoryByCase({});
-      setNotice(`已处理 ${result.case_count} 条 Case：新排队 ${result.queued}，复用运行中 ${result.reused}，跳过已有结果 ${result.skipped}`);
+      setNotice(controller.signal.aborted ? `已停止：完成 ${completed}，失败 ${failed}，跳过 ${skipped}` : `本机判分完成：成功 ${completed}，失败 ${failed}，跳过已有结果 ${skipped}`);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "自动判分触发失败";
+      const wasAborted = controller.signal.aborted;
+      controller.abort();
+      const message = wasAborted ? `已停止本机判分：完成 ${completed}，失败 ${failed}` : error instanceof Error ? error.message : "本机自动判分失败";
       setJudgeError(message);
       setNotice(message);
     } finally {
+      judgeAbort.current = null;
       setJudgeBusy(false);
     }
   };
 
   const cancelQueuedJudge = async () => {
-    if (!activeProjectId || !judgeStatus?.summary.queued) return;
-    if (!window.confirm(`将取消尚未开始的 ${judgeStatus.summary.queued} 个候选任务；已发出的模型请求会继续完成。是否继续？`)) return;
-    setJudgeBusy(true);
-    setJudgeError("");
-    try {
-      const result = await apiRequest<{ cancelled: number; running_not_cancelled: number }>(`/api/projects/${activeProjectId}/judge/cancel`, { method: "POST", body: JSON.stringify({ case_ids: [] }) });
-      await refreshJudgeProject(activeProjectId);
-      setJudgeHistoryByCase({});
-      setNotice(`已取消 ${result.cancelled} 个候选任务${result.running_not_cancelled ? `；${result.running_not_cancelled} 条运行中请求未中断` : ""}`);
-    } catch (error) {
-      setJudgeError(error instanceof Error ? error.message : "取消任务失败");
-    } finally {
-      setJudgeBusy(false);
-    }
+    judgeAbort.current?.abort();
+    setNotice("正在停止当前页面的本机判分…");
   };
 
   const assignRandomCases = async () => {
@@ -3787,7 +3983,7 @@ export default function Home() {
                   <div className="project-list">{serverProjects.map((project) => <article className={`${activeProjectId === project.id ? "active" : ""} ${project.archived ? "archived" : ""}`} key={project.id}><div><strong>{project.name}{project.archived ? <em>已归档</em> : null}</strong><small>{project.case_count} Cases · 我已提交 {project.my_submitted_count}</small></div><button disabled={teamBusy} onClick={() => void loadServerProject(project)}>打开</button></article>)}</div>
                   {!serverProjects.length ? <p className="team-empty">还没有项目{serverUser.role === "admin" ? "，请先创建" : "，请联系管理员"}。</p> : null}
                 </section>
-                {activeProjectId ? <section className="team-section judge-overview"><div className="team-section-title"><span>J</span><strong>三阶段自动判分</strong></div>{judgeStatus ? <><div className="judge-summary"><div><strong>{judgeStatus.summary.succeeded}</strong><small>已完成</small></div><div><strong>{judgeStatus.summary.running + judgeStatus.summary.queued}</strong><small>进行中</small></div><div><strong>{judgeStatus.summary.not_started}</strong><small>未运行</small></div><div><strong>{judgeStatus.summary.failed + judgeStatus.summary.stale + judgeStatus.summary.cancelled}</strong><small>需处理</small></div></div><p>{judgeStatus.config.configured ? `${judgeStatus.config.model_name} · 配置 v${judgeStatus.config.version} · 结果全项目共享` : "管理员尚未配置判分模型"}</p><div className="judge-batch-actions"><button className="team-primary" disabled={judgeBusy || !judgeStatus.config.configured || !filtered.length} onClick={() => void runJudge(filtered.flatMap(({ item }) => item.__server_case_id ? [item.__server_case_id] : []))}>{judgeBusy ? "正在提交…" : `预跑当前筛选 · ${filtered.length}`}</button><button disabled={judgeBusy || !judgeStatus.config.configured} onClick={() => void runJudge()}>预跑全部</button>{judgeStatus.summary.queued ? <button className="judge-cancel" disabled={judgeBusy} onClick={() => void cancelQueuedJudge()}>取消排队 · {judgeStatus.summary.queued}</button> : null}</div></> : <p>正在读取判分状态…</p>}</section> : null}
+                {activeProjectId ? <section className="team-section judge-overview"><div className="team-section-title"><span>J</span><strong>三阶段自动判分</strong></div>{judgeStatus ? <><div className="judge-summary"><div><strong>{judgeStatus.summary.succeeded}</strong><small>已完成</small></div><div><strong>{judgeBusy ? "本机" : judgeStatus.summary.running + judgeStatus.summary.queued}</strong><small>进行中</small></div><div><strong>{judgeStatus.summary.not_started}</strong><small>未运行</small></div><div><strong>{judgeStatus.summary.failed + judgeStatus.summary.stale + judgeStatus.summary.cancelled}</strong><small>需处理</small></div></div><p>{judgeStatus.config.configured ? `${judgeStatus.config.model_name} · 配置 v${judgeStatus.config.version} · 结果全项目共享` : "管理员尚未配置判分模型"}</p>{judgeStatus.config.configured ? <div className="judge-local-runtime"><strong>当前电脑 · 本机中继</strong><code>{JUDGE_LOCAL_RELAY_URL}</code><label><span>个人 API Key</span><input type="password" value={judgeApiKey} onChange={(event) => setJudgeApiKey(event.target.value)} placeholder="仅保存在当前页面内存" autoComplete="new-password" /></label><small>每位用户都需在自己的电脑启动中继并填写 Key；关闭或刷新页面后 Key 会清空。</small><button disabled={judgeTestBusy || judgeBusy || !judgeApiKey.trim()} onClick={() => void testJudgeConnection()}>{judgeTestBusy ? "正在测试…" : "测试我的本机中继"}</button></div> : null}<div className="judge-batch-actions"><button className="team-primary" disabled={judgeBusy || !judgeStatus.config.configured || !judgeApiKey.trim() || !filtered.length} onClick={() => void runJudge(filtered.flatMap(({ item }) => item.__server_case_id ? [item.__server_case_id] : []))}>{judgeBusy ? "本机判分中…" : `处理当前筛选 · ${filtered.length}`}</button><button disabled={judgeBusy || !judgeStatus.config.configured || !judgeApiKey.trim()} onClick={() => void runJudge()}>处理我的全部 Case</button>{judgeBusy ? <button className="judge-cancel" onClick={() => void cancelQueuedJudge()}>停止当前页面判分</button> : null}</div></> : <p>正在读取判分状态…</p>}</section> : null}
                 {serverUser.role === "admin" ? (
                   <>
                     <section className="team-section">
@@ -3815,12 +4011,11 @@ export default function Home() {
                         </section>
                         <section className="team-section judge-config-section">
                           <div className="team-section-title"><span>J</span><strong>管理员：自动判分配置</strong></div>
-                          <p className="team-help">三个阶段使用同一个服务端模型，API Key 只保存在后端；保存后生成新的配置版本，旧结果仍可追溯。</p>
+                          <p className="team-help">这里统一配置模型、Prompt 与运行参数；真正的模型请求由点击判分者的浏览器调用其本机中继。API Key 不保存到服务器。</p>
                           <div className="judge-config-grid">
                             <label><span>API 协议</span><select value={judgeConfigDraft.protocol} onChange={(event) => setJudgeConfigDraft((current) => ({ ...current, protocol: event.target.value as "anthropic" | "openai" }))}><option value="anthropic">Anthropic · /messages</option><option value="openai">OpenAI · /chat/completions</option></select></label>
                             <label><span>模型名称</span><input value={judgeConfigDraft.model_name} onChange={(event) => setJudgeConfigDraft((current) => ({ ...current, model_name: event.target.value }))} /></label>
-                            <label className="wide"><span>API Base URL</span><input value={judgeConfigDraft.base_url} onChange={(event) => setJudgeConfigDraft((current) => ({ ...current, base_url: event.target.value }))} /></label>
-                            <label className="wide"><span>API Key</span><input type="password" value={judgeApiKey} onChange={(event) => setJudgeApiKey(event.target.value)} placeholder={judgeConfigDraft.has_api_key ? "已保存；留空表示保持不变" : "输入服务端判分密钥"} autoComplete="new-password" /></label>
+                            <label className="wide"><span>本机中继 Base URL</span><code>{JUDGE_LOCAL_RELAY_URL}</code><small>固定使用每位用户自己电脑上的中继；Anthropic 模式会自动拼接 /messages。</small></label>
                           </div>
                           <div className="judge-stage-config">
                             {([1, 2, 3] as const).map((stage) => {
@@ -3839,7 +4034,7 @@ export default function Home() {
                             <label className="judge-check"><input type="checkbox" checked={judgeConfigDraft.adaptive_sampling} onChange={(event) => setJudgeConfigDraft((current) => ({ ...current, adaptive_sampling: event.target.checked }))} /><span>分歧时追加 2 次采样</span></label>
                           </div>
                           <details className="judge-prompt-editor"><summary>编辑评分量表与三个阶段 Prompt</summary><label><span>评分量表</span><textarea rows={3} value={judgeConfigDraft.rubric} onChange={(event) => setJudgeConfigDraft((current) => ({ ...current, rubric: event.target.value }))} /></label><label><span>阶段一 · 拆解 System Prompt</span><textarea rows={8} value={judgeConfigDraft.decomposer_prompt} onChange={(event) => setJudgeConfigDraft((current) => ({ ...current, decomposer_prompt: event.target.value }))} /></label><label><span>阶段二 · 检错 System Prompt</span><textarea rows={8} value={judgeConfigDraft.detector_prompt} onChange={(event) => setJudgeConfigDraft((current) => ({ ...current, detector_prompt: event.target.value }))} /></label><label><span>阶段三 · 复核评分 System Prompt</span><textarea rows={8} value={judgeConfigDraft.verifier_prompt} onChange={(event) => setJudgeConfigDraft((current) => ({ ...current, verifier_prompt: event.target.value }))} /></label></details>
-                          <div className="judge-config-actions"><button className="team-primary" disabled={judgeBusy || !judgeConfigDraft.base_url.trim() || !judgeConfigDraft.model_name.trim()} onClick={() => void saveJudgeConfig()}>{judgeBusy ? "保存中…" : judgeConfigDraft.configured ? "保存为新版本" : "保存判分配置"}</button><button disabled={judgeTestBusy || !judgeConfigDraft.configured} onClick={() => void testJudgeConnection()}>{judgeTestBusy ? "测试中…" : "测试已保存配置"}</button></div>
+                          <div className="judge-config-actions"><button className="team-primary" disabled={judgeBusy || !judgeConfigDraft.model_name.trim()} onClick={() => void saveJudgeConfig()}>{judgeBusy ? "保存中…" : judgeConfigDraft.configured ? "保存为新版本" : "保存判分配置"}</button></div>
                         </section>
                         <section className="team-section assignment-section">
                           <div className="team-section-title"><span>04</span><strong>Case 分配与进度</strong></div>

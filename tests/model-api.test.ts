@@ -27,6 +27,13 @@ test("keeps the existing OpenAI-compatible request shape", () => {
   assert.deepEqual(JSON.parse(request.body).messages, [{ role: "system", content: "system" }, { role: "user", content: "hello" }]);
 });
 
+test("allows judge requests to override temperature and seed", () => {
+  const request = modelApiRequest({ protocol: "openai", apiKey: "key", model: "judge", maxOutputTokens: 4096, temperature: 0.1, seed: 7, systemPrompt: "judge", userContent: "case" });
+  const body = JSON.parse(request.body);
+  assert.equal(body.temperature, 0.1);
+  assert.equal(body.seed, 7);
+});
+
 test("preserves multi-turn chat history for both protocols", () => {
   const messages = [{ role: "user" as const, content: "问题一" }, { role: "assistant" as const, content: "回答一" }, { role: "user" as const, content: "继续" }];
   const anthropic = modelApiRequest({ protocol: "anthropic", apiKey: "key", model: "model-a", maxOutputTokens: 256, systemPrompt: "system", messages });

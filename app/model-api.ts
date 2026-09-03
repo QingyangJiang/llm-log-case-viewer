@@ -6,6 +6,8 @@ type ModelApiRequestInput = {
   apiKey: string;
   model: string;
   maxOutputTokens: number;
+  temperature?: number;
+  seed?: number;
   systemPrompt: string;
   userContent?: string;
   messages?: ModelApiMessage[];
@@ -20,7 +22,7 @@ export function modelApiEndpoint(baseUrl: string, protocol: ApiProtocol) {
   return protocol === "anthropic" ? `${clean}/messages` : `${clean}/chat/completions`;
 }
 
-export function modelApiRequest({ protocol, apiKey, model, maxOutputTokens, systemPrompt, userContent = "", messages }: ModelApiRequestInput) {
+export function modelApiRequest({ protocol, apiKey, model, maxOutputTokens, temperature = 0.2, seed = 0, systemPrompt, userContent = "", messages }: ModelApiRequestInput) {
   const key = apiKey.trim();
   const rawConversation = messages?.length ? messages : [{ role: "user" as const, content: userContent }];
   const conversation = rawConversation.reduce<ModelApiMessage[]>((result, message) => {
@@ -32,11 +34,11 @@ export function modelApiRequest({ protocol, apiKey, model, maxOutputTokens, syst
   if (protocol === "anthropic") {
     return {
       headers: { "Content-Type": "application/json", "anthropic-version": "2023-06-01", ...(key ? { "x-api-key": key } : {}) },
-      body: JSON.stringify({ model: model.trim(), temperature: 0.2, max_tokens: maxOutputTokens, system: systemPrompt, messages: conversation }),
+      body: JSON.stringify({ model: model.trim(), temperature, max_tokens: maxOutputTokens, system: systemPrompt, messages: conversation }),
     };
   }
   return {
     headers: { "Content-Type": "application/json", ...(key ? { Authorization: `Bearer ${key}` } : {}) },
-    body: JSON.stringify({ model: model.trim(), temperature: 0.2, max_tokens: maxOutputTokens, stream: false, messages: [{ role: "system", content: systemPrompt }, ...conversation] }),
+    body: JSON.stringify({ model: model.trim(), temperature, max_tokens: maxOutputTokens, stream: false, ...(seed ? { seed } : {}), messages: [{ role: "system", content: systemPrompt }, ...conversation] }),
   };
 }

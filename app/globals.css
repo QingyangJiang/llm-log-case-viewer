@@ -537,6 +537,13 @@ kbd { display: inline-flex; min-width: 22px; height: 22px; align-items: center; 
 .judge-history-candidate .judge-candidate-panel { margin: 0; }
 .judge-overview { border-color: #82937f; background: #f6faef; }
 .judge-overview > p { margin: 9px 0 0; color: var(--muted); font-size: 8px; line-height: 1.5; }
+.judge-local-runtime { margin-top: 10px; padding: 10px; display: grid; gap: 7px; border: 1px solid #aab8a2; background: #fff; }
+.judge-local-runtime > strong { font-size: 9px; }
+.judge-local-runtime > code { padding: 7px 8px; overflow-wrap: anywhere; border: 1px dashed #b7c2b1; background: #f5f8f1; color: #334039; font-size: 8px; }
+.judge-local-runtime label { margin: 0; }
+.judge-local-runtime small { color: var(--muted); font-size: 8px; line-height: 1.5; }
+.judge-local-runtime > button { min-height: 34px; border: 1px solid var(--ink); background: #e6f58b; cursor: pointer; font-size: 8px; font-weight: 800; }
+.judge-local-runtime > button:disabled { opacity: .45; cursor: not-allowed; }
 .judge-batch-actions { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
 .judge-batch-actions > button { min-height: 35px; margin-top: 11px; padding: 0 10px; border: 1px solid var(--ink); background: white; cursor: pointer; font-size: 8px; font-weight: 700; }
 .judge-batch-actions > button:disabled { opacity: .45; cursor: not-allowed; }
@@ -550,6 +557,7 @@ kbd { display: inline-flex; min-width: 22px; height: 22px; align-items: center; 
 .judge-config-section { border-color: #7f9187; }
 .judge-config-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 9px; }
 .judge-config-grid .wide { grid-column: 1 / -1; }
+.judge-config-grid label > code { min-height: 35px; padding: 9px; display: block; border: 1px solid var(--line-strong); background: #f7f9f5; overflow-wrap: anywhere; font-size: 8px; }
 .judge-config-grid label small { display: block; margin-top: 4px; color: var(--muted); font-size: 7px; }
 .judge-config-grid label.judge-check { min-height: 35px; margin-top: 24px; padding: 0 9px; display: flex; align-items: center; gap: 8px; border: 1px solid var(--line-strong); background: #fbfcfa; }
 .judge-config-grid label.judge-check input { width: 14px; height: 14px; padding: 0; accent-color: #222c29; }
