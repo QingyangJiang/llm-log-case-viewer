@@ -1755,76 +1755,96 @@ def save_client_judge_result(project_id: int, body: JudgeClientResultBody, user:
     else:
         case_run.triggered_by = user.id
         case_run.started_at = case_run.started_at or utcnow()
-        case_run.error = ""
 
-    try:
-        if body.error:
-            raise ValueError(body.error)
-        stage1 = require_judge_object(parse_json_object(body.stage1_raw), "阶段一")
-        case_run.stage1_raw = body.stage1_raw
-        case_run.stage1_result = stage1
-        candidate_by_id = {
-            str(item["id"]): item
-            for item in case.payload.get("candidates", [])
-            if isinstance(item, dict) and item.get("id") is not None
-        }
-        submitted_ids: set[str] = set()
-        succeeded = 0
-        for submitted in body.candidates:
-            candidate = candidate_by_id.get(submitted.candidate_id)
-            if not candidate:
-                raise ValueError(f"候选 {submitted.candidate_id} 已不存在，请刷新后重试")
-            submitted_ids.add(submitted.candidate_id)
-            candidate_hash = canonical_hash(judge_candidate_content(candidate))
-            candidate_run = db.scalar(select(JudgeCandidateRun).where(
-                JudgeCandidateRun.case_run_id == case_run.id,
-                JudgeCandidateRun.candidate_id == submitted.candidate_id,
-                JudgeCandidateRun.candidate_hash == candidate_hash,
-            ))
-            if not candidate_run:
-                candidate_run = JudgeCandidateRun(
-                    case_run_id=case_run.id,
-                    candidate_id=submitted.candidate_id,
-                    candidate_hash=candidate_hash,
-                    status="running_stage_2",
-                    started_at=utcnow(),
-                )
-                db.add(candidate_run)
-            candidate_run.stage2_result = None
-            candidate_run.stage3_result = None
-            candidate_run.stage2_raw = submitted.stage2_raw
-            candidate_run.stage3_raw = "\n\n--- SAMPLE ---\n\n".join(submitted.stage3_raw)
-            candidate_run.error = submitted.error
-            try:
-                if submitted.error:
-                    raise ValueError(submitted.error)
-                stage2 = require_judge_object(parse_json_object(submitted.stage2_raw), "阶段二")
-                samples = [parse_json_object(raw) for raw in submitted.stage3_raw]
-                aggregate = aggregate_stage3(samples)
-                if aggregate["consensus"]["score"] is None:
-                    raise ValueError("阶段三没有任何可用的结构化评分样本")
-                candidate_run.stage2_result = stage2
-                candidate_run.stage3_result = aggregate
-                candidate_run.status = "succeeded"
-                candidate_run.error = ""
-                succeeded += 1
-            except Exception as exc:
-                candidate_run.status = "failed"
-                candidate_run.error = str(exc)[:2000]
-            candidate_run.completed_at = utcnow()
-        missing = set(candidate_by_id) - submitted_ids
-        if missing:
-            raise ValueError(f"缺少候选判分结果：{'、'.join(sorted(missing))}")
-        case_run.status = "succeeded" if succeeded == len(candidate_by_id) else "partial_failed" if succeeded else "failed"
-        case_run.completed_at = utcnow()
-        if case_run.status == "failed" and not case_run.error:
-            case_run.error = "全部候选判分失败"
-    except Exception as exc:
+    candidate_by_id = {
+        str(item["id"]): item
+        for item in case.payload.get("candidates", [])
+        if isinstance(item, dict) and item.get("id") is not None
+    }
+    request_ok = not bool(body.error)
+    if body.error:
+        case_run.error = body.error[:2000]
+    elif body.stage1_raw:
+        try:
+            stage1 = require_judge_object(parse_json_object(body.stage1_raw), "阶段一")
+            stage1_changed = bool(case_run.stage1_result and canonical_hash(case_run.stage1_result) != canonical_hash(stage1))
+            case_run.stage1_raw = body.stage1_raw
+            case_run.stage1_result = stage1
+            case_run.error = ""
+            if stage1_changed:
+                for previous in db.scalars(select(JudgeCandidateRun).where(JudgeCandidateRun.case_run_id == case_run.id)).all():
+                    previous.status = "stale"
+                    previous.error = "Stage 1 已重新生成，请重新生成该模型的 Stage 2+3"
+        except Exception as exc:
+            request_ok = False
+            case_run.error = str(exc)[:2000]
+    elif not case_run.stage1_result:
+        request_ok = False
+        case_run.error = "请先生成 Stage 1 任务拆解"
+
+    for submitted in body.candidates:
+        candidate = candidate_by_id.get(submitted.candidate_id)
+        if not candidate:
+            request_ok = False
+            case_run.error = f"候选 {submitted.candidate_id} 已不存在，请刷新后重试"
+            continue
+        candidate_hash = canonical_hash(judge_candidate_content(candidate))
+        candidate_run = db.scalar(select(JudgeCandidateRun).where(
+            JudgeCandidateRun.case_run_id == case_run.id,
+            JudgeCandidateRun.candidate_id == submitted.candidate_id,
+            JudgeCandidateRun.candidate_hash == candidate_hash,
+        ))
+        if not candidate_run:
+            candidate_run = JudgeCandidateRun(
+                case_run_id=case_run.id,
+                candidate_id=submitted.candidate_id,
+                candidate_hash=candidate_hash,
+                status="running_stage_2",
+                started_at=utcnow(),
+            )
+            db.add(candidate_run)
+        candidate_run.stage2_raw = submitted.stage2_raw
+        candidate_run.stage3_raw = "\n\n--- SAMPLE ---\n\n".join(submitted.stage3_raw)
+        candidate_run.completed_at = utcnow()
+        try:
+            if submitted.error:
+                raise ValueError(submitted.error)
+            if not case_run.stage1_result:
+                raise ValueError("请先生成 Stage 1 任务拆解")
+            stage2 = require_judge_object(parse_json_object(submitted.stage2_raw), "阶段二")
+            samples = [parse_json_object(raw) for raw in submitted.stage3_raw]
+            aggregate = aggregate_stage3(samples)
+            if aggregate["consensus"]["score"] is None:
+                raise ValueError("阶段三没有任何可用的结构化评分样本")
+            candidate_run.stage2_result = stage2
+            candidate_run.stage3_result = aggregate
+            candidate_run.status = "succeeded"
+            candidate_run.error = ""
+        except Exception as exc:
+            request_ok = False
+            candidate_run.status = "failed"
+            candidate_run.error = str(exc)[:2000]
+
+    current_statuses: list[str] = []
+    for candidate_id, candidate in candidate_by_id.items():
+        candidate_hash = canonical_hash(judge_candidate_content(candidate))
+        current = db.scalar(select(JudgeCandidateRun).where(
+            JudgeCandidateRun.case_run_id == case_run.id,
+            JudgeCandidateRun.candidate_id == candidate_id,
+            JudgeCandidateRun.candidate_hash == candidate_hash,
+        ))
+        current_statuses.append(current.status if current else "not_started")
+    if current_statuses and all(status == "succeeded" for status in current_statuses):
+        case_run.status = "succeeded"
+    elif any(status == "succeeded" for status in current_statuses):
+        case_run.status = "partial_succeeded"
+    elif case_run.stage1_result:
+        case_run.status = "stage1_succeeded"
+    else:
         case_run.status = "failed"
-        case_run.error = str(exc)[:2000]
-        case_run.completed_at = utcnow()
+    case_run.completed_at = utcnow()
     db.commit()
-    return {"ok": case_run.status == "succeeded", "status": case_run.status, "case_id": case.id}
+    return {"ok": request_ok, "status": case_run.status, "case_id": case.id}
 
 
 @app.post("/api/projects/{project_id}/judge/cancel")

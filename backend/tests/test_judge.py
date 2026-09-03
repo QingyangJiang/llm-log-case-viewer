@@ -190,6 +190,90 @@ class JudgeHelpersTest(unittest.TestCase):
             self.assertEqual(saved.status, "succeeded")
             self.assertEqual(saved.stage3_result["consensus"]["score"], 9)
 
+    def test_browser_can_save_stage1_and_each_candidate_independently(self) -> None:
+        test_engine = api.create_engine("sqlite://", connect_args={"check_same_thread": False})
+        test_session = api.sessionmaker(test_engine, expire_on_commit=False)
+        api.Base.metadata.create_all(test_engine)
+        config = {**api.default_judge_config(), "sample_count": 1}
+        with test_session() as db:
+            user = api.User(username="staged-admin", display_name="Staged Admin", password_hash="unused", role="admin")
+            db.add(user)
+            db.flush()
+            project = api.Project(name="Staged Judge", annotation_config={}, created_by=user.id)
+            db.add(project)
+            db.flush()
+            case = api.Case(
+                project_id=project.id,
+                external_id="case-staged",
+                ordinal=0,
+                payload={
+                    "id": "case-staged",
+                    "messages": [{"role": "user", "content": "answer"}],
+                    "candidates": [
+                        {"id": "candidate-a", "model": "a", "response": "a"},
+                        {"id": "candidate-b", "model": "b", "response": "b"},
+                    ],
+                },
+            )
+            db.add(case)
+            db.flush()
+            db.add(api.JudgeConfigVersion(
+                project_id=project.id,
+                version=1,
+                config=config,
+                api_key="",
+                signature=api.judge_config_signature(config),
+                active=True,
+                created_by=user.id,
+            ))
+            db.commit()
+
+            stage1 = api.save_client_judge_result(
+                project.id,
+                api.JudgeClientResultBody(
+                    case_id=case.id,
+                    config_version=1,
+                    stage1_raw='{"subtasks":[{"id":1,"desc":"answer","phase":"pending"}]}',
+                ),
+                user,
+                db,
+            )
+            self.assertTrue(stage1["ok"])
+            self.assertEqual(stage1["status"], "stage1_succeeded")
+
+            for index, candidate_id in enumerate(["candidate-a", "candidate-b"]):
+                saved = api.save_client_judge_result(
+                    project.id,
+                    api.JudgeClientResultBody(
+                        case_id=case.id,
+                        config_version=1,
+                        candidates=[api.JudgeClientCandidateBody(
+                            candidate_id=candidate_id,
+                            stage2_raw='{"subtasks":[{"id":1,"status":"done"}]}',
+                            stage3_raw=[f'{{"tier":1,"score":{9 - index},"overall_comment":"ok"}}'],
+                        )],
+                    ),
+                    user,
+                    db,
+                )
+                self.assertTrue(saved["ok"])
+                self.assertEqual(saved["status"], "partial_succeeded" if index == 0 else "succeeded")
+
+            regenerated = api.save_client_judge_result(
+                project.id,
+                api.JudgeClientResultBody(
+                    case_id=case.id,
+                    config_version=1,
+                    stage1_raw='{"subtasks":[{"id":1,"desc":"changed","phase":"pending"}]}',
+                ),
+                user,
+                db,
+            )
+            self.assertTrue(regenerated["ok"])
+            self.assertEqual(regenerated["status"], "stage1_succeeded")
+            statuses = db.scalars(api.select(api.JudgeCandidateRun.status)).all()
+            self.assertEqual(statuses, ["stale", "stale"])
+
     def test_shared_judge_config_never_returns_api_key(self) -> None:
         config = {**api.default_judge_config(), "model_name": "shared-model"}
         record = api.JudgeConfigVersion(
