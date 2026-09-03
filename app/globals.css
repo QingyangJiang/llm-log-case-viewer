@@ -488,6 +488,12 @@ kbd { display: inline-flex; min-width: 22px; height: 22px; align-items: center; 
 .judge-case-panel > header h3 { margin: 3px 0 0; font-size: 14px; }
 .judge-case-panel > header em { color: #c9d2cd; font-size: 8px; font-style: normal; }
 .judge-case-panel > .judge-fields { padding: 13px; }
+.judge-case-panel > .judge-fields { gap: 12px; }
+.judge-case-panel > .judge-fields > .judge-field { grid-template-columns: minmax(120px,180px) minmax(0,1fr); gap: 14px; }
+.judge-case-panel > .judge-fields > .judge-field > dt { font-size: 12px; line-height: 1.5; }
+.judge-case-panel > .judge-fields > .judge-field > dd { font-size: 14px; line-height: 1.65; }
+.judge-case-panel > .judge-fields .judge-array { gap: 10px; }
+.judge-case-panel > .judge-fields .judge-array-item { padding: 12px 14px; }
 .judge-case-panel.pending,.judge-case-panel.setup { padding: 13px; border-color: #aeb9b3; box-shadow: none; }
 .judge-case-panel.pending strong,.judge-case-panel.setup strong { font-size: 11px; }
 .judge-case-panel.pending p,.judge-case-panel.setup p { margin: 5px 0 0; color: var(--muted); font-size: 9px; }
@@ -535,6 +541,39 @@ kbd { display: inline-flex; min-width: 22px; height: 22px; align-items: center; 
 .judge-history-candidate > header { padding: 8px 1px; display: flex; justify-content: space-between; gap: 8px; font-size: 8px; }
 .judge-history-candidate > header span { color: var(--muted); }
 .judge-history-candidate .judge-candidate-panel { margin: 0; }
+.judge-review { margin: 0 0 16px; border: 1px solid var(--ink); background: #f7faf6; box-shadow: 3px 3px 0 #d8ded8; }
+.judge-review > header { min-height: 58px; padding: 11px 14px; display: flex; align-items: center; justify-content: space-between; gap: 16px; border-bottom: 1px solid var(--ink); background: #222c29; color: white; }
+.judge-review > header span { display: block; color: var(--accent); font-family: var(--font-geist-mono),monospace; font-size: 11px; letter-spacing: .1em; }
+.judge-review > header h3 { margin: 4px 0 0; font-size: 16px; }
+.judge-review > header p { margin: 0; color: #d5ddd8; font-size: 12px; }
+.judge-review-tabs { padding: 10px; display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 8px; border-bottom: 1px solid #aeb9b3; background: #edf2eb; }
+.judge-review-tabs button { min-width: 0; min-height: 70px; padding: 9px 11px; display: grid; grid-template-columns: minmax(0,1fr) auto; align-content: center; gap: 4px 10px; border: 1px solid #aeb9b3; background: white; color: var(--ink); text-align: left; cursor: pointer; }
+.judge-review-tabs button:hover,.judge-review-tabs button.active { border-color: var(--ink); background: #f1f8d4; box-shadow: 2px 2px 0 var(--ink); }
+.judge-review-tabs button > span { min-width: 0; overflow: hidden; font-family: var(--font-geist-mono),monospace; font-size: 12px; font-weight: 750; text-overflow: ellipsis; white-space: nowrap; }
+.judge-review-tabs button > strong { grid-row: span 2; align-self: center; color: #1f5a3d; font-size: 18px; }
+.judge-review-tabs button > small { color: var(--muted); font-size: 11px; }
+.judge-review-detail { padding: 14px; }
+.judge-review-model { margin-bottom: 8px; display: flex; align-items: baseline; gap: 9px; }
+.judge-review-model span { color: var(--muted); font-size: 12px; }
+.judge-review-model strong { font-family: var(--font-geist-mono),monospace; font-size: 15px; }
+.judge-review-detail .judge-candidate-panel { margin: 0; }
+.judge-review-detail .judge-candidate-panel > header { min-height: 54px; padding: 10px 13px; }
+.judge-review-detail .judge-candidate-panel > header span,.judge-review-detail .judge-stage > header span { font-size: 11px; }
+.judge-review-detail .judge-candidate-panel > header strong,.judge-review-detail .judge-stage > header strong { font-size: 14px; }
+.judge-review-detail .judge-result-head b,.judge-review-detail .judge-result-head em { padding: 4px 7px; font-size: 11px; }
+.judge-review-detail .judge-result-head > strong { font-size: 18px; }
+.judge-review-detail .judge-stage > header { padding: 11px 13px; }
+.judge-review-detail .judge-stage > .judge-fields { padding: 14px; }
+.judge-review-detail .judge-fields { gap: 12px; }
+.judge-review-detail .judge-field { grid-template-columns: minmax(120px,180px) minmax(0,1fr); gap: 14px; }
+.judge-review-detail .judge-field > dt { font-size: 12px; line-height: 1.5; }
+.judge-review-detail .judge-field > dd { font-size: 14px; line-height: 1.65; }
+.judge-review-detail .judge-array { gap: 10px; }
+.judge-review-detail .judge-array-item { padding: 12px 14px; }
+.judge-review-detail .judge-fields .judge-fields { padding-left: 12px; border-left: 2px solid #d8ded9; }
+.judge-review-detail :is(.judge-field-desc,.judge-field-detail,.judge-field-evidence,.judge-field-location,.judge-field-note,.judge-field-review_note,.judge-field-detector_summary,.judge-field-score_rationale,.judge-field-reasoning,.judge-field-overall_comment,.judge-field-correct_points) { grid-template-columns: 1fr; gap: 4px; }
+.judge-review-detail .judge-caution,.judge-review-detail .judge-error { margin: 11px 13px; font-size: 12px; }
+.judge-review-detail .judge-consensus-meta { margin: 9px 13px; font-size: 11px; }
 .judge-overview { border-color: #82937f; background: #f6faef; }
 .judge-overview > p { margin: 9px 0 0; color: var(--muted); font-size: 8px; line-height: 1.5; }
 .judge-local-runtime { margin-top: 10px; padding: 10px; display: grid; gap: 7px; border: 1px solid #aab8a2; background: #fff; }
@@ -578,6 +617,8 @@ kbd { display: inline-flex; min-width: 22px; height: 22px; align-items: center; 
 @media (max-width: 900px) {
   .candidate-workspace-actions { align-items: flex-start; }
   .judge-field { grid-template-columns: 78px minmax(0,1fr); }
+  .judge-review-tabs { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .judge-review-detail .judge-field { grid-template-columns: minmax(105px,140px) minmax(0,1fr); }
 }
 
 @media (max-width: 560px) {
@@ -587,4 +628,8 @@ kbd { display: inline-flex; min-width: 22px; height: 22px; align-items: center; 
   .judge-summary { grid-template-columns: repeat(2,1fr); }
   .judge-summary > div:nth-child(2) { border-right: 0; }
   .judge-summary > div:nth-child(-n+2) { border-bottom: 1px solid var(--line-strong); }
+  .judge-review > header { align-items: flex-start; flex-direction: column; }
+  .judge-review-tabs { grid-template-columns: 1fr; }
+  .judge-review-detail { padding: 9px; }
+  .judge-review-detail .judge-field { grid-template-columns: 1fr; gap: 4px; }
 }

@@ -1574,7 +1574,7 @@ function JudgeStructuredValue({ value, depth = 0 }: { value: unknown; depth?: nu
   if (value === null || value === undefined || value === "") return <span className="judge-empty">—</span>;
   if (typeof value === "boolean") return <span>{value ? "是" : "否"}</span>;
   if (typeof value === "string" || typeof value === "number") return <span>{String(value)}</span>;
-  if (depth >= 4) return <JsonCode value={value} compact />;
+  if (depth >= 8) return <JsonCode value={value} compact />;
   if (Array.isArray(value)) {
     if (!value.length) return <span className="judge-empty">无</span>;
     return <div className="judge-array">{value.map((item, index) => <div className="judge-array-item" key={index}>{isObject(item) ? <JudgeStructuredValue value={item} depth={depth + 1} /> : <span>{String(item)}</span>}</div>)}</div>;
@@ -1588,6 +1588,37 @@ function JudgeStructuredValue({ value, depth = 0 }: { value: unknown; depth?: nu
     ))}</dl>;
   }
   return <span>{String(value)}</span>;
+}
+
+function JudgeReviewPanel({ candidates, results }: { candidates: CandidateOutput[]; results: Record<string, JudgeCandidateResult> }) {
+  const [activeId, setActiveId] = useState(candidates[0]?.id ?? "");
+  const activeCandidate = candidates.find((candidate) => candidate.id === activeId) ?? candidates[0];
+  if (!activeCandidate) return null;
+  return (
+    <section className="judge-review" id="judge-review">
+      <header>
+        <div><span>AUTO JUDGE · FULL WIDTH</span><h3>自动判分详情</h3></div>
+        <p>选择模型查看完整检错、证据与评分依据</p>
+      </header>
+      <nav className="judge-review-tabs" aria-label="选择要查看的模型判分结果">
+        {candidates.map((candidate) => {
+          const result = results[candidate.id];
+          const consensus = isObject(result?.stage3?.consensus) ? result.stage3.consensus : undefined;
+          return (
+            <button type="button" className={candidate.id === activeCandidate.id ? "active" : ""} onClick={() => setActiveId(candidate.id)} key={candidate.id}>
+              <span>{candidate.model}</span>
+              <strong>{consensus?.score ? `${String(consensus.score)} 分` : JUDGE_STATUS_LABELS[result?.status ?? "not_started"]}</strong>
+              <small>{consensus?.tier ? `Tier ${String(consensus.tier)} · ` : ""}{JUDGE_STATUS_LABELS[result?.status ?? "not_started"]}</small>
+            </button>
+          );
+        })}
+      </nav>
+      <div className="judge-review-detail">
+        <div className="judge-review-model"><span>当前模型</span><strong>{activeCandidate.model}</strong></div>
+        <JudgeCandidatePanel result={results[activeCandidate.id]} />
+      </div>
+    </section>
+  );
 }
 
 function JudgeCandidatePanel({ result }: { result?: JudgeCandidateResult }) {
@@ -1612,11 +1643,9 @@ function JudgeCandidatePanel({ result }: { result?: JudgeCandidateResult }) {
   );
 }
 
-function CandidateAnnotationCard({ candidate, referInfo, judgeAvailable, judgeResult, dimensions, badcaseTags, existing, historyCount, disabled, locked, onSave }: {
+function CandidateAnnotationCard({ candidate, referInfo, dimensions, badcaseTags, existing, historyCount, disabled, locked, onSave }: {
   candidate: CandidateOutput;
   referInfo?: JsonObject;
-  judgeAvailable: boolean;
-  judgeResult?: JudgeCandidateResult;
   dimensions: AnnotationDimension[];
   badcaseTags: string[];
   existing?: CaseAnnotation;
@@ -1693,7 +1722,6 @@ function CandidateAnnotationCard({ candidate, referInfo, judgeAvailable, judgeRe
         {candidate.metadata ? <details className="candidate-metadata"><summary>模型元数据</summary><JsonCode value={candidate.metadata} compact /></details> : null}
       </section>
       {referInfo ? <section className="candidate-reference"><header><span>REFER INFO</span><strong>标注参考信息</strong></header><JsonCode value={referInfo} compact /></section> : null}
-      {judgeAvailable ? <JudgeCandidatePanel result={judgeResult} /> : null}
       <section className="annotation-form">
         <div className="score-grid">
           {dimensions.map((dimension) => {
@@ -1747,12 +1775,13 @@ function CandidateWorkspace({ item, caseIndex, records, annotator, judgeAvailabl
       <header className="candidate-workspace-head"><div><span>MODEL COMPARISON</span><h3>{candidates.length} 个候选结果</h3></div><div className="candidate-workspace-actions"><p>当前标注员：<strong>{annotator.name || annotator.id || "未设置"}</strong> · 可暂存草稿后继续</p>{judgeAvailable ? <button type="button" disabled={!judgeConfigured || judgeBusy} onClick={onRunJudge}>{judgeBusy ? "正在提交…" : judgeResult?.status === "succeeded" ? "判分已完成" : "✦ 运行自动判分"}</button> : null}</div></header>
       {judgeAvailable ? (judgeResult?.stage1 ? <section className="judge-case-panel"><header><div><span>STAGE 1 · SHARED RUBRIC</span><h3>任务拆解</h3></div><em>配置 v{judgeResult.config_version}</em></header><JudgeStructuredValue value={judgeResult.stage1} /></section> : judgeResult && judgeResult.status !== "not_started" ? <section className="judge-case-panel pending"><strong>{JUDGE_STATUS_LABELS[judgeResult.status] ?? judgeResult.status}</strong><p>{judgeResult.error || "阶段一完成后会先在这里展示固定子任务。"}</p>{judgeResult.stage1_raw ? <details className="judge-failure-raw"><summary>查看阶段一原始输出</summary><pre>{judgeResult.stage1_raw}</pre></details> : null}</section> : !judgeConfigured ? <section className="judge-case-panel setup"><strong>自动判分尚未配置</strong><p>请联系管理员在团队设置中配置判分模型。</p></section> : null) : null}
       {judgeAvailable ? <details className="judge-history" onToggle={(event) => { if (event.currentTarget.open && !judgeHistoryBusy) onLoadJudgeHistory(); }}><summary>{judgeHistoryBusy ? "正在读取判分历史…" : `判分历史${judgeHistory.length ? ` · ${judgeHistory.length} 个版本` : ""}`}</summary>{judgeHistory.map((run) => <details className="judge-history-run" key={run.id}><summary><span>配置 v{run.config_version} · {run.model_name || "未知模型"}</span><em>{run.current_case_content ? "当前 Case 内容" : "旧 Case 内容"} · {new Date(run.created_at).toLocaleString()}</em></summary><div><p>由 {run.triggered_by} 触发 · {JUDGE_STATUS_LABELS[run.status] ?? run.status}</p>{run.error ? <p className="judge-error">{run.error}</p> : null}{run.stage1 ? <section className="judge-stage"><header><span>STAGE 1</span><strong>任务拆解</strong></header><JudgeStructuredValue value={run.stage1} /></section> : null}{run.candidates.map((candidate) => <section className="judge-history-candidate" key={candidate.id}><header><strong>{candidate.candidate_id}</strong><span>{candidate.current_content ? "当前候选内容" : "旧候选内容"}</span></header><JudgeCandidatePanel result={candidate} /></section>)}</div></details>)}</details> : null}
+      {judgeAvailable && judgeResult ? <JudgeReviewPanel candidates={candidates} results={judgeResult.candidates} /> : null}
       <div className={`candidate-grid columns-${Math.min(candidates.length, 4)}`}>
         {candidates.map((candidate) => {
           const existing = records.find((record) => record.candidate_id === candidate.id && record.annotator.id === annotator.id);
           const historyCount = new Set(records.filter((record) => record.candidate_id === candidate.id && record.status === "submitted").map((record) => record.annotator.id)).size;
           const locked = Boolean(existing?.status === "submitted" && !existing.sync_state && item.annotation_config?.lock_submitted && !canReturn);
-          return <CandidateAnnotationCard candidate={candidate} referInfo={referInfo} judgeAvailable={judgeAvailable} judgeResult={judgeResult?.candidates[candidate.id]} dimensions={dimensions} badcaseTags={badcaseTags} existing={existing} historyCount={historyCount} disabled={!annotator.id.trim() || !annotator.name.trim()} locked={locked} onSave={(value, status, silent) => onSave(candidate, value, status, silent)} key={`${caseAnnotationKey(item, caseIndex)}:${candidate.id}:${annotator.id}`} />;
+          return <CandidateAnnotationCard candidate={candidate} referInfo={referInfo} dimensions={dimensions} badcaseTags={badcaseTags} existing={existing} historyCount={historyCount} disabled={!annotator.id.trim() || !annotator.name.trim()} locked={locked} onSave={(value, status, silent) => onSave(candidate, value, status, silent)} key={`${caseAnnotationKey(item, caseIndex)}:${candidate.id}:${annotator.id}`} />;
         })}
       </div>
       {records.length ? (
