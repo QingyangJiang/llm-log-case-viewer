@@ -190,6 +190,16 @@ class JudgeConfigVersion(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class JudgeConfigPreference(Base):
+    __tablename__ = "judge_config_preferences"
+    __table_args__ = (UniqueConstraint("project_id", "user_id"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    config_id: Mapped[int] = mapped_column(ForeignKey("judge_config_versions.id"), index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
 class JudgeCaseRun(Base):
     __tablename__ = "judge_case_runs"
     __table_args__ = (UniqueConstraint("case_id", "config_id", "case_hash"),)
@@ -223,6 +233,20 @@ class JudgeCandidateRun(Base):
     error: Mapped[str] = mapped_column(Text, default="")
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class JudgeSelfCheck(Base):
+    __tablename__ = "judge_self_checks"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    case_id: Mapped[int] = mapped_column(ForeignKey("cases.id"), index=True)
+    config_id: Mapped[int] = mapped_column(ForeignKey("judge_config_versions.id"), index=True)
+    case_hash: Mapped[str] = mapped_column(String(64), index=True)
+    annotation_hash: Mapped[str] = mapped_column(String(64), index=True)
+    result: Mapped[dict[str, Any]] = mapped_column(JSON)
+    raw_output: Mapped[str] = mapped_column(Text, default="")
+    triggered_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 connect_args = {"check_same_thread": False} if str(DATABASE_URL).startswith("sqlite") else {}
@@ -515,6 +539,15 @@ class JudgeConfigBody(BaseModel):
     decomposer_prompt: str = Field(default=DEFAULT_DECOMPOSER_PROMPT, min_length=1, max_length=100_000)
     detector_prompt: str = Field(default=DEFAULT_DETECTOR_PROMPT, min_length=1, max_length=100_000)
     verifier_prompt: str = Field(default=DEFAULT_VERIFIER_PROMPT, min_length=1, max_length=100_000)
+    lifecycle_status: str = Field(default="published", pattern="^(draft|test|published)$")
+    version_note: str = Field(default="", max_length=1000)
+    parent_version: int | None = Field(default=None, ge=1)
+    source_self_check_id: int | None = Field(default=None, ge=1)
+    shared: bool = False
+
+
+class JudgeConfigDefaultBody(BaseModel):
+    version: int = Field(ge=0)
 
 
 class JudgeRunBody(BaseModel):
@@ -534,6 +567,12 @@ class JudgeClientResultBody(BaseModel):
     stage1_raw: str = Field(default="", max_length=2_000_000)
     candidates: list[JudgeClientCandidateBody] = Field(default_factory=list, max_length=1000)
     error: str = Field(default="", max_length=2000)
+
+
+class JudgeSelfCheckBody(BaseModel):
+    case_id: int
+    config_version: int = Field(ge=1)
+    raw_output: str = Field(min_length=1, max_length=2_000_000)
 
 
 class ProjectMembersBody(BaseModel):
@@ -1008,6 +1047,37 @@ def canonical_hash(value: Any) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def submitted_annotation_snapshot(case: Case) -> list[dict[str, Any]]:
+    return sorted(({
+        "annotation_id": record.id,
+        "candidate_id": record.candidate_id,
+        "user_id": record.user_id,
+        "scores": record.scores,
+        "badcase": record.badcase,
+        "badcase_tags": record.badcase_tags,
+        "note": record.note,
+        "revision": record.revision,
+        "updated_at": record.updated_at.isoformat(),
+    } for record in case.annotations if record.status == "submitted"), key=lambda item: (item["candidate_id"], item["user_id"]))
+
+
+def annotation_snapshot_hash(case: Case) -> str:
+    return canonical_hash(submitted_annotation_snapshot(case))
+
+
+def self_check_payload(record: JudgeSelfCheck | None, db: Session) -> dict[str, Any] | None:
+    if not record:
+        return None
+    trigger = db.get(User, record.triggered_by)
+    return {
+        "id": record.id,
+        "result": record.result,
+        "raw_output": record.raw_output,
+        "triggered_by": trigger.display_name if trigger else "未知用户",
+        "created_at": record.created_at.isoformat(),
+    }
+
+
 def judge_case_content(payload: dict[str, Any]) -> dict[str, Any]:
     return {
         key: value
@@ -1021,7 +1091,7 @@ def judge_candidate_content(candidate: dict[str, Any]) -> dict[str, Any]:
 
 
 def judge_config_signature(config: dict[str, Any]) -> str:
-    return canonical_hash(config)
+    return canonical_hash({key: value for key, value in config.items() if not key.startswith("_")})
 
 
 def active_judge_config(db: Session, project_id: int) -> JudgeConfigVersion | None:
@@ -1030,6 +1100,34 @@ def active_judge_config(db: Session, project_id: int) -> JudgeConfigVersion | No
         .where(JudgeConfigVersion.project_id == project_id, JudgeConfigVersion.active.is_(True))
         .order_by(JudgeConfigVersion.version.desc())
     )
+
+
+def judge_config_accessible(record: JudgeConfigVersion, user: User) -> bool:
+    return bool(user.role == "admin" or record.active or record.created_by == user.id or record.config.get("_shared"))
+
+
+def effective_judge_config(db: Session, project_id: int, user: User) -> JudgeConfigVersion | None:
+    preference = db.scalar(select(JudgeConfigPreference).where(
+        JudgeConfigPreference.project_id == project_id,
+        JudgeConfigPreference.user_id == user.id,
+    ))
+    if preference:
+        preferred = db.get(JudgeConfigVersion, preference.config_id)
+        if preferred and preferred.project_id == project_id and judge_config_accessible(preferred, user):
+            return preferred
+    return active_judge_config(db, project_id)
+
+
+def requested_judge_config(db: Session, project_id: int, version: int, user: User) -> JudgeConfigVersion:
+    record = db.scalar(select(JudgeConfigVersion).where(
+        JudgeConfigVersion.project_id == project_id,
+        JudgeConfigVersion.version == version,
+    ))
+    if not record:
+        raise HTTPException(409, "Prompt 版本不存在，请刷新后重试")
+    if not judge_config_accessible(record, user):
+        raise HTTPException(403, "无权使用该 Prompt 版本")
+    return record
 
 
 def judge_config_payload(record: JudgeConfigVersion | None, include_details: bool = True) -> dict[str, Any]:
@@ -1047,12 +1145,28 @@ def judge_config_payload(record: JudgeConfigVersion | None, include_details: boo
         "version": record.version,
         "signature": record.signature,
         "created_at": record.created_at.isoformat(),
+        "active": record.active,
+        "lifecycle_status": "published" if record.active else ("archived" if record.config.get("_lifecycle_status") == "published" else record.config.get("_lifecycle_status", "archived")),
+        "version_note": record.config.get("_version_note", ""),
+        "parent_version": record.config.get("_parent_version"),
+        "source_self_check_id": record.config.get("_source_self_check_id"),
+        "shared": bool(record.config.get("_shared") or record.active),
+        "created_by_id": record.created_by,
     }
     if not include_details:
         return summary
     return {
-        **record.config,
+        **{key: value for key, value in record.config.items() if not key.startswith("_")},
         **summary,
+    }
+
+
+def judge_config_version_payload(record: JudgeConfigVersion, db: Session, default_config_id: int | None = None) -> dict[str, Any]:
+    creator = db.get(User, record.created_by)
+    return {
+        **judge_config_payload(record, include_details=True),
+        "created_by": creator.display_name if creator else "未知用户",
+        "is_default": record.id == default_config_id,
     }
 
 
@@ -1603,7 +1717,7 @@ def judge_candidate_payload(record: JudgeCandidateRun) -> dict[str, Any]:
 
 
 def project_judge_status_payload(db: Session, project: Project, user: User) -> dict[str, Any]:
-    config_record = active_judge_config(db, project.id)
+    config_record = effective_judge_config(db, project.id, user)
     case_query = select(Case).where(Case.project_id == project.id)
     if user.role != "admin":
         case_query = case_query.join(CaseAssignment).where(CaseAssignment.user_id == user.id)
@@ -1613,12 +1727,25 @@ def project_judge_status_payload(db: Session, project: Project, user: User) -> d
     for case in cases:
         case_hash = canonical_hash(judge_case_content(case.payload))
         case_run = None
+        self_check = None
         if config_record:
             case_run = db.scalar(
                 select(JudgeCaseRun)
                 .where(JudgeCaseRun.case_id == case.id, JudgeCaseRun.config_id == config_record.id, JudgeCaseRun.case_hash == case_hash)
                 .order_by(JudgeCaseRun.id.desc())
             )
+            snapshot = submitted_annotation_snapshot(case)
+            if snapshot:
+                self_check = db.scalar(
+                    select(JudgeSelfCheck)
+                    .where(
+                        JudgeSelfCheck.case_id == case.id,
+                        JudgeSelfCheck.config_id == config_record.id,
+                        JudgeSelfCheck.case_hash == case_hash,
+                        JudgeSelfCheck.annotation_hash == canonical_hash(snapshot),
+                    )
+                    .order_by(JudgeSelfCheck.created_at.desc(), JudgeSelfCheck.id.desc())
+                )
         candidate_payloads: dict[str, Any] = {}
         for candidate in case.payload.get("candidates", []):
             if not isinstance(candidate, dict) or candidate.get("id") is None:
@@ -1657,6 +1784,7 @@ def project_judge_status_payload(db: Session, project: Project, user: User) -> d
             "error": case_run.error if case_run else "",
             "config_version": config_record.version if config_record else 0,
             "candidates": candidate_payloads,
+            "self_check": self_check_payload(self_check, db),
         }
     return {
         # Browser-side judging needs shared prompts and runtime settings. The
@@ -1926,8 +2054,10 @@ def delete_project(project_id: int, _: AdminUser, db: DB, confirm_name: str = Qu
         raise HTTPException(422, "项目名称确认不匹配")
     case_ids = select(Case.id).where(Case.project_id == project_id)
     judge_case_run_ids = select(JudgeCaseRun.id).where(JudgeCaseRun.project_id == project_id)
+    db.execute(delete(JudgeSelfCheck).where(JudgeSelfCheck.project_id == project_id))
     db.execute(delete(JudgeCandidateRun).where(JudgeCandidateRun.case_run_id.in_(judge_case_run_ids)))
     db.execute(delete(JudgeCaseRun).where(JudgeCaseRun.project_id == project_id))
+    db.execute(delete(JudgeConfigPreference).where(JudgeConfigPreference.project_id == project_id))
     db.execute(delete(JudgeConfigVersion).where(JudgeConfigVersion.project_id == project_id))
     db.execute(delete(Annotation).where(Annotation.case_id.in_(case_ids)))
     db.execute(delete(CaseAssignment).where(CaseAssignment.case_id.in_(case_ids)))
@@ -1976,13 +2106,32 @@ def update_project_settings(project_id: int, body: ProjectSettingsBody, _: Admin
 @app.get("/api/projects/{project_id}/judge/config")
 def get_judge_config(project_id: int, user: CurrentUser, db: DB) -> dict[str, Any]:
     ensure_project_access(project_id, user, db)
-    return judge_config_payload(active_judge_config(db, project_id), include_details=True)
+    return judge_config_payload(effective_judge_config(db, project_id, user), include_details=True)
+
+
+@app.get("/api/projects/{project_id}/judge/config/versions")
+def get_judge_config_versions(project_id: int, user: CurrentUser, db: DB) -> dict[str, Any]:
+    ensure_project_access(project_id, user, db)
+    all_records = db.scalars(
+        select(JudgeConfigVersion)
+        .where(JudgeConfigVersion.project_id == project_id)
+        .order_by(JudgeConfigVersion.version.desc())
+    ).all()
+    records = [record for record in all_records if judge_config_accessible(record, user)]
+    effective = effective_judge_config(db, project_id, user)
+    active = next((record.version for record in all_records if record.active), 0)
+    return {
+        "active_version": active,
+        "default_version": effective.version if effective else 0,
+        "versions": [judge_config_version_payload(record, db, effective.id if effective else None) for record in records],
+    }
 
 
 @app.put("/api/projects/{project_id}/judge/config")
-def save_judge_config(project_id: int, body: JudgeConfigBody, admin: AdminUser, db: DB) -> dict[str, Any]:
-    if not db.get(Project, project_id):
-        raise HTTPException(404, "项目不存在")
+def save_judge_config(project_id: int, body: JudgeConfigBody, user: CurrentUser, db: DB) -> dict[str, Any]:
+    ensure_project_access(project_id, user, db)
+    if body.lifecycle_status == "published" and user.role != "admin":
+        raise HTTPException(403, "只有管理员可以发布项目生产版本")
     protocol = body.protocol.strip().lower()
     if protocol not in {"anthropic", "openai"}:
         raise HTTPException(422, "协议只能是 anthropic 或 openai")
@@ -1990,11 +2139,35 @@ def save_judge_config(project_id: int, body: JudgeConfigBody, admin: AdminUser, 
     if endpoint.scheme not in {"http", "https"} or not endpoint.netloc:
         raise HTTPException(422, "Base URL 必须是完整的 HTTP(S) 地址")
     previous = active_judge_config(db, project_id)
-    config = body.model_dump(exclude={"api_key"})
-    config["protocol"] = protocol
+    parent = db.scalar(select(JudgeConfigVersion).where(JudgeConfigVersion.project_id == project_id, JudgeConfigVersion.version == body.parent_version)) if body.parent_version is not None else effective_judge_config(db, project_id, user)
+    if body.parent_version is not None and not parent:
+        raise HTTPException(422, "父版本不存在")
+    if parent and not judge_config_accessible(parent, user):
+        raise HTTPException(403, "无权基于该私有 Prompt 版本创建分支")
+    if body.source_self_check_id is not None and not db.scalar(select(JudgeSelfCheck.id).where(JudgeSelfCheck.project_id == project_id, JudgeSelfCheck.id == body.source_self_check_id)):
+        raise HTTPException(422, "来源自检记录不存在")
+    config = body.model_dump(exclude={"api_key", "lifecycle_status", "version_note", "parent_version", "source_self_check_id", "shared"})
+    if user.role != "admin":
+        if not parent:
+            raise HTTPException(422, "管理员需先创建项目生产 Prompt，标注员才能创建个人版本")
+        inherited = {key: value for key, value in parent.config.items() if not key.startswith("_")}
+        config = {
+            **inherited,
+            "rubric": body.rubric,
+            "decomposer_prompt": body.decomposer_prompt,
+            "detector_prompt": body.detector_prompt,
+            "verifier_prompt": body.verifier_prompt,
+        }
+    config["protocol"] = protocol if user.role == "admin" else parent.config.get("protocol", "anthropic")
     config["base_url"] = JUDGE_LOCAL_RELAY_BASE
+    config["_lifecycle_status"] = body.lifecycle_status
+    config["_version_note"] = body.version_note.strip()
+    config["_parent_version"] = body.parent_version
+    config["_source_self_check_id"] = body.source_self_check_id
+    publish = body.lifecycle_status == "published"
+    config["_shared"] = bool(body.shared or publish)
     version = (db.scalar(select(func.max(JudgeConfigVersion.version)).where(JudgeConfigVersion.project_id == project_id)) or 0) + 1
-    if previous:
+    if previous and publish:
         previous.active = False
     record = JudgeConfigVersion(
         project_id=project_id,
@@ -2003,13 +2176,71 @@ def save_judge_config(project_id: int, body: JudgeConfigBody, admin: AdminUser, 
         # Each user supplies their own page-memory-only key to the local relay.
         api_key="",
         signature=judge_config_signature(config),
-        active=True,
-        created_by=admin.id,
+        active=publish,
+        created_by=user.id,
     )
     db.add(record)
     db.commit()
     db.refresh(record)
-    return judge_config_payload(record)
+    return judge_config_version_payload(record, db)
+
+
+@app.put("/api/projects/{project_id}/judge/config/default")
+def set_judge_config_default(project_id: int, body: JudgeConfigDefaultBody, user: CurrentUser, db: DB) -> dict[str, Any]:
+    ensure_project_access(project_id, user, db)
+    preference = db.scalar(select(JudgeConfigPreference).where(
+        JudgeConfigPreference.project_id == project_id,
+        JudgeConfigPreference.user_id == user.id,
+    ))
+    if body.version == 0:
+        if preference:
+            db.delete(preference)
+        db.commit()
+        effective = active_judge_config(db, project_id)
+        return {"ok": True, "default_version": effective.version if effective else 0}
+    record = db.scalar(select(JudgeConfigVersion).where(JudgeConfigVersion.project_id == project_id, JudgeConfigVersion.version == body.version))
+    if not record:
+        raise HTTPException(404, "Prompt 版本不存在")
+    if not judge_config_accessible(record, user):
+        raise HTTPException(403, "该 Prompt 尚未推送给团队")
+    if preference:
+        preference.config_id = record.id
+    else:
+        db.add(JudgeConfigPreference(project_id=project_id, user_id=user.id, config_id=record.id))
+    db.commit()
+    return {"ok": True, "default_version": record.version}
+
+
+@app.post("/api/projects/{project_id}/judge/config/versions/{version}/share")
+def share_judge_config_version(project_id: int, version: int, user: CurrentUser, db: DB) -> dict[str, Any]:
+    ensure_project_access(project_id, user, db)
+    record = db.scalar(select(JudgeConfigVersion).where(JudgeConfigVersion.project_id == project_id, JudgeConfigVersion.version == version))
+    if not record:
+        raise HTTPException(404, "Prompt 版本不存在")
+    if user.role != "admin" and record.created_by != user.id:
+        raise HTTPException(403, "只能推送自己创建的 Prompt 版本")
+    record.config = {**record.config, "_shared": True}
+    db.commit()
+    db.refresh(record)
+    return judge_config_version_payload(record, db)
+
+
+@app.post("/api/projects/{project_id}/judge/config/versions/{version}/publish")
+def publish_judge_config_version(project_id: int, version: int, admin: AdminUser, db: DB) -> dict[str, Any]:
+    if not db.get(Project, project_id):
+        raise HTTPException(404, "项目不存在")
+    record = db.scalar(select(JudgeConfigVersion).where(JudgeConfigVersion.project_id == project_id, JudgeConfigVersion.version == version))
+    if not record:
+        raise HTTPException(404, "Prompt 版本不存在")
+    previous = active_judge_config(db, project_id)
+    if previous and previous.id != record.id:
+        previous.active = False
+        previous.config = {**previous.config, "_lifecycle_status": "published"}
+    record.active = True
+    record.config = {**record.config, "_lifecycle_status": "published", "_shared": True}
+    db.commit()
+    db.refresh(record)
+    return judge_config_version_payload(record, db)
 
 
 @app.post("/api/projects/{project_id}/judge/test")
@@ -2031,9 +2262,7 @@ def run_project_judge(project_id: int, body: JudgeRunBody, user: CurrentUser, db
 @app.post("/api/projects/{project_id}/judge/client-result")
 def save_client_judge_result(project_id: int, body: JudgeClientResultBody, user: CurrentUser, db: DB) -> dict[str, Any]:
     ensure_project_access(project_id, user, db)
-    config_record = active_judge_config(db, project_id)
-    if not config_record or config_record.version != body.config_version:
-        raise HTTPException(409, "判分配置已更新，请刷新后重新运行")
+    config_record = requested_judge_config(db, project_id, body.config_version, user)
     case = db.get(Case, body.case_id)
     if not case or case.project_id != project_id:
         raise HTTPException(404, "Case 不存在")
@@ -2153,10 +2382,55 @@ def save_client_judge_result(project_id: int, body: JudgeClientResultBody, user:
     return {"ok": request_ok, "status": case_run.status, "case_id": case.id}
 
 
+@app.post("/api/projects/{project_id}/judge/self-check")
+def save_judge_self_check(project_id: int, body: JudgeSelfCheckBody, user: CurrentUser, db: DB) -> dict[str, Any]:
+    ensure_project_access(project_id, user, db)
+    config_record = requested_judge_config(db, project_id, body.config_version, user)
+    case = db.get(Case, body.case_id)
+    if not case or case.project_id != project_id:
+        raise HTTPException(404, "Case 不存在")
+    if user.role != "admin" and not db.scalar(select(CaseAssignment).where(CaseAssignment.case_id == case.id, CaseAssignment.user_id == user.id)):
+        raise HTTPException(403, "无权提交该 Case 的评分自检")
+    snapshot = submitted_annotation_snapshot(case)
+    if not snapshot:
+        raise HTTPException(422, "该 Case 还没有已提交的历史人工评分")
+    case_hash = canonical_hash(judge_case_content(case.payload))
+    case_run = db.scalar(select(JudgeCaseRun).where(
+        JudgeCaseRun.case_id == case.id,
+        JudgeCaseRun.config_id == config_record.id,
+        JudgeCaseRun.case_hash == case_hash,
+    ))
+    if not case_run:
+        raise HTTPException(422, "请先生成当前配置下的自动判分")
+    completed_stage3 = db.scalar(select(func.count(JudgeCandidateRun.id)).where(
+        JudgeCandidateRun.case_run_id == case_run.id,
+        JudgeCandidateRun.status == "succeeded",
+    )) or 0
+    if not completed_stage3:
+        raise HTTPException(422, "至少需要一个候选模型完成 Stage 3 后才能自检")
+    result = require_judge_object(parse_json_object(body.raw_output), "评分自检")
+    if not isinstance(result.get("prompt_optimization"), dict):
+        raise HTTPException(422, "评分自检输出缺少 prompt_optimization")
+    record = JudgeSelfCheck(
+        project_id=project_id,
+        case_id=case.id,
+        config_id=config_record.id,
+        case_hash=case_hash,
+        annotation_hash=canonical_hash(snapshot),
+        result=result,
+        raw_output=body.raw_output,
+        triggered_by=user.id,
+    )
+    db.add(record)
+    db.commit()
+    db.refresh(record)
+    return {"ok": True, "self_check": self_check_payload(record, db)}
+
+
 @app.post("/api/projects/{project_id}/judge/cancel")
 def cancel_project_judge(project_id: int, body: JudgeRunBody, user: CurrentUser, db: DB) -> dict[str, Any]:
     ensure_project_access(project_id, user, db)
-    config_record = active_judge_config(db, project_id)
+    config_record = effective_judge_config(db, project_id, user)
     if not config_record:
         return {"cancelled": 0, "running_not_cancelled": 0}
     case_query = select(Case).where(Case.project_id == project_id)

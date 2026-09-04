@@ -323,6 +323,99 @@ class JudgeHelpersTest(unittest.TestCase):
             statuses = db.scalars(api.select(api.JudgeCandidateRun.status)).all()
             self.assertEqual(statuses, ["stale", "stale"])
 
+    def test_self_check_is_saved_against_current_annotation_snapshot(self) -> None:
+        test_engine = api.create_engine("sqlite://", connect_args={"check_same_thread": False})
+        session_factory = api.sessionmaker(test_engine, expire_on_commit=False)
+        api.Base.metadata.create_all(test_engine)
+        with session_factory() as db:
+            user = api.User(username="calibration-admin", display_name="Calibration Admin", password_hash="unused", role="admin")
+            db.add(user)
+            db.flush()
+            project = api.Project(name="Calibration Project", annotation_config={}, created_by=user.id)
+            db.add(project)
+            db.flush()
+            payload = {"id": "case-calibration", "messages": [{"role": "user", "content": "answer"}], "candidates": [{"id": "candidate-a", "model": "a", "response": "answer"}]}
+            case = api.Case(project_id=project.id, external_id="case-calibration", ordinal=0, payload=payload)
+            db.add(case)
+            db.flush()
+            annotation = api.Annotation(case_id=case.id, candidate_id="candidate-a", user_id=user.id, scores={"quality": 9}, status="submitted")
+            db.add(annotation)
+            config = api.default_judge_config()
+            config_record = api.JudgeConfigVersion(project_id=project.id, version=1, config=config, api_key="", signature=api.judge_config_signature(config), active=True, created_by=user.id)
+            db.add(config_record)
+            db.flush()
+            case_run = api.JudgeCaseRun(project_id=project.id, case_id=case.id, config_id=config_record.id, case_hash=api.canonical_hash(api.judge_case_content(payload)), status="succeeded", stage1_result={"subtasks": [{"id": 1, "desc": "answer"}]}, triggered_by=user.id)
+            db.add(case_run)
+            db.flush()
+            db.add(api.JudgeCandidateRun(case_run_id=case_run.id, candidate_id="candidate-a", candidate_hash=api.canonical_hash(api.judge_candidate_content(payload["candidates"][0])), status="succeeded", stage2_result={"subtasks": []}, stage3_result={"consensus": {"tier": 1, "score": 9}}))
+            db.commit()
+
+            saved = api.save_judge_self_check(project.id, api.JudgeSelfCheckBody(case_id=case.id, config_version=1, raw_output='{"summary":"一致","prompt_optimization":{"stage1":[],"stage2":[],"stage3":[]}}'), user, db)
+            self.assertTrue(saved["ok"])
+            self.assertIsNotNone(api.project_judge_status_payload(db, project, user)["cases"][str(case.id)]["self_check"])
+
+            annotation.scores = {"quality": 5}
+            db.commit()
+            self.assertIsNone(api.project_judge_status_payload(db, project, user)["cases"][str(case.id)]["self_check"])
+
+    def test_prompt_versions_keep_test_isolated_until_publish(self) -> None:
+        test_engine = api.create_engine("sqlite://", connect_args={"check_same_thread": False})
+        session_factory = api.sessionmaker(test_engine, expire_on_commit=False)
+        api.Base.metadata.create_all(test_engine)
+        with session_factory() as db:
+            admin = api.User(username="prompt-admin", display_name="Prompt Admin", password_hash="unused", role="admin")
+            db.add(admin)
+            db.flush()
+            project = api.Project(name="Prompt Project", annotation_config={}, created_by=admin.id)
+            db.add(project)
+            db.commit()
+
+            base = api.default_judge_config()
+            first = api.save_judge_config(project.id, api.JudgeConfigBody(**base, lifecycle_status="published", version_note="initial"), admin, db)
+            test = api.save_judge_config(project.id, api.JudgeConfigBody(**{**base, "detector_prompt": "test detector"}, lifecycle_status="test", version_note="candidate", parent_version=first["version"]), admin, db)
+            self.assertEqual(api.get_judge_config(project.id, admin, db)["version"], first["version"])
+            self.assertFalse(test["active"])
+            self.assertEqual(test["lifecycle_status"], "test")
+
+            api.publish_judge_config_version(project.id, test["version"], admin, db)
+            versions = api.get_judge_config_versions(project.id, admin, db)["versions"]
+            self.assertEqual(versions[0]["lifecycle_status"], "published")
+            self.assertEqual(versions[1]["lifecycle_status"], "archived")
+            self.assertEqual(api.get_judge_config(project.id, admin, db)["detector_prompt"], "test detector")
+
+    def test_annotators_can_branch_share_and_choose_personal_default(self) -> None:
+        test_engine = api.create_engine("sqlite://", connect_args={"check_same_thread": False})
+        session_factory = api.sessionmaker(test_engine, expire_on_commit=False)
+        api.Base.metadata.create_all(test_engine)
+        with session_factory() as db:
+            admin = api.User(username="team-admin", display_name="Team Admin", password_hash="unused", role="admin")
+            author = api.User(username="prompt-author", display_name="Prompt Author", password_hash="unused", role="annotator")
+            peer = api.User(username="prompt-peer", display_name="Prompt Peer", password_hash="unused", role="annotator")
+            db.add_all([admin, author, peer])
+            db.flush()
+            project = api.Project(name="Shared Prompt Project", annotation_config={}, created_by=admin.id)
+            db.add(project)
+            db.flush()
+            db.add_all([api.ProjectMember(project_id=project.id, user_id=author.id), api.ProjectMember(project_id=project.id, user_id=peer.id)])
+            db.commit()
+
+            base = api.default_judge_config()
+            production = api.save_judge_config(project.id, api.JudgeConfigBody(**base, lifecycle_status="published"), admin, db)
+            attempted = {**base, "protocol": "openai", "model_name": "not-allowed", "detector_prompt": "author detector"}
+            branch = api.save_judge_config(project.id, api.JudgeConfigBody(**attempted, lifecycle_status="test", parent_version=production["version"]), author, db)
+            self.assertEqual(branch["model_name"], base["model_name"])
+            self.assertEqual(branch["protocol"], base["protocol"])
+            self.assertEqual([item["version"] for item in api.get_judge_config_versions(project.id, peer, db)["versions"]], [production["version"]])
+
+            api.share_judge_config_version(project.id, branch["version"], author, db)
+            self.assertIn(branch["version"], [item["version"] for item in api.get_judge_config_versions(project.id, peer, db)["versions"]])
+            api.set_judge_config_default(project.id, api.JudgeConfigDefaultBody(version=branch["version"]), peer, db)
+            self.assertEqual(api.get_judge_config(project.id, peer, db)["version"], branch["version"])
+            self.assertEqual(api.get_judge_config(project.id, author, db)["version"], production["version"])
+            with self.assertRaises(api.HTTPException) as denied:
+                api.save_judge_config(project.id, api.JudgeConfigBody(**base, lifecycle_status="published"), author, db)
+            self.assertEqual(denied.exception.status_code, 403)
+
     def test_shared_judge_config_never_returns_api_key(self) -> None:
         config = {**api.default_judge_config(), "model_name": "shared-model"}
         record = api.JudgeConfigVersion(
