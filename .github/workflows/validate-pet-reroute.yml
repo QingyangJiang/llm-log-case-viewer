@@ -1,0 +1,30 @@
+name: Validate pet reroute changes
+
+on:
+  push:
+    branches:
+      - validate/pet-reroute-4f3a63f
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.13.0'
+          cache: npm
+      - name: Validate backend syntax
+        run: python -m py_compile backend/app/main.py
+      - name: Install dependencies
+        run: npm ci
+      - name: Build frontend
+        run: npm run build
+      - name: Check whitespace
+        run: git diff --check HEAD^ HEAD
