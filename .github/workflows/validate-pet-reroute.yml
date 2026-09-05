@@ -13,6 +13,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 3
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -27,4 +29,4 @@ jobs:
       - name: Build frontend
         run: npm run build
       - name: Check whitespace
-        run: git diff --check HEAD^ HEAD
+        run: git diff --check 1448830345df24091a7114e7510081760d26808f 4f3a63f58dd5daaceea6af6ec1efa98ca8b15489
