@@ -1,0 +1,47 @@
+name: Apply pet reroute fixes
+
+on:
+  push:
+    branches:
+      - fix/pet-reroute-appearance
+    paths:
+      - scripts/apply-pet-reroute-fixes.py
+      - .github/workflows/apply-pet-fixes.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/pet-reroute-appearance
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.19.0'
+          cache: npm
+      - name: Apply patch
+        run: python scripts/apply-pet-reroute-fixes.py
+      - name: Python syntax check
+        run: python -m py_compile backend/app/main.py
+      - name: Install dependencies
+        run: npm ci
+      - name: Build frontend
+        run: npm run build
+      - name: Run focused tests
+        run: node --experimental-strip-types --test tests/annotation-rules.test.ts tests/model-api.test.ts tests/rendered-html.test.mjs
+      - name: Commit generated changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/page.tsx app/globals.css backend/app/main.py README.md
+          git diff --cached --check
+          if git diff --cached --quiet; then
+            echo "No generated changes"
+          else
+            git commit -m "Improve pet reroute and appearance editor"
+            git push origin HEAD:fix/pet-reroute-appearance
+          fi
