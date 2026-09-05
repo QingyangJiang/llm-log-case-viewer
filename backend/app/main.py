@@ -176,6 +176,29 @@ class PetEvolution(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
 
+class PetCollection(Base):
+    __tablename__ = "pet_collections"
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    inventory: Mapped[dict[str, int]] = mapped_column(JSON, default=dict)
+    equipped: Mapped[dict[str, str]] = mapped_column(JSON, default=dict)
+    skills: Mapped[dict[str, int]] = mapped_column(JSON, default=dict)
+    active_skills: Mapped[list[str]] = mapped_column(JSON, default=list)
+    drop_history: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    pity: Mapped[int] = mapped_column(Integer, default=0)
+    total_drops: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class PetTicketGift(Base):
+    __tablename__ = "pet_ticket_gifts"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    sender_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    recipient_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    amount: Mapped[int] = mapped_column(Integer)
+    note: Mapped[str] = mapped_column(String(300), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class JudgeConfigVersion(Base):
     __tablename__ = "judge_config_versions"
     __table_args__ = (UniqueConstraint("project_id", "version"),)
@@ -608,6 +631,22 @@ class PetEvolutionBody(BaseModel):
     spend: int = Field(ge=1, le=5)
 
 
+class PetEquipmentBody(BaseModel):
+    slot: str = Field(min_length=1, max_length=30)
+    item_id: str | None = Field(default=None, max_length=120)
+
+
+class PetSkillsBody(BaseModel):
+    active_skill_ids: list[str] = Field(default_factory=list, max_length=3)
+
+
+class PetTicketGiftBody(BaseModel):
+    recipient_user_id: int = Field(ge=1)
+    amount: int = Field(ge=1, le=50)
+    password: str = Field(min_length=1, max_length=300)
+    note: str = Field(default="", max_length=300)
+
+
 def user_dict(user: User) -> dict[str, Any]:
     return {"id": str(user.id), "username": user.username, "display_name": user.display_name, "role": user.role, "active": user.active}
 
@@ -640,13 +679,44 @@ PET_MAX_LEVEL = 50
 PET_STEADY_LEVEL_COST = 140
 PET_LEVEL_TITLES = {1: "实习搭子", 2: "认真观察员", 4: "Badcase 侦探", 6: "质量守门员", 8: "评测专家", 10: "首席标注官", 15: "资深裁决师", 20: "传奇质检师", 30: "评测领航员", 40: "质量宗师", 50: "Case Lens 守护者"}
 PET_EVOLUTION_PATHS: dict[str, dict[str, Any]] = {
-    "starlight": {"name": "星辉灵兽", "quality": "radiant", "traits": [["星尘额纹", "新月耳尖", "彗星小角"], ["月光羽翼", "星轨尾焰", "银河披风"], ["星环冠冕", "极光领域", "星核辉光"]]},
-    "guardian": {"name": "守护机甲", "quality": "bold", "traits": [["合金耳甲", "战术目镜", "棱镜面罩"], ["折叠钢翼", "推进尾翼", "护盾肩甲"], ["量子核心", "冠军冠冕", "脉冲力场"]]},
-    "forest": {"name": "森灵幻兽", "quality": "gentle", "traits": [["新芽鹿角", "苔藓耳尖", "花蕾额纹"], ["叶脉羽翼", "花藤披风", "蒲公英尾"], ["萤火光环", "古树冠冕", "四季领域"]]},
-    "storm": {"name": "风暴精灵", "quality": "electric", "traits": [["闪电耳羽", "雷云额纹", "电光小角"], ["疾风羽翼", "旋风尾环", "雷霆披风"], ["风眼冠冕", "暴雨领域", "蓝电核心"]]},
-    "wonky": {"name": "歪歪异变体", "quality": "awkward", "traits": [["参差尖牙", "皱皱触角", "大小眼花纹"], ["斑驳小翅膀", "歪斜尾鳍", "补丁披风"], ["倾斜纸冠", "毛边光圈", "咕嘟气泡场"]]},
+    "starlight": {"name": "星辉灵兽", "quality": "radiant", "traits": [["星尘额纹", "新月耳尖", "彗星小角"], ["月光羽翼", "星轨尾焰", "银河披风"], ["星环冠冕", "极光领域", "星核辉光"], ["群星脉络", "超新星尾迹", "天穹结晶"], ["星海共鸣", "永昼星环", "宇宙心核"], ["星神投影", "万象星幕", "永恒辉光"]]},
+    "guardian": {"name": "守护机甲", "quality": "bold", "traits": [["合金耳甲", "战术目镜", "棱镜面罩"], ["折叠钢翼", "推进尾翼", "护盾肩甲"], ["量子核心", "冠军冠冕", "脉冲力场"], ["轨道装甲", "光束翼阵", "重力护盾"], ["星舰核心", "堡垒领域", "超导王冠"], ["终焉机铠", "天基阵列", "不灭能源"]]},
+    "forest": {"name": "森灵幻兽", "quality": "gentle", "traits": [["新芽鹿角", "苔藓耳尖", "花蕾额纹"], ["叶脉羽翼", "花藤披风", "蒲公英尾"], ["萤火光环", "古树冠冕", "四季领域"], ["灵鹿枝冠", "雨林结界", "蘑菇星灯"], ["世界树心", "百花圣环", "万物低语"], ["森神化身", "四季轮转", "生命洪流"]]},
+    "storm": {"name": "风暴精灵", "quality": "electric", "traits": [["闪电耳羽", "雷云额纹", "电光小角"], ["疾风羽翼", "旋风尾环", "雷霆披风"], ["风眼冠冕", "暴雨领域", "蓝电核心"], ["雷暴羽阵", "闪击足环", "积雨云甲"], ["极昼雷核", "天罚光环", "飓风结界"], ["雷神化身", "万钧天幕", "永动风眼"]]},
+    "ocean": {"name": "潮汐幻灵", "quality": "fluid", "traits": [["珊瑚耳鳍", "珍珠额珠", "浪花尾尖"], ["潮汐披风", "水晶鳍翼", "泡泡光环"], ["深海冠冕", "鲸歌领域", "海蓝心核"], ["洋流翼阵", "月潮鳞甲", "海沟辉石"], ["七海圣环", "潮汐王座", "深蓝结界"], ["海神投影", "无尽洋流", "深渊星光"]]},
+    "ember": {"name": "焰心灵狐", "quality": "fiery", "traits": [["火苗耳尖", "暖阳额纹", "炭火尾尖"], ["熔岩披风", "焰羽双翼", "火花足环"], ["烈阳冠冕", "赤焰领域", "熔火心核"], ["凤凰尾羽", "日珥翼阵", "曜石战甲"], ["太阳圣环", "焚天结界", "赤金王座"], ["火神化身", "恒星熔炉", "不灭真焰"]]},
+    "cloud": {"name": "云梦团子", "quality": "dreamy", "traits": [["棉云耳朵", "彩虹额纹", "雨滴尾巴"], ["软云翅膀", "晚霞披风", "风铃足环"], ["晴空冠冕", "梦境领域", "虹光心核"], ["层云软甲", "晨曦翼阵", "雷雨铃铛"], ["九霄圣环", "幻梦结界", "天空王座"], ["云神化身", "万里晴空", "长梦不醒"]]},
+    "pixel": {"name": "像素精怪", "quality": "digital", "traits": [["方块耳尖", "扫描额纹", "光标尾巴"], ["数据翅膀", "代码披风", "缓存光环"], ["像素冠冕", "矩阵领域", "算力核心"], ["量子像素", "递归翼阵", "霓虹装甲"], ["无限循环环", "协议王座", "虚拟结界"], ["数字神格", "全域矩阵", "永恒在线"]]},
+    "wonky": {"name": "歪歪异变体", "quality": "awkward", "traits": [["参差尖牙", "皱皱触角", "大小眼花纹"], ["斑驳小翅膀", "歪斜尾鳍", "补丁披风"], ["倾斜纸冠", "毛边光圈", "咕嘟气泡场"], ["打结尾巴", "漏气翼阵", "反向护目镜"], ["掉漆王座", "卡顿领域", "吱呀心核"], ["究极毛边", "歪星圣环", "混沌咕嘟"]]},
 }
-PET_MAX_EVOLUTION_STAGE = 3
+PET_EVOLUTION_PATH_LOTTERY = ["starlight"] * 16 + ["guardian"] * 15 + ["forest"] * 15 + ["storm"] * 14 + ["ocean"] * 12 + ["ember"] * 11 + ["cloud"] * 10 + ["pixel"] * 8 + ["wonky"] * 9
+PET_EQUIPMENT_SLOTS = {"head": ("头饰", "♛"), "face": ("面饰", "◉"), "neck": ("颈饰", "✦"), "back": ("背饰", "⌁"), "tail": ("尾饰", "◇")}
+PET_EQUIPMENT_THEMES = ["星尘", "森林", "雷云", "海盐", "琥珀", "月影", "霓虹", "机械", "云朵", "蜂蜜", "像素", "纸片"]
+PET_EQUIPMENT_AFFIXES = [("微光", "common"), ("鲜活", "uncommon"), ("幻彩", "rare"), ("秘仪", "epic"), ("神话", "legendary")]
+PET_SKILLS: dict[str, dict[str, Any]] = {
+    "lucky_nose": {"name": "幸运鼻尖", "icon": "✦", "description": "所有装备掉率 +1%/级"},
+    "treasure_paws": {"name": "寻宝肉垫", "icon": "◇", "description": "摸摸装备掉率 +2%/级"},
+    "case_insight": {"name": "Case 洞察", "icon": "◎", "description": "提交标注装备掉率 +2%/级"},
+    "badcase_hunter": {"name": "异常猎手", "icon": "!", "description": "发现 Badcase 装备掉率 +3%/级"},
+    "evolution_echo": {"name": "进化回声", "icon": "↟", "description": "单抽成功率 +1%/级"},
+    "star_magnet": {"name": "星屑磁场", "icon": "※", "description": "稀有以上装备权重提升"},
+    "collector": {"name": "图鉴学者", "icon": "▦", "description": "重复装备更容易升为高稀有度"},
+    "steady_heart": {"name": "稳定之心", "icon": "♥", "description": "连续失败的保底增幅 +1%/级"},
+}
+
+
+def pet_equipment_catalog() -> dict[str, dict[str, str]]:
+    catalog: dict[str, dict[str, str]] = {}
+    for theme_index, theme in enumerate(PET_EQUIPMENT_THEMES):
+        for slot_index, (slot, (slot_name, symbol)) in enumerate(PET_EQUIPMENT_SLOTS.items()):
+            for affix_index, (affix, rarity) in enumerate(PET_EQUIPMENT_AFFIXES):
+                item_id = f"gear-{theme_index + 1:02d}-{slot_index + 1}-{affix_index + 1}"
+                catalog[item_id] = {"id": item_id, "name": f"{affix}{theme}{slot_name}", "slot": slot, "slot_name": slot_name, "symbol": symbol, "rarity": rarity}
+    return catalog
+
+
+PET_EQUIPMENT_CATALOG = pet_equipment_catalog()
+PET_RARITY_WEIGHTS = [("common", 60), ("uncommon", 25), ("rare", 10), ("epic", 4), ("legendary", 1)]
 
 
 def pet_level_start_xp(level: int) -> int:
@@ -663,7 +733,7 @@ def pet_level(xp: float) -> int:
     return min(PET_MAX_LEVEL, 5 + int((safe_xp - pet_level_start_xp(5)) // PET_STEADY_LEVEL_COST))
 
 
-def get_or_create_pet(db: Session, user_id: int) -> tuple[PetProfile, PetProgressV2, PetEvolution]:
+def get_or_create_pet(db: Session, user_id: int) -> tuple[PetProfile, PetProgressV2, PetEvolution, PetCollection]:
     profile = db.get(PetProfile, user_id)
     if not profile:
         profile = PetProfile(user_id=user_id)
@@ -684,14 +754,55 @@ def get_or_create_pet(db: Session, user_id: int) -> tuple[PetProfile, PetProgres
         evolution.available_chances += level - evolution.credited_level
         evolution.credited_level = level
         evolution.updated_at = utcnow()
-    return profile, progress, evolution
+    collection = db.get(PetCollection, user_id)
+    if not collection:
+        collection = PetCollection(user_id=user_id)
+        db.add(collection)
+        db.flush()
+    return profile, progress, evolution, collection
 
 
 def pet_title(level: int) -> str:
     return next(title for required, title in reversed(PET_LEVEL_TITLES.items()) if level >= required)
 
 
-def pet_dict(profile: PetProfile, progress: PetProgressV2, evolution: PetEvolution) -> dict[str, Any]:
+def pet_active_skill_level(collection: PetCollection, skill_id: str) -> int:
+    return int((collection.skills or {}).get(skill_id, 0)) if skill_id in (collection.active_skills or []) else 0
+
+
+def pet_evolution_success_rate(collection: PetCollection) -> int:
+    echo = pet_active_skill_level(collection, "evolution_echo")
+    steady = pet_active_skill_level(collection, "steady_heart")
+    return min(45, 10 + echo + min(30, collection.pity * (2 + steady)))
+
+
+def pet_collection_payload(collection: PetCollection) -> dict[str, Any]:
+    inventory = collection.inventory or {}
+    inventory_items = [
+        {**PET_EQUIPMENT_CATALOG[item_id], "count": int(count)}
+        for item_id, count in inventory.items()
+        if item_id in PET_EQUIPMENT_CATALOG and int(count) > 0
+    ]
+    rarity_rank = {"legendary": 0, "epic": 1, "rare": 2, "uncommon": 3, "common": 4}
+    inventory_items.sort(key=lambda item: (rarity_rank.get(item["rarity"], 9), item["name"]))
+    skills = [
+        {"id": skill_id, **definition, "level": int((collection.skills or {}).get(skill_id, 0)), "active": skill_id in (collection.active_skills or [])}
+        for skill_id, definition in PET_SKILLS.items()
+    ]
+    return {
+        "equipment_catalog_size": len(PET_EQUIPMENT_CATALOG),
+        "inventory": inventory_items,
+        "equipped": collection.equipped or {},
+        "skills": skills,
+        "active_skills": collection.active_skills or [],
+        "drop_history": collection.drop_history or [],
+        "total_drops": collection.total_drops,
+        "evolution_pity": collection.pity,
+        "evolution_success_rate": pet_evolution_success_rate(collection),
+    }
+
+
+def pet_dict(profile: PetProfile, progress: PetProgressV2, evolution: PetEvolution, collection: PetCollection) -> dict[str, Any]:
     xp = round(progress.xp_units / 5, 1)
     level = pet_level(xp)
     return {
@@ -712,13 +823,72 @@ def pet_dict(profile: PetProfile, progress: PetProgressV2, evolution: PetEvoluti
         "evolution_variant": evolution.variant_seed,
         "evolution_traits": evolution.traits or [],
         "evolution_history": evolution.history or [],
+        **pet_collection_payload(collection),
     }
 
 
-def grant_pet_experience(db: Session, user_id: int, reason: str, event_key: str) -> tuple[PetProfile, PetProgressV2, PetEvolution, bool, float]:
-    profile, progress, evolution = get_or_create_pet(db, user_id)
+def pet_choose_rarity(collection: PetCollection) -> str:
+    weights = list(PET_RARITY_WEIGHTS)
+    if pet_active_skill_level(collection, "star_magnet"):
+        boost = pet_active_skill_level(collection, "star_magnet") * 2
+        weights = [(rarity, max(1, weight - boost * 2) if rarity == "common" else weight + boost if rarity in {"rare", "epic", "legendary"} else weight) for rarity, weight in weights]
+    draw = secrets.randbelow(sum(weight for _, weight in weights))
+    for rarity, weight in weights:
+        if draw < weight:
+            return rarity
+        draw -= weight
+    return "common"
+
+
+def maybe_drop_pet_equipment(collection: PetCollection, reason: str) -> dict[str, Any] | None:
+    base_chance = {"pet": 250, "annotation": 1800, "badcase": 1200}.get(reason, 0)
+    base_chance += pet_active_skill_level(collection, "lucky_nose") * 100
+    if reason == "pet":
+        base_chance += pet_active_skill_level(collection, "treasure_paws") * 200
+    elif reason == "annotation":
+        base_chance += pet_active_skill_level(collection, "case_insight") * 200
+    elif reason == "badcase":
+        base_chance += pet_active_skill_level(collection, "badcase_hunter") * 300
+    if secrets.randbelow(10_000) >= min(7500, base_chance):
+        return None
+    rarity = pet_choose_rarity(collection)
+    candidates = [item for item in PET_EQUIPMENT_CATALOG.values() if item["rarity"] == rarity]
+    item = dict(secrets.choice(candidates))
+    inventory = dict(collection.inventory or {})
+    duplicate = int(inventory.get(item["id"], 0)) > 0
+    collector_level = pet_active_skill_level(collection, "collector")
+    rarity_order = ["common", "uncommon", "rare", "epic", "legendary"]
+    if duplicate and collector_level and rarity != "legendary" and secrets.randbelow(100) < collector_level * 15:
+        rarity = rarity_order[rarity_order.index(rarity) + 1]
+        item = dict(secrets.choice([candidate for candidate in PET_EQUIPMENT_CATALOG.values() if candidate["rarity"] == rarity]))
+        duplicate = int(inventory.get(item["id"], 0)) > 0
+    inventory[item["id"]] = int(inventory.get(item["id"], 0)) + 1
+    event = {**item, "reason": reason, "duplicate": duplicate, "at": utcnow().isoformat()}
+    collection.inventory = inventory
+    collection.drop_history = [event, *(collection.drop_history or [])][:30]
+    collection.total_drops += 1
+    collection.updated_at = utcnow()
+    return event
+
+
+def awaken_pet_skill(collection: PetCollection) -> dict[str, Any]:
+    skill_id = secrets.choice(tuple(PET_SKILLS))
+    skills = dict(collection.skills or {})
+    previous = int(skills.get(skill_id, 0))
+    skills[skill_id] = min(5, previous + 1)
+    collection.skills = skills
+    active = list(collection.active_skills or [])
+    if skill_id not in active and len(active) < 3:
+        active.append(skill_id)
+        collection.active_skills = active
+    collection.updated_at = utcnow()
+    return {"id": skill_id, **PET_SKILLS[skill_id], "level": skills[skill_id], "upgraded": previous > 0}
+
+
+def grant_pet_experience(db: Session, user_id: int, reason: str, event_key: str) -> tuple[PetProfile, PetProgressV2, PetEvolution, PetCollection, bool, float, dict[str, Any] | None]:
+    profile, progress, evolution, collection = get_or_create_pet(db, user_id)
     if db.scalar(select(PetExperienceEvent.id).where(PetExperienceEvent.user_id == user_id, PetExperienceEvent.event_key == event_key)):
-        return profile, progress, evolution, False, 0
+        return profile, progress, evolution, collection, False, 0, None
     units = PET_XP_UNITS[reason]
     db.add(PetExperienceEvent(user_id=user_id, event_key=event_key, reason=reason, amount=units))
     progress.xp_units += units
@@ -729,7 +899,8 @@ def grant_pet_experience(db: Session, user_id: int, reason: str, event_key: str)
         evolution.available_chances += next_level - evolution.credited_level
         evolution.credited_level = next_level
         evolution.updated_at = utcnow()
-    return profile, progress, evolution, True, round(units / 5, 1)
+    drop = maybe_drop_pet_equipment(collection, reason)
+    return profile, progress, evolution, collection, True, round(units / 5, 1), drop
 
 
 def user_case_progress(cases: list[Case], user_id: int) -> tuple[int, int]:
@@ -1864,14 +2035,14 @@ def me(user: CurrentUser) -> dict[str, Any]:
 
 @app.get("/api/pet")
 def get_pet(user: CurrentUser, db: DB) -> dict[str, Any]:
-    profile, progress, evolution = get_or_create_pet(db, user.id)
+    profile, progress, evolution, collection = get_or_create_pet(db, user.id)
     db.commit()
-    return pet_dict(profile, progress, evolution)
+    return pet_dict(profile, progress, evolution, collection)
 
 
 @app.put("/api/pet")
 def update_pet(body: PetProfileUpdate, user: CurrentUser, db: DB) -> dict[str, Any]:
-    profile, progress, evolution = get_or_create_pet(db, user.id)
+    profile, progress, evolution, collection = get_or_create_pet(db, user.id)
     level = pet_level(progress.xp_units / 5)
     if body.color not in PET_COLORS:
         raise HTTPException(422, "未知的宠物颜色")
@@ -1884,16 +2055,14 @@ def update_pet(body: PetProfileUpdate, user: CurrentUser, db: DB) -> dict[str, A
     profile.accessory = body.accessory
     profile.updated_at = utcnow()
     db.commit()
-    return pet_dict(profile, progress, evolution)
+    return pet_dict(profile, progress, evolution, collection)
 
 
 @app.post("/api/pet/evolve")
 def evolve_pet(body: PetEvolutionBody, user: CurrentUser, db: DB) -> dict[str, Any]:
     if body.spend not in {1, 5}:
         raise HTTPException(422, "变身只能使用 1 次或 5 次机会")
-    profile, progress, evolution = get_or_create_pet(db, user.id)
-    if evolution.stage >= PET_MAX_EVOLUTION_STAGE:
-        raise HTTPException(422, "已经完成三次变身强化")
+    profile, progress, evolution, collection = get_or_create_pet(db, user.id)
     if evolution.available_chances < body.spend:
         raise HTTPException(422, "可用变身机会不足")
     db.flush()
@@ -1907,17 +2076,34 @@ def evolve_pet(body: PetEvolutionBody, user: CurrentUser, db: DB) -> dict[str, A
         raise HTTPException(409, "变身机会刚刚发生变化，请刷新后重试")
     evolution.available_chances -= body.spend
     guaranteed = body.spend == 5
-    success = guaranteed or secrets.randbelow(10) == 0
-    trait = ""
+    success_rate = pet_evolution_success_rate(collection)
+    success = guaranteed or secrets.randbelow(100) < success_rate
+    traits: list[str] = []
+    critical = False
+    awakened_skill: dict[str, Any] | None = None
     if success:
         if evolution.stage == 0 or evolution.path not in PET_EVOLUTION_PATHS:
-            evolution.path = secrets.choice(tuple(PET_EVOLUTION_PATHS))
-            evolution.variant_seed = secrets.randbelow(4)
+            evolution.path = secrets.choice(PET_EVOLUTION_PATH_LOTTERY)
         path = PET_EVOLUTION_PATHS[evolution.path]
-        trait_pool = path["traits"][min(evolution.stage, PET_MAX_EVOLUTION_STAGE - 1)]
-        trait = secrets.choice(trait_pool)
-        evolution.traits = [*(evolution.traits or []), trait]
-        evolution.stage += 1
+        critical = secrets.randbelow(100) < 12
+        stage_gain = 2 if critical else 1
+        next_traits = list(evolution.traits or [])
+        for stage_offset in range(stage_gain):
+            next_stage = evolution.stage + stage_offset
+            trait_pool = path["traits"][min(next_stage // 2, len(path["traits"]) - 1)]
+            trait = secrets.choice(trait_pool)
+            if next_stage >= len(path["traits"]) * 2:
+                trait = f"{trait} · 星环{next_stage - len(path['traits']) * 2 + 1}"
+            traits.append(trait)
+            next_traits.append(trait)
+        evolution.traits = next_traits[-24:]
+        evolution.stage += stage_gain
+        evolution.variant_seed = secrets.randbelow(8)
+        collection.pity = 0
+        awakened_skill = awaken_pet_skill(collection)
+    else:
+        collection.pity = min(20, collection.pity + 1)
+        collection.updated_at = utcnow()
     event = {
         "at": utcnow().isoformat(),
         "spent": body.spend,
@@ -1925,18 +2111,79 @@ def evolve_pet(body: PetEvolutionBody, user: CurrentUser, db: DB) -> dict[str, A
         "success": success,
         "stage": evolution.stage,
         "path": evolution.path,
-        "trait": trait,
+        "trait": " / ".join(traits),
+        "traits": traits,
+        "critical": critical,
+        "success_rate": 100 if guaranteed else success_rate,
+        "pity_after": collection.pity,
+        "skill": awakened_skill,
     }
     evolution.history = [event, *(evolution.history or [])][:50]
     evolution.updated_at = utcnow()
     db.commit()
     return {
-        "profile": pet_dict(profile, progress, evolution),
+        "profile": pet_dict(profile, progress, evolution, collection),
         "success": success,
         "spent": body.spend,
         "guaranteed": guaranteed,
-        "trait": trait,
+        "trait": " / ".join(traits),
+        "traits": traits,
+        "critical": critical,
+        "skill": awakened_skill,
     }
+
+
+@app.put("/api/pet/equipment")
+def equip_pet_item(body: PetEquipmentBody, user: CurrentUser, db: DB) -> dict[str, Any]:
+    profile, progress, evolution, collection = get_or_create_pet(db, user.id)
+    if body.slot not in PET_EQUIPMENT_SLOTS:
+        raise HTTPException(422, "未知的装备部位")
+    equipped = dict(collection.equipped or {})
+    if body.item_id:
+        item = PET_EQUIPMENT_CATALOG.get(body.item_id)
+        if not item or item["slot"] != body.slot:
+            raise HTTPException(422, "装备与部位不匹配")
+        if int((collection.inventory or {}).get(body.item_id, 0)) < 1:
+            raise HTTPException(422, "尚未获得这件装备")
+        equipped[body.slot] = body.item_id
+    else:
+        equipped.pop(body.slot, None)
+    collection.equipped = equipped
+    collection.updated_at = utcnow()
+    db.commit()
+    return pet_dict(profile, progress, evolution, collection)
+
+
+@app.put("/api/pet/skills")
+def set_pet_skills(body: PetSkillsBody, user: CurrentUser, db: DB) -> dict[str, Any]:
+    profile, progress, evolution, collection = get_or_create_pet(db, user.id)
+    active = list(dict.fromkeys(body.active_skill_ids))
+    if len(active) > 3 or any(skill_id not in PET_SKILLS or int((collection.skills or {}).get(skill_id, 0)) < 1 for skill_id in active):
+        raise HTTPException(422, "只能启用最多 3 个已觉醒技能")
+    collection.active_skills = active
+    collection.updated_at = utcnow()
+    db.commit()
+    return pet_dict(profile, progress, evolution, collection)
+
+
+@app.post("/api/pet/admin/gift-tickets")
+def gift_pet_tickets(body: PetTicketGiftBody, admin: AdminUser, db: DB) -> dict[str, Any]:
+    if not verify_password(body.password, admin.password_hash):
+        raise HTTPException(403, "管理员密码不正确")
+    recipient = db.get(User, body.recipient_user_id)
+    if not recipient or not recipient.active:
+        raise HTTPException(404, "接收人不存在或已停用")
+    if recipient.id == admin.id:
+        raise HTTPException(422, "进化券只能发送给其他用户")
+    profile, progress, evolution, collection = get_or_create_pet(db, recipient.id)
+    db.flush()
+    evolution = db.scalar(select(PetEvolution).where(PetEvolution.user_id == recipient.id).with_for_update().execution_options(populate_existing=True)) or evolution
+    evolution.available_chances += body.amount
+    evolution.history = [{"at": utcnow().isoformat(), "type": "gift", "success": True, "spent": 0, "stage": evolution.stage, "path": evolution.path, "trait": f"管理员赠送 {body.amount} 张进化券", "amount": body.amount, "sender": admin.display_name}, *(evolution.history or [])][:50]
+    evolution.updated_at = utcnow()
+    db.add(PetTicketGift(sender_user_id=admin.id, recipient_user_id=recipient.id, amount=body.amount, note=body.note.strip()))
+    db.commit()
+    return {"recipient": user_dict(recipient), "amount": body.amount, "profile": pet_dict(profile, progress, evolution, collection)}
 
 
 @app.post("/api/pet/pet")
@@ -1952,13 +2199,13 @@ def pet_companion(user: CurrentUser, db: DB) -> dict[str, Any]:
     # Legacy hourly pet events awarded 1 EXP, equivalent to five new touches.
     hourly_count = sum(5 if key == f"pet:{hour_key}" else 1 for key in hourly_event_keys)
     if hourly_count >= 10:
-        profile, progress, evolution = get_or_create_pet(db, user.id)
+        profile, progress, evolution, collection = get_or_create_pet(db, user.id)
         db.commit()
-        return {"profile": pet_dict(profile, progress, evolution), "awarded": False, "amount": 0, "hourly_earned": 2, "hourly_remaining": 0}
-    profile, progress, evolution, awarded, amount = grant_pet_experience(db, user.id, "pet", f"pet:{hour_key}:{hourly_count + 1}")
+        return {"profile": pet_dict(profile, progress, evolution, collection), "awarded": False, "amount": 0, "hourly_earned": 2, "hourly_remaining": 0, "drop": None}
+    profile, progress, evolution, collection, awarded, amount, drop = grant_pet_experience(db, user.id, "pet", f"pet:{hour_key}:{hourly_count + 1}")
     db.commit()
     earned_count = hourly_count + (1 if awarded else 0)
-    return {"profile": pet_dict(profile, progress, evolution), "awarded": awarded, "amount": amount, "hourly_earned": round(earned_count / 5, 1), "hourly_remaining": max(0, 10 - earned_count)}
+    return {"profile": pet_dict(profile, progress, evolution, collection), "awarded": awarded, "amount": amount, "hourly_earned": round(earned_count / 5, 1), "hourly_remaining": max(0, 10 - earned_count), "drop": drop}
 
 
 @app.get("/api/users")
