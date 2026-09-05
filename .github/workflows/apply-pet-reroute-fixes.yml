@@ -1,0 +1,44 @@
+name: Apply pet reroute fixes
+
+on:
+  push:
+    branches:
+      - fix/pet-reroute-appearance
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-validate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/pet-reroute-appearance
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.13.0'
+          cache: npm
+      - name: Apply fixes
+        run: python scripts/apply-pet-reroute-fixes.py
+      - name: Validate backend syntax
+        run: python -m py_compile backend/app/main.py
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Build frontend
+        run: npm run build
+      - name: Check diff
+        run: git diff --check
+      - name: Commit validated fixes
+        run: |
+          rm -f scripts/apply-pet-reroute-fixes.py .github/workflows/apply-pet-reroute-fixes.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'Improve pet rerouting and appearance editor'
+          git push origin HEAD:fix/pet-reroute-appearance
