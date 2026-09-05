@@ -2061,10 +2061,10 @@ def update_pet(body: PetProfileUpdate, user: CurrentUser, db: DB) -> dict[str, A
 @app.post("/api/pet/evolve")
 def evolve_pet(body: PetEvolutionBody, user: CurrentUser, db: DB) -> dict[str, Any]:
     if body.spend not in {1, 5}:
-        raise HTTPException(422, "变身只能使用 1 次或 5 次机会")
+        raise HTTPException(422, "进化只能使用 1 张或 5 张进化券")
     profile, progress, evolution, collection = get_or_create_pet(db, user.id)
     if evolution.available_chances < body.spend:
-        raise HTTPException(422, "可用变身机会不足")
+        raise HTTPException(422, "可用进化券不足")
     db.flush()
     evolution = db.scalar(
         select(PetEvolution)
@@ -2073,20 +2073,27 @@ def evolve_pet(body: PetEvolutionBody, user: CurrentUser, db: DB) -> dict[str, A
         .execution_options(populate_existing=True)
     ) or evolution
     if evolution.available_chances < body.spend:
-        raise HTTPException(409, "变身机会刚刚发生变化，请刷新后重试")
+        raise HTTPException(409, "进化券刚刚发生变化，请刷新后重试")
     evolution.available_chances -= body.spend
     guaranteed = body.spend == 5
+    route_reset = guaranteed and evolution.stage > 0 and evolution.path in PET_EVOLUTION_PATHS
+    previous_path = evolution.path if route_reset else ""
     success_rate = pet_evolution_success_rate(collection)
     success = guaranteed or secrets.randbelow(100) < success_rate
     traits: list[str] = []
     critical = False
     awakened_skill: dict[str, Any] | None = None
     if success:
-        if evolution.stage == 0 or evolution.path not in PET_EVOLUTION_PATHS:
+        if route_reset:
+            reroll_pool = [candidate for candidate in PET_EVOLUTION_PATH_LOTTERY if candidate != previous_path]
+            evolution.path = secrets.choice(reroll_pool)
+            evolution.stage = 0
+            evolution.traits = []
+        elif evolution.stage == 0 or evolution.path not in PET_EVOLUTION_PATHS:
             evolution.path = secrets.choice(PET_EVOLUTION_PATH_LOTTERY)
         path = PET_EVOLUTION_PATHS[evolution.path]
-        critical = secrets.randbelow(100) < 12
-        stage_gain = 2 if critical else 1
+        critical = False if route_reset else secrets.randbelow(100) < 12
+        stage_gain = 1 if route_reset else 2 if critical else 1
         next_traits = list(evolution.traits or [])
         for stage_offset in range(stage_gain):
             next_stage = evolution.stage + stage_offset
@@ -2104,14 +2111,16 @@ def evolve_pet(body: PetEvolutionBody, user: CurrentUser, db: DB) -> dict[str, A
     else:
         collection.pity = min(20, collection.pity + 1)
         collection.updated_at = utcnow()
+    event_trait = f"换路线 · {' / '.join(traits)}" if route_reset and success else " / ".join(traits)
     event = {
         "at": utcnow().isoformat(),
+        **({"type": "reroute", "previous_path": previous_path, "route_reset": True} if route_reset else {}),
         "spent": body.spend,
         "guaranteed": guaranteed,
         "success": success,
         "stage": evolution.stage,
         "path": evolution.path,
-        "trait": " / ".join(traits),
+        "trait": event_trait,
         "traits": traits,
         "critical": critical,
         "success_rate": 100 if guaranteed else success_rate,
@@ -2126,6 +2135,8 @@ def evolve_pet(body: PetEvolutionBody, user: CurrentUser, db: DB) -> dict[str, A
         "success": success,
         "spent": body.spend,
         "guaranteed": guaranteed,
+        "route_reset": route_reset and success,
+        "previous_path": previous_path,
         "trait": " / ".join(traits),
         "traits": traits,
         "critical": critical,

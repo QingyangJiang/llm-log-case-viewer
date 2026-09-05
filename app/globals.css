@@ -887,3 +887,41 @@ kbd { display: inline-flex; min-width: 22px; height: 22px; align-items: center; 
   .prompt-studio > footer button.primary { grid-column: 1 / -1; }
   .prompt-collaboration-summary { align-items: flex-start; flex-direction: column; }
 }
+
+
+/* PET_STUDIO_APPEARANCE_FIXES_2026_09 */
+.pet-appearance-panel { min-width: 0; overflow: hidden; }
+.pet-appearance-panel .pet-option-title { min-width: 0; gap: 12px; }
+.pet-appearance-panel .pet-option-title > small { max-width: 68%; text-align: right; line-height: 1.35; }
+.pet-appearance-panel .pet-option-group button { min-width: 0; overflow: hidden; }
+.pet-appearance-panel .pet-option-group button > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pet-level-roadmap article { min-width: 0; }
+.pet-level-roadmap article > div { min-width: 0; }
+.pet-level-roadmap article strong,
+.pet-level-roadmap article small,
+.pet-level-roadmap article > span { overflow-wrap: anywhere; }
+@media (max-width: 900px) {
+  .pet-studio-backdrop { padding: 12px; }
+  .pet-studio { width: 100%; max-height: calc(100vh - 24px); max-height: calc(100dvh - 24px); }
+  .pet-studio-body { grid-template-columns: 1fr; max-height: calc(100vh - 166px); max-height: calc(100dvh - 166px); }
+  .pet-studio-profile { border-right: 0; border-bottom: 1px solid var(--line-strong); }
+  .pet-color-options > div:last-child { grid-template-columns: repeat(4,minmax(0,1fr)); }
+  .pet-accessory-options > div:last-child { grid-template-columns: repeat(4,minmax(0,1fr)); }
+}
+@media (max-width: 620px) {
+  .pet-studio-backdrop { padding: 6px; align-items: stretch; }
+  .pet-studio { max-height: calc(100vh - 12px); max-height: calc(100dvh - 12px); box-shadow: 4px 4px 0 rgba(15,22,19,.35); }
+  .pet-studio > header { min-height: 66px; padding: 11px 12px; gap: 10px; }
+  .pet-studio > header h2 { font-size: 17px; }
+  .pet-studio-body { max-height: calc(100vh - 128px); max-height: calc(100dvh - 128px); }
+  .pet-studio-profile { padding: 16px 12px; }
+  .pet-studio-editor { padding: 14px 12px; }
+  .pet-studio-tabs { margin: -14px -12px 14px; padding: 8px; }
+  .pet-color-options > div:last-child,
+  .pet-accessory-options > div:last-child { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .pet-level-roadmap > div:last-child { grid-template-columns: 1fr; }
+  .pet-level-roadmap article { grid-template-columns: 42px minmax(0,1fr) auto; }
+  .pet-studio > footer { padding: 9px 10px; align-items: stretch; flex-direction: column; }
+  .pet-studio > footer > div { display: grid; grid-template-columns: 1fr 1fr; }
+  .pet-studio > footer button { min-width: 0; }
+}

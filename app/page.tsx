@@ -66,7 +66,7 @@ type PetEquipmentSlot = "head" | "face" | "neck" | "back" | "tail";
 type PetEquipment = { id: string; name: string; slot: PetEquipmentSlot; slot_name: string; symbol: string; rarity: PetRarity; count: number };
 type PetSkill = { id: string; name: string; icon: string; description: string; level: number; active: boolean };
 type PetDropEvent = PetEquipment & { reason: "pet" | "annotation" | "badcase"; duplicate: boolean; at: string };
-type PetEvolutionEvent = { at: string; type?: "gift"; spent: number; guaranteed?: boolean; success: boolean; stage: number; path: PetEvolutionPath; trait: string; traits?: string[]; critical?: boolean; success_rate?: number; pity_after?: number; amount?: number; sender?: string; skill?: PetSkill | null };
+type PetEvolutionEvent = { at: string; type?: "gift" | "reroute"; spent: number; guaranteed?: boolean; success: boolean; stage: number; path: PetEvolutionPath; trait: string; traits?: string[]; critical?: boolean; success_rate?: number; pity_after?: number; amount?: number; sender?: string; previous_path?: PetEvolutionPath; route_reset?: boolean; skill?: PetSkill | null };
 type PetProfile = {
   name: string;
   color: PetColor;
@@ -371,6 +371,8 @@ function evolveLocalPet(profile: PetProfile, spend: 1 | 5) {
   const steady = profile.active_skills.includes("steady_heart") ? profile.skills.find((item) => item.id === "steady_heart")?.level ?? 0 : 0;
   const successRate = Math.min(45, 10 + echo + Math.min(30, profile.evolution_pity * (2 + steady)));
   const success = spend === 5 || petRandomInt(100) < successRate;
+  const routeReset = spend === 5 && Boolean(profile.evolution_path) && profile.evolution_stage > 0;
+  const previousPath = routeReset ? profile.evolution_path : "";
   let path = profile.evolution_path;
   let variant = profile.evolution_variant;
   let traits = [...profile.evolution_traits];
@@ -381,17 +383,22 @@ function evolveLocalPet(profile: PetProfile, spend: 1 | 5) {
   const activeSkills = [...profile.active_skills];
   let awakenedSkill: PetSkill | null = null;
   if (success) {
-    if (!path) {
+    if (routeReset) {
+      const rerollPool = PET_EVOLUTION_PATH_LOTTERY.filter((candidate) => candidate !== previousPath);
+      path = rerollPool[petRandomInt(rerollPool.length)];
+      stage = 0;
+      traits = [];
+    } else if (!path) {
       path = PET_EVOLUTION_PATH_LOTTERY[petRandomInt(PET_EVOLUTION_PATH_LOTTERY.length)];
     }
-    critical = petRandomInt(100) < 12;
-    const stageGain = critical ? 2 : 1;
+    critical = routeReset ? false : petRandomInt(100) < 12;
+    const stageGain = routeReset ? 1 : critical ? 2 : 1;
     for (let offset = 0; offset < stageGain; offset += 1) {
       const nextStage = stage + offset;
-      const pools = PET_EVOLUTION_PATHS[path].traits;
-      const traitPool = pools[Math.min(Math.floor(nextStage / 2), pools.length - 1)];
+      const pools = PET_EVOLUTION_PATHS[path];
+      const traitPool = pools.traits[Math.min(Math.floor(nextStage / 2), pools.traits.length - 1)];
       let trait = traitPool[petRandomInt(traitPool.length)];
-      if (nextStage >= pools.length * 2) trait = `${trait} · 星环${nextStage - pools.length * 2 + 1}`;
+      if (nextStage >= pools.traits.length * 2) trait = `${trait} · 星环${nextStage - pools.traits.length * 2 + 1}`;
       wonTraits.push(trait);
       traits.push(trait);
     }
@@ -405,12 +412,29 @@ function evolveLocalPet(profile: PetProfile, spend: 1 | 5) {
     if (!activeSkills.includes(definition.id) && activeSkills.length < 3) activeSkills.push(definition.id);
     skills = skills.map((item) => ({ ...item, active: activeSkills.includes(item.id) }));
   }
-  const event: PetEvolutionEvent = { at: new Date().toISOString(), spent, guaranteed: spend === 5, success, stage, path, trait: wonTraits.join(" / "), traits: wonTraits, critical, success_rate: spend === 5 ? 100 : successRate, pity_after: success ? 0 : Math.min(20, profile.evolution_pity + 1), skill: awakenedSkill };
+  const historyTrait = routeReset && success ? `换路线 · ${wonTraits.join(" / ")}` : wonTraits.join(" / ");
+  const event: PetEvolutionEvent = {
+    at: new Date().toISOString(),
+    ...(routeReset ? { type: "reroute" as const, previous_path: previousPath, route_reset: true } : {}),
+    spent,
+    guaranteed: spend === 5,
+    success,
+    stage,
+    path,
+    trait: historyTrait,
+    traits: wonTraits,
+    critical,
+    success_rate: spend === 5 ? 100 : successRate,
+    pity_after: success ? 0 : Math.min(20, profile.evolution_pity + 1),
+    skill: awakenedSkill,
+  };
   return {
     success,
     trait: wonTraits.join(" / "),
     critical,
     skill: awakenedSkill,
+    route_reset: routeReset && success,
+    previous_path: previousPath,
     profile: normalizedPetProfile({
       ...profile,
       evolution_chances: profile.evolution_chances - spend,
@@ -1554,17 +1578,17 @@ function CompanionPet({ visible, message, mood, completed, total, pulse, hasNext
             </nav>
             {studioSection === "evolution" ? <section className={`pet-evolution-lab pet-evolution-v2 ${profile.evolution_path ? `path-${profile.evolution_path}` : ""}`}>
               <header><div><span>EVOLUTION LOTTERY</span><strong>{profile.evolution_stage ? `${profile.evolution_name} · 第 ${profile.evolution_stage} 次进化` : "等待第一次随机进化"}</strong></div><b>{profile.evolution_chances} 张进化券</b></header>
-              <div className="pet-lottery-hero"><div className="pet-lottery-orbit"><PetCreatureVisual profile={profile} accessory={accessory} /><i>{profile.evolution_stage || "?"}</i></div><div><strong>{profile.evolution_path ? `${PET_EVOLUTION_PATHS[profile.evolution_path].tone}路线持续强化` : "9 条路线随机诞生"}</strong><p>首次成功决定主路线，之后不会洗掉原形态，只会继续叠加随机特征。每次成功有 12% 概率暴击并连续进化两次。</p><div className="pet-odds"><span>本次单抽成功率</span><b>{profile.evolution_success_rate}%</b><i><em style={{ width: `${profile.evolution_success_rate}%` }} /></i><small>连续失败会提高保底，成功后重置</small></div></div></div>
+              <div className="pet-lottery-hero"><div className="pet-lottery-orbit"><PetCreatureVisual profile={profile} accessory={accessory} /><i>{profile.evolution_stage || "?"}</i></div><div><strong>{profile.evolution_path ? `${PET_EVOLUTION_PATHS[profile.evolution_path].tone}路线持续强化` : "9 条路线随机诞生"}</strong><p>{profile.evolution_path ? "单抽继续强化当前路线；使用 5 张进化券可改抽另一条路线，原路线层级与路线特征会清空，新路线从第 1 次进化开始。装备和技能保留。" : "首次成功决定主路线；之后单抽持续强化。获得路线后，也可以用 5 张进化券更换路线并从第 1 次进化重新开始。"}</p><div className="pet-odds"><span>本次单抽成功率</span><b>{profile.evolution_success_rate}%</b><i><em style={{ width: `${profile.evolution_success_rate}%` }} /></i><small>连续失败会提高保底，成功后重置</small></div></div></div>
               <div className="pet-evolution-track">{[1, 3, 6, 9, 12, Math.max(15, Math.ceil((profile.evolution_stage + 1) / 3) * 3)].filter((stage, index, list) => list.indexOf(stage) === index).map((stage) => <i className={profile.evolution_stage >= stage ? "active" : stage === profile.evolution_stage + 1 ? "next" : ""} key={stage}><span>{stage}</span><small>{stage === 1 ? "路线诞生" : stage === 3 ? "展翼" : stage === 6 ? "领域" : stage === 9 ? "神话" : stage === 12 ? "星环" : "无限强化"}</small></i>)}</div>
               <div className="pet-path-pool">{Object.entries(PET_EVOLUTION_PATHS).map(([id, item]) => <span className={profile.evolution_path === id ? "active" : id === "wonky" ? "wonky" : ""} key={id}><b>{item.motif}</b>{item.name}</span>)}</div>
               {profile.evolution_traits.length ? <div className="pet-evolution-traits">{profile.evolution_traits.slice(-12).map((trait, index) => <span key={`${trait}-${index}`}>{trait}</span>)}</div> : <p>结果包含星辉、机甲、森灵、风暴、潮汐、火焰、云梦、像素，以及外观不太妙的“歪歪异变体”。</p>}
-              <div className="pet-evolution-actions"><button type="button" disabled={busy || profile.evolution_chances < 1} onClick={() => onEvolve(1)}><strong>抽一次</strong><small>消耗 1 张 · 当前 {profile.evolution_success_rate}%</small></button><button className="guaranteed" type="button" disabled={busy || profile.evolution_chances < 5} onClick={() => onEvolve(5)}><strong>五券聚变</strong><small>消耗 5 张 · 100% 成功</small></button></div>
-              {profile.evolution_history.length ? <details className="pet-evolution-history"><summary>最近抽奖记录 · {profile.evolution_history.length}</summary>{profile.evolution_history.slice(0, 10).map((event, index) => <div key={`${event.at}-${index}`}><span>{event.type === "gift" ? event.trait : event.success ? `${event.critical ? "暴击 · " : "成功 · "}${event.trait || PET_EVOLUTION_PATHS[event.path as Exclude<PetEvolutionPath, "">]?.name || "新形态"}${event.skill ? ` · ${event.skill.name} Lv.${event.skill.level}` : ""}` : `失败 · 保底提升至 ${event.pity_after ?? 0}`}</span><small>{event.type === "gift" ? event.sender : event.spent === 5 ? "五券聚变" : `单抽 ${event.success_rate ?? 10}%`} · {new Date(event.at).toLocaleString()}</small></div>)}</details> : null}
+              <div className="pet-evolution-actions"><button type="button" disabled={busy || profile.evolution_chances < 1} onClick={() => onEvolve(1)}><strong>抽一次</strong><small>消耗 1 张 · 当前 {profile.evolution_success_rate}%</small></button><button className="guaranteed" type="button" disabled={busy || profile.evolution_chances < 5} onClick={() => onEvolve(5)}><strong>{profile.evolution_path ? "五券换路线" : "五券首进化"}</strong><small>{profile.evolution_path ? "消耗 5 张 · 新路线从第 1 次开始" : "消耗 5 张 · 100% 成功"}</small></button></div>
+              {profile.evolution_history.length ? <details className="pet-evolution-history"><summary>最近抽奖记录 · {profile.evolution_history.length}</summary>{profile.evolution_history.slice(0, 10).map((event, index) => <div key={`${event.at}-${index}`}><span>{event.type === "gift" ? event.trait : event.success ? `${event.critical ? "暴击 · " : "成功 · "}${event.trait || PET_EVOLUTION_PATHS[event.path as Exclude<PetEvolutionPath, "">]?.name || "新形态"}${event.skill ? ` · ${event.skill.name} Lv.${event.skill.level}` : ""}` : `失败 · 保底提升至 ${event.pity_after ?? 0}`}</span><small>{event.type === "gift" ? event.sender : event.type === "reroute" ? "五券换路线" : event.spent === 5 ? "五券首进化" : `单抽 ${event.success_rate ?? 10}%`} · {new Date(event.at).toLocaleString()}</small></div>)}</details> : null}
               {isAdmin ? <form className="pet-ticket-gift" onSubmit={(event) => { event.preventDefault(); void onGiftTickets(giftUserId, giftAmount, giftPassword, giftNote).then(() => setGiftPassword("")).catch(() => undefined); }}><div><span>管理员发放进化券</span><small>需再次输入当前管理员密码确认</small></div><select value={giftUserId} onChange={(event) => setGiftUserId(event.target.value)} required><option value="">选择接收人</option>{adminUsers.filter((item) => item.active && item.id !== currentUserId).map((item) => <option value={item.id} key={item.id}>{item.display_name} · {item.username}</option>)}</select><input type="number" min={1} max={50} value={giftAmount} onChange={(event) => setGiftAmount(Math.max(1, Math.min(50, Number(event.target.value) || 1)))} aria-label="进化券数量" /><input type="password" value={giftPassword} onChange={(event) => setGiftPassword(event.target.value)} placeholder="管理员密码" autoComplete="current-password" required /><input value={giftNote} onChange={(event) => setGiftNote(event.target.value)} placeholder="备注（可选）" maxLength={300} /><button type="submit" disabled={busy || !giftUserId || !giftPassword}>确认发送</button></form> : null}
             </section> : null}
             {studioSection === "equipment" ? <section className="pet-collection-panel"><header><div><span>EQUIPMENT CODEX</span><h3>随机装备图鉴</h3></div><b>{profile.inventory.length} / {profile.equipment_catalog_size}</b></header><p>摸摸约 2.5%、提交标注约 18%，标记 Badcase 还有额外掉落机会；技能可继续提高概率。重复装备会累计数量。</p><div className="pet-equipped-slots">{Object.entries(PET_EQUIPMENT_SLOTS).map(([slot, info]) => { const itemId = profile.equipped[slot as PetEquipmentSlot]; const item = profile.inventory.find((owned) => owned.id === itemId); return <div key={slot}><b>{info.symbol}</b><span>{info.label}<small>{item?.name ?? "未装备"}</small></span>{item ? <button type="button" onClick={() => onEquip(slot as PetEquipmentSlot, null)}>卸下</button> : null}</div>; })}</div>{profile.inventory.length ? <div className="pet-inventory-grid">{profile.inventory.map((item) => <button type="button" className={`rarity-${item.rarity} ${profile.equipped[item.slot] === item.id ? "active" : ""}`} onClick={() => onEquip(item.slot, profile.equipped[item.slot] === item.id ? null : item.id)} key={item.id}><b>{item.symbol}</b><span>{item.name}<small>{item.slot_name} · ×{item.count}</small></span><em>{profile.equipped[item.slot] === item.id ? "已装备" : "装备"}</em></button>)}</div> : <div className="pet-empty-collection"><b>◇</b><strong>第一件装备正在路上</strong><span>继续摸摸或提交标注，就有机会随机掉落。</span></div>}</section> : null}
             {studioSection === "skills" ? <section className="pet-skills-panel"><header><div><span>SKILL CONSTELLATION</span><h3>技能星盘</h3></div><b>{profile.active_skills.length} / 3 已启用</b></header><p>每次进化成功会随机觉醒一个技能；再次抽到同一技能会升级，最高 Lv.5。最多同时启用 3 个。</p><div>{profile.skills.map((skill) => <button type="button" className={`${skill.active ? "active" : ""} ${skill.level ? "unlocked" : "locked"}`} disabled={!skill.level || (!skill.active && profile.active_skills.length >= 3) || busy} onClick={() => onToggleSkill(skill.id)} key={skill.id}><b>{skill.icon}</b><span><strong>{skill.name} {skill.level ? `Lv.${skill.level}` : "未觉醒"}</strong><small>{skill.description}</small></span><em>{skill.active ? "启用中" : skill.level ? "启用" : "进化解锁"}</em></button>)}</div></section> : null}
-            {studioSection === "appearance" ? <section className="pet-appearance-panel"><label className="pet-name-field"><span>搭子名字</span><input value={draftName} maxLength={20} onChange={(event) => onDraftName(event.target.value)} aria-label="宠物名字" /><small>{draftName.length}/20</small></label><div className="pet-option-group pet-color-options"><div className="pet-option-title"><span>毛色</span><small>{PET_COLORS.filter((item) => item.level <= profile.level).length} / {PET_COLORS.length} 已解锁</small></div><div>{PET_COLORS.map((item) => <button type="button" key={item.id} className={profile.color === item.id ? "active" : ""} disabled={profile.level < item.level} onClick={() => onSelectColor(item.id)} style={{ "--swatch": item.value } as CSSProperties}><i />{item.label}{profile.level < item.level ? <small>Lv.{item.level}</small> : <small>✓</small>}</button>)}</div></div><div className="pet-option-group pet-accessory-options"><div className="pet-option-title"><span>基础配饰</span><small>{PET_ACCESSORIES.filter((item) => item.level <= profile.level).length} / {PET_ACCESSORIES.length} 已解锁</small></div><div>{PET_ACCESSORIES.map((item) => <button type="button" key={item.id} className={profile.accessory === item.id ? "active" : ""} disabled={profile.level < item.level} onClick={() => onSelectAccessory(item.id)}><b>{item.symbol || "—"}</b><span>{item.label}</span>{profile.level < item.level ? <small>Lv.{item.level}</small> : <small>✓</small>}</button>)}</div></div><div className="pet-level-roadmap"><div className="pet-option-title"><span>等级路线 · 上限 50</span><small>Lv.5 后每级固定需要 {PET_STEADY_LEVEL_COST} EXP</small></div><div>{PET_LEVELS.map((item) => <article key={item.level} className={profile.level >= item.level ? "unlocked" : profile.level < item.level && !PET_LEVELS.some((other) => other.level > profile.level && other.level < item.level) ? "next" : ""}><b>Lv.{item.level}</b><div><strong>{item.title}</strong><small>{item.unlock}</small></div><span>{profile.level >= item.level ? "已解锁" : `${petLevelStartXp(item.level)} EXP`}</span></article>)}</div></div></section> : null}
+            {studioSection === "appearance" ? <section className="pet-appearance-panel"><label className="pet-name-field"><span>搭子名字</span><input value={draftName} maxLength={20} onChange={(event) => onDraftName(event.target.value)} aria-label="宠物名字" /><small>{draftName.length}/20</small></label><div className="pet-option-group pet-color-options"><div className="pet-option-title"><span>毛色</span><small>{PET_COLORS.filter((item) => item.level <= profile.level).length} / {PET_COLORS.length} 已解锁</small></div><div>{PET_COLORS.map((item) => <button type="button" key={item.id} className={profile.color === item.id ? "active" : ""} disabled={profile.level < item.level} onClick={() => onSelectColor(item.id)} style={{ "--swatch": item.value } as CSSProperties}><i />{item.label}{profile.level < item.level ? <small>Lv.{item.level}</small> : <small>✓</small>}</button>)}</div></div><div className="pet-option-group pet-accessory-options"><div className="pet-option-title"><span>基础配饰</span><small>{PET_ACCESSORIES.filter((item) => item.level <= profile.level).length} / {PET_ACCESSORIES.length} 已解锁</small></div><div>{PET_ACCESSORIES.map((item) => <button type="button" key={item.id} className={profile.accessory === item.id ? "active" : ""} disabled={profile.level < item.level} onClick={() => onSelectAccessory(item.id)}><b>{item.symbol || "—"}</b><span>{item.label}</span>{profile.level < item.level ? <small>Lv.{item.level}</small> : <small>✓</small>}</button>)}</div></div><div className="pet-level-roadmap"><div className="pet-option-title"><span>称号里程碑 · 上限 50</span><small>外观按上方卡片标注等级解锁 · Lv.5 后每级 {PET_STEADY_LEVEL_COST} EXP</small></div><div>{PET_LEVELS.map((item) => <article key={item.level} className={profile.level >= item.level ? "unlocked" : profile.level < item.level && !PET_LEVELS.some((other) => other.level > profile.level && other.level < item.level) ? "next" : ""}><b>Lv.{item.level}</b><div><strong>{item.title}</strong><small>{item.unlock}</small></div><span>{profile.level >= item.level ? "已解锁" : `${petLevelStartXp(item.level)} EXP`}</span></article>)}</div></div></section> : null}
           </div>
         </div>
         <footer><span>装扮会保存在{persistenceLabel}中</span><div><button type="button" onClick={onToggleSettings}>稍后再说</button><button className="pet-save" type="button" onClick={onSaveProfile} disabled={busy || !draftName.trim()}>{busy ? "保存中…" : "保存装扮"}</button></div></footer>
@@ -2533,6 +2557,7 @@ export default function Home() {
   const detailScrollPositions = useRef<Record<string, number>>({});
   const restoringDetailScroll = useRef(false);
   const petProfileRef = useRef(petProfile);
+  const petCustomizationSnapshot = useRef<Pick<PetProfile, "name" | "color" | "accessory"> | null>(null);
   const pettingBusyRef = useRef(false);
   const serverRevisions = useRef<Record<string, number | undefined>>({});
   const saveQueues = useRef<Record<string, Promise<CaseAnnotation | null>>>({});
@@ -3006,6 +3031,14 @@ export default function Home() {
         return;
       }
       if (event.key === "Escape" && petSettingsOpen) {
+        const snapshot = petCustomizationSnapshot.current;
+        if (snapshot) {
+          const restored = { ...petProfileRef.current, color: snapshot.color, accessory: snapshot.accessory };
+          petProfileRef.current = restored;
+          setPetProfile(restored);
+          setPetDraftName(snapshot.name);
+          petCustomizationSnapshot.current = null;
+        }
         setPetSettingsOpen(false);
         return;
       }
@@ -3972,18 +4005,23 @@ export default function Home() {
   const evolveCompanion = async (spend: 1 | 5) => {
     const current = petProfileRef.current;
     if (petBusy || current.evolution_chances < spend) return;
-    if (spend === 5 && !window.confirm("将合成并消耗 5 次变身机会，本次必定成功，但变身方向和强化特征仍然随机。继续吗？")) return;
+    if (spend === 5) {
+      const message = current.evolution_path && current.evolution_stage > 0
+        ? "将消耗 5 张进化券改抽另一条路线。当前路线的进化层级与路线特征会清空，新路线固定从第 1 次进化开始；装备和已觉醒技能保留。继续吗？"
+        : "将消耗 5 张进化券完成首次必定成功的进化，路线仍然随机。继续吗？";
+      if (!window.confirm(message)) return;
+    }
     setPetBusy(true);
     try {
       if (serverUser) {
-        const result = await apiRequest<{ profile: PetProfile; success: boolean; spent: number; guaranteed: boolean; trait: string; critical?: boolean; skill?: PetSkill | null }>("/api/pet/evolve", { method: "POST", body: JSON.stringify({ spend }) });
+        const result = await apiRequest<{ profile: PetProfile; success: boolean; spent: number; guaranteed: boolean; trait: string; critical?: boolean; route_reset?: boolean; previous_path?: PetEvolutionPath; skill?: PetSkill | null }>("/api/pet/evolve", { method: "POST", body: JSON.stringify({ spend }) });
         const next = applyPetProfile(result.profile);
-        if (result.success) wakePet(`${result.critical ? "暴击进化！" : "进化成功！"}获得「${result.trait}」${result.skill ? `，${result.skill.name} Lv.${result.skill.level}` : ""}`, next.evolution_path === "wonky" ? "worried" : "proud");
+        if (result.success) wakePet(`${result.route_reset ? "换路线成功！从第 1 次进化重新开始。" : result.critical ? "暴击进化！" : "进化成功！"}获得「${result.trait}」${result.skill ? `，${result.skill.name} Lv.${result.skill.level}` : ""}`, next.evolution_path === "wonky" ? "worried" : "proud");
         else wakePet(`这次化成星尘，单抽保底升至 ${next.evolution_success_rate}%`, "worried");
       } else {
         const result = evolveLocalPet(current, spend);
         const next = applyPetProfile(result.profile);
-        if (result.success) wakePet(`${result.critical ? "暴击进化！" : "进化成功！"}获得「${result.trait}」${result.skill ? `，${result.skill.name} Lv.${result.skill.level}` : ""}`, next.evolution_path === "wonky" ? "worried" : "proud");
+        if (result.success) wakePet(`${result.route_reset ? "换路线成功！从第 1 次进化重新开始。" : result.critical ? "暴击进化！" : "进化成功！"}获得「${result.trait}」${result.skill ? `，${result.skill.name} Lv.${result.skill.level}` : ""}`, next.evolution_path === "wonky" ? "worried" : "proud");
         else wakePet(`这次化成星尘，单抽保底升至 ${next.evolution_success_rate}%`, "worried");
       }
     } catch (error) {
@@ -4049,8 +4087,23 @@ export default function Home() {
   };
 
   const togglePetStudio = () => {
-    setPetSettingsOpen((current) => !current);
-    if (!petSettingsOpen && serverUser?.role === "admin" && !serverUsers.length) {
+    if (petSettingsOpen) {
+      const snapshot = petCustomizationSnapshot.current;
+      if (snapshot) {
+        const restored = { ...petProfileRef.current, color: snapshot.color, accessory: snapshot.accessory };
+        petProfileRef.current = restored;
+        setPetProfile(restored);
+        setPetDraftName(snapshot.name);
+        petCustomizationSnapshot.current = null;
+      }
+      setPetSettingsOpen(false);
+      return;
+    }
+    const current = petProfileRef.current;
+    petCustomizationSnapshot.current = { name: current.name, color: current.color, accessory: current.accessory };
+    setPetDraftName(current.name);
+    setPetSettingsOpen(true);
+    if (serverUser?.role === "admin" && !serverUsers.length) {
       void apiRequest<ServerUser[]>("/api/users").then(setServerUsers).catch(() => undefined);
     }
   };
@@ -4067,6 +4120,7 @@ export default function Home() {
       } else {
         applyPetProfile(draft);
       }
+      petCustomizationSnapshot.current = null;
       setPetSettingsOpen(false);
       wakePet(`以后就叫我「${name}」吧！`, "happy");
     } catch (error) {
