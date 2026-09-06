@@ -725,6 +725,20 @@ PET_EQUIPMENT_RANDOM_AFFIXES = {
     "evolution_bonus": "单抽进化概率",
     "rarity_boost": "稀有装备权重",
 }
+PET_EQUIPMENT_SET_EFFECTS: dict[str, dict[str, Any]] = {
+    "星尘": {"name": "星愿引力", "description": "偏向稀有发现与进化", "tiers": [(2, "rarity_boost", 1, "稀有装备权重 +1"), (3, "all_drop_bonus", 2, "所有装备掉率 +2%"), (5, "evolution_bonus", 4, "单抽进化概率 +4%")]},
+    "森林": {"name": "森林祝福", "description": "摸摸收集与稳步成长", "tiers": [(2, "pet_drop_bonus", 3, "摸摸掉率 +3%"), (3, "all_drop_bonus", 2, "所有装备掉率 +2%"), (5, "evolution_bonus", 5, "单抽进化概率 +5%")]},
+    "雷云": {"name": "雷霆洞察", "description": "标注与快速进化", "tiers": [(2, "annotation_drop_bonus", 3, "提交标注掉率 +3%"), (3, "evolution_bonus", 3, "单抽进化概率 +3%"), (5, "rarity_boost", 2, "稀有装备权重 +2")]},
+    "海盐": {"name": "潮汐巡守", "description": "Badcase 与日常寻宝", "tiers": [(2, "badcase_drop_bonus", 3, "Badcase 掉率 +3%"), (3, "pet_drop_bonus", 4, "摸摸掉率 +4%"), (5, "all_drop_bonus", 3, "所有装备掉率 +3%")]},
+    "琥珀": {"name": "琥珀封藏", "description": "收藏稀有与标注回报", "tiers": [(2, "all_drop_bonus", 1, "所有装备掉率 +1%"), (3, "rarity_boost", 2, "稀有装备权重 +2"), (5, "annotation_drop_bonus", 6, "提交标注掉率 +6%")]},
+    "月影": {"name": "月下追猎", "description": "异常发现与稀有狩猎", "tiers": [(2, "badcase_drop_bonus", 4, "Badcase 掉率 +4%"), (3, "rarity_boost", 1, "稀有装备权重 +1"), (5, "evolution_bonus", 6, "单抽进化概率 +6%")]},
+    "霓虹": {"name": "霓虹回路", "description": "高频标注与稀有增幅", "tiers": [(2, "annotation_drop_bonus", 3, "提交标注掉率 +3%"), (3, "all_drop_bonus", 2, "所有装备掉率 +2%"), (5, "rarity_boost", 3, "稀有装备权重 +3")]},
+    "机械": {"name": "精密迭代", "description": "进化与标注效率", "tiers": [(2, "evolution_bonus", 2, "单抽进化概率 +2%"), (3, "annotation_drop_bonus", 4, "提交标注掉率 +4%"), (5, "all_drop_bonus", 4, "所有装备掉率 +4%")]},
+    "云朵": {"name": "云端漫游", "description": "摸摸寻宝与轻盈进化", "tiers": [(2, "pet_drop_bonus", 3, "摸摸掉率 +3%"), (3, "evolution_bonus", 3, "单抽进化概率 +3%"), (5, "all_drop_bonus", 3, "所有装备掉率 +3%")]},
+    "蜂蜜": {"name": "勤勉丰收", "description": "日常收集与标注回报", "tiers": [(2, "all_drop_bonus", 1, "所有装备掉率 +1%"), (3, "pet_drop_bonus", 5, "摸摸掉率 +5%"), (5, "annotation_drop_bonus", 6, "提交标注掉率 +6%")]},
+    "像素": {"name": "数据增幅", "description": "稀有发现与多来源收集", "tiers": [(2, "rarity_boost", 1, "稀有装备权重 +1"), (3, "annotation_drop_bonus", 4, "提交标注掉率 +4%"), (5, "pet_drop_bonus", 6, "摸摸掉率 +6%")]},
+    "纸片": {"name": "灵感归档", "description": "Badcase 追踪与标注", "tiers": [(2, "badcase_drop_bonus", 3, "Badcase 掉率 +3%"), (3, "all_drop_bonus", 2, "所有装备掉率 +2%"), (5, "annotation_drop_bonus", 5, "提交标注掉率 +5%")]},
+}
 PET_DROP_BASE_CHANCES = {"pet": 500, "annotation": 1800, "badcase": 2000}
 PET_SKILLS: dict[str, dict[str, Any]] = {
     "lucky_nose": {"name": "幸运鼻尖", "icon": "✦", "description": "所有装备掉率 +1%/级"},
@@ -919,7 +933,9 @@ def pet_drop_choice_context(collection: PetCollection, item_id: str) -> dict[str
         if slot != item["slot"] and owned_id in PET_EQUIPMENT_CATALOG and PET_EQUIPMENT_CATALOG[owned_id]["theme"] == item["theme"]
     )
     pieces_if_equipped = other_theme_equipped + 1
-    next_set_target = next((target for target in (2, 3, 5) if target > pieces_if_equipped), None)
+    set_definition = PET_EQUIPMENT_SET_EFFECTS[str(item["theme"])]
+    next_set_tier = next((tier for tier in set_definition["tiers"] if tier[0] > pieces_if_equipped), None)
+    next_set_target = next_set_tier[0] if next_set_tier else None
     base = pet_equipment_effect(item, {"count": 1, "level": 1, "affixes": [], "synthesis_failures": 0})
     return {
         "id": item_id,
@@ -941,6 +957,7 @@ def pet_drop_choice_context(collection: PetCollection, item_id: str) -> dict[str
         "theme_equipped_count": theme_equipped,
         "theme_pieces_if_equipped": pieces_if_equipped,
         "next_set_target": next_set_target,
+        "next_set_bonus": next_set_tier[3] if next_set_tier else None,
         "equipped_same_slot": {
             "id": equipped_id,
             "name": equipped_item["name"],
@@ -986,17 +1003,16 @@ def pet_equipment_state(collection: PetCollection) -> tuple[dict[str, int], list
         theme_counts[theme] = theme_counts.get(theme, 0) + 1
     sets: list[dict[str, Any]] = []
     for theme, pieces in sorted(theme_counts.items(), key=lambda entry: (-entry[1], entry[0])):
+        definition = PET_EQUIPMENT_SET_EFFECTS[theme]
         bonuses: list[str] = []
-        if pieces >= 2:
-            stats["all_drop_bonus"] += 1
-            bonuses.append("2件：所有装备掉率 +1%")
-        if pieces >= 3:
-            stats["rarity_boost"] += 1
-            bonuses.append("3件：稀有装备权重提升")
-        if pieces >= 5:
-            stats["evolution_bonus"] += 3
-            bonuses.append("5件：单抽进化概率 +3%")
-        sets.append({"theme": theme, "name": f"{theme}共鸣", "pieces": pieces, "bonuses": bonuses})
+        tiers = []
+        for required, key, value, label in definition["tiers"]:
+            active = pieces >= required
+            if active:
+                stats[key] += value
+                bonuses.append(f"{required}件：{label}")
+            tiers.append({"pieces": required, "label": label, "active": active})
+        sets.append({"theme": theme, "name": definition["name"], "description": definition["description"], "pieces": pieces, "bonuses": bonuses, "tiers": tiers})
     return stats, sets
 
 

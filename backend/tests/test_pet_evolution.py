@@ -92,6 +92,9 @@ class PetEvolutionTest(unittest.TestCase):
     def test_equipment_catalog_contains_three_hundred_items(self) -> None:
         self.assertEqual(len(api.PET_EQUIPMENT_CATALOG), 300)
         self.assertEqual(len({item["id"] for item in api.PET_EQUIPMENT_CATALOG.values()}), 300)
+        self.assertEqual(len(api.PET_EQUIPMENT_SET_EFFECTS), 12)
+        signatures = {tuple((key, value) for _, key, value, _ in definition["tiers"]) for definition in api.PET_EQUIPMENT_SET_EFFECTS.values()}
+        self.assertEqual(len(signatures), 12)
 
     def test_legacy_equipment_levels_are_preserved_and_activate_set_bonuses(self) -> None:
         _, _, _, collection = api.get_or_create_pet(self.db, self.user.id)
@@ -105,11 +108,13 @@ class PetEvolutionTest(unittest.TestCase):
         self.assertEqual(levels["gear-01-2-2"], 3)
         self.assertEqual(levels["gear-01-3-3"], 5)
         self.assertEqual(payload["equipment_stats"]["total_power"], 29)
-        self.assertEqual(payload["equipment_stats"]["all_drop_bonus"], 2)
+        self.assertEqual(payload["equipment_stats"]["all_drop_bonus"], 3)
         self.assertEqual(payload["equipment_stats"]["rarity_boost"], 1)
-        self.assertEqual(payload["equipment_stats"]["evolution_bonus"], 6)
+        self.assertEqual(payload["equipment_stats"]["evolution_bonus"], 7)
         self.assertEqual(payload["equipment_sets"][0]["pieces"], 5)
         self.assertEqual(len(payload["equipment_sets"][0]["bonuses"]), 3)
+        self.assertEqual(payload["equipment_sets"][0]["name"], "星愿引力")
+        self.assertTrue(all(tier["active"] for tier in payload["equipment_sets"][0]["tiers"]))
 
     def test_new_inventory_entries_do_not_auto_level_from_duplicate_count(self) -> None:
         item = api.PET_EQUIPMENT_CATALOG["gear-01-1-1"]
