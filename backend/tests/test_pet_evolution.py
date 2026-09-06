@@ -151,10 +151,12 @@ class PetEvolutionTest(unittest.TestCase):
         self.assertEqual(entry["synthesis_failures"], 2)
         self.assertEqual(len(affixes), 2)
 
-    def test_annotation_drop_base_chance_is_fifteen_percent(self) -> None:
+    def test_annotation_drop_base_chance_is_eighteen_percent(self) -> None:
         _, _, _, collection = api.get_or_create_pet(self.db, self.user.id)
-        self.assertEqual(api.PET_DROP_BASE_CHANCES["annotation"], 1500)
-        with patch.object(api.secrets, "randbelow", return_value=1500):
+        self.assertEqual(api.PET_DROP_BASE_CHANCES["pet"], 500)
+        self.assertEqual(api.PET_DROP_BASE_CHANCES["annotation"], 1800)
+        self.assertEqual(api.PET_DROP_BASE_CHANCES["badcase"], 2000)
+        with patch.object(api.secrets, "randbelow", return_value=1800):
             self.assertIsNone(api.maybe_drop_pet_equipment(collection, "annotation"))
 
     def test_drop_creates_three_hidden_choices_and_claims_only_one(self) -> None:

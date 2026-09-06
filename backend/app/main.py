@@ -725,7 +725,7 @@ PET_EQUIPMENT_RANDOM_AFFIXES = {
     "evolution_bonus": "单抽进化概率",
     "rarity_boost": "稀有装备权重",
 }
-PET_DROP_BASE_CHANCES = {"pet": 350, "annotation": 1500, "badcase": 1500}
+PET_DROP_BASE_CHANCES = {"pet": 500, "annotation": 1800, "badcase": 2000}
 PET_SKILLS: dict[str, dict[str, Any]] = {
     "lucky_nose": {"name": "幸运鼻尖", "icon": "✦", "description": "所有装备掉率 +1%/级"},
     "treasure_paws": {"name": "寻宝肉垫", "icon": "◇", "description": "摸摸装备掉率 +2%/级"},
