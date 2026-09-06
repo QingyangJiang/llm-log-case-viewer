@@ -642,6 +642,11 @@ class PetEquipmentActionBody(BaseModel):
     item_id: str = Field(min_length=1, max_length=120)
 
 
+class PetEquipmentClaimBody(BaseModel):
+    token: str = Field(min_length=1, max_length=120)
+    item_id: str = Field(min_length=1, max_length=120)
+
+
 class PetSkillsBody(BaseModel):
     active_skill_ids: list[str] = Field(default_factory=list, max_length=3)
 
@@ -709,6 +714,8 @@ PET_EQUIPMENT_EFFECTS = {
 }
 PET_EQUIPMENT_MAX_LEVEL = 10
 PET_EQUIPMENT_MAX_AFFIXES = 24
+PET_PENDING_DROPS_KEY = "__pending_drops__"
+PET_MAX_PENDING_DROPS = 10
 PET_EQUIPMENT_SYNTHESIS_RATES = {1: 90, 2: 80, 3: 70, 4: 60, 5: 50, 6: 40, 7: 32, 8: 24, 9: 18}
 PET_EQUIPMENT_RANDOM_AFFIXES = {
     "all_drop_bonus": "所有装备掉率",
@@ -726,7 +733,7 @@ PET_SKILLS: dict[str, dict[str, Any]] = {
     "badcase_hunter": {"name": "异常猎手", "icon": "!", "description": "发现 Badcase 装备掉率 +3%/级"},
     "evolution_echo": {"name": "进化回声", "icon": "↟", "description": "单抽成功率 +1%/级"},
     "star_magnet": {"name": "星屑磁场", "icon": "※", "description": "稀有以上装备权重提升"},
-    "collector": {"name": "图鉴学者", "icon": "▦", "description": "同名装备材料倾向 +5%/级"},
+    "collector": {"name": "图鉴学者", "icon": "▦", "description": "三选一装备的稀有权重 +1/级"},
     "steady_heart": {"name": "稳定之心", "icon": "♥", "description": "连续失败的保底增幅 +1%/级"},
 }
 
@@ -871,6 +878,88 @@ def pet_equipment_effect(item: dict[str, Any], raw_entry: Any) -> dict[str, Any]
     }
 
 
+def pet_pending_drops(collection: PetCollection) -> list[dict[str, Any]]:
+    raw_pending = (collection.inventory or {}).get(PET_PENDING_DROPS_KEY, [])
+    if not isinstance(raw_pending, list):
+        return []
+    pending: list[dict[str, Any]] = []
+    for raw in raw_pending[:PET_MAX_PENDING_DROPS]:
+        if not isinstance(raw, dict) or not isinstance(raw.get("choices"), list):
+            continue
+        choices = []
+        for choice in raw["choices"]:
+            if not isinstance(choice, dict) or choice.get("item_id") not in PET_EQUIPMENT_CATALOG:
+                continue
+            affixes = pet_inventory_entry({"count": 1, "affixes": [choice.get("hidden_affix")]})["affixes"]
+            if affixes:
+                choices.append({"item_id": str(choice["item_id"]), "hidden_affix": affixes[0]})
+        token = str(raw.get("token") or "")
+        if token and choices:
+            pending.append({"token": token, "reason": str(raw.get("reason") or "annotation"), "at": str(raw.get("at") or utcnow().isoformat()), "choices": choices})
+    return pending
+
+
+def pet_drop_choice_context(collection: PetCollection, item_id: str) -> dict[str, Any]:
+    item = PET_EQUIPMENT_CATALOG[item_id]
+    inventory = collection.inventory or {}
+    entry = pet_inventory_entry(inventory.get(item_id, 0))
+    equipped_id = (collection.equipped or {}).get(str(item["slot"]))
+    equipped_item = PET_EQUIPMENT_CATALOG.get(equipped_id or "")
+    equipped_entry = pet_inventory_entry(inventory.get(equipped_id, 0)) if equipped_item else None
+    theme_owned = sum(
+        1 for owned_id, raw_entry in inventory.items()
+        if owned_id in PET_EQUIPMENT_CATALOG and PET_EQUIPMENT_CATALOG[owned_id]["theme"] == item["theme"] and pet_inventory_entry(raw_entry)["count"] > 0
+    )
+    theme_equipped = sum(
+        1 for owned_id in (collection.equipped or {}).values()
+        if owned_id in PET_EQUIPMENT_CATALOG and PET_EQUIPMENT_CATALOG[owned_id]["theme"] == item["theme"]
+    )
+    other_theme_equipped = sum(
+        1 for slot, owned_id in (collection.equipped or {}).items()
+        if slot != item["slot"] and owned_id in PET_EQUIPMENT_CATALOG and PET_EQUIPMENT_CATALOG[owned_id]["theme"] == item["theme"]
+    )
+    pieces_if_equipped = other_theme_equipped + 1
+    next_set_target = next((target for target in (2, 3, 5) if target > pieces_if_equipped), None)
+    base = pet_equipment_effect(item, {"count": 1, "level": 1, "affixes": [], "synthesis_failures": 0})
+    return {
+        "id": item_id,
+        "name": item["name"],
+        "slot": item["slot"],
+        "slot_name": item["slot_name"],
+        "symbol": item["symbol"],
+        "rarity": item["rarity"],
+        "theme": item["theme"],
+        "effect_label": base["effect_label"],
+        "effect_value": base["effect_value"],
+        "is_new": entry["count"] == 0,
+        "owned_count": entry["count"],
+        "owned_level": entry["level"] if entry["count"] else None,
+        "owned_affix_count": len(entry["affixes"]),
+        "count_after_claim": entry["count"] + 1,
+        "materials_to_synthesize": max(0, 3 - (entry["count"] + 1)),
+        "theme_owned_count": theme_owned,
+        "theme_equipped_count": theme_equipped,
+        "theme_pieces_if_equipped": pieces_if_equipped,
+        "next_set_target": next_set_target,
+        "equipped_same_slot": {
+            "id": equipped_id,
+            "name": equipped_item["name"],
+            "rarity": equipped_item["rarity"],
+            "level": equipped_entry["level"],
+            "power": pet_equipment_effect(equipped_item, equipped_entry)["power"],
+        } if equipped_item and equipped_entry else None,
+    }
+
+
+def pet_pending_drop_payload(collection: PetCollection) -> list[dict[str, Any]]:
+    return [{
+        "token": pending["token"],
+        "reason": pending["reason"],
+        "at": pending["at"],
+        "choices": [pet_drop_choice_context(collection, choice["item_id"]) for choice in pending["choices"]],
+    } for pending in pet_pending_drops(collection)]
+
+
 def pet_equipment_state(collection: PetCollection) -> tuple[dict[str, int], list[dict[str, Any]]]:
     stats = {
         "total_power": 0,
@@ -941,6 +1030,7 @@ def pet_collection_payload(collection: PetCollection) -> dict[str, Any]:
         "skills": skills,
         "active_skills": collection.active_skills or [],
         "drop_history": collection.drop_history or [],
+        "pending_drops": pet_pending_drop_payload(collection),
         "total_drops": collection.total_drops,
         "evolution_pity": collection.pity,
         "evolution_success_rate": pet_evolution_success_rate(collection),
@@ -974,7 +1064,7 @@ def pet_dict(profile: PetProfile, progress: PetProgressV2, evolution: PetEvoluti
 
 def pet_choose_rarity(collection: PetCollection) -> str:
     equipment_stats, _ = pet_equipment_state(collection)
-    rarity_boost = pet_active_skill_level(collection, "star_magnet") + equipment_stats["rarity_boost"]
+    rarity_boost = pet_active_skill_level(collection, "star_magnet") + pet_active_skill_level(collection, "collector") + equipment_stats["rarity_boost"]
     weights = [
         ("common", max(30, 60 - rarity_boost * 4)),
         ("uncommon", 25),
@@ -991,6 +1081,8 @@ def pet_choose_rarity(collection: PetCollection) -> str:
 
 
 def maybe_drop_pet_equipment(collection: PetCollection, reason: str) -> dict[str, Any] | None:
+    if len(pet_pending_drops(collection)) >= PET_MAX_PENDING_DROPS:
+        return None
     equipment_stats, _ = pet_equipment_state(collection)
     base_chance = PET_DROP_BASE_CHANCES.get(reason, 0)
     base_chance += pet_active_skill_level(collection, "lucky_nose") * 100
@@ -1008,22 +1100,23 @@ def maybe_drop_pet_equipment(collection: PetCollection, reason: str) -> dict[str
         return None
     rarity = pet_choose_rarity(collection)
     inventory = dict(collection.inventory or {})
-    collector_level = pet_active_skill_level(collection, "collector")
-    candidates = [item for item in PET_EQUIPMENT_CATALOG.values() if item["rarity"] == rarity]
-    owned_candidates = [item for item in candidates if pet_inventory_entry(inventory.get(item["id"], 0))["count"] > 0]
-    duplicate_bias = min(60, 25 + collector_level * 5)
-    pool = owned_candidates if owned_candidates and secrets.randbelow(100) < duplicate_bias else candidates
-    item = dict(secrets.choice(pool))
-    entry = pet_inventory_entry(inventory.get(item["id"], 0))
-    duplicate = entry["count"] > 0
-    entry["count"] += 1
-    inventory[item["id"]] = entry
-    event = {**pet_equipment_effect(item, entry), "reason": reason, "duplicate": duplicate, "at": utcnow().isoformat()}
+    candidate_pool = [dict(item) for item in PET_EQUIPMENT_CATALOG.values() if item["rarity"] == rarity]
+    choices: list[dict[str, Any]] = []
+    for index in range(3):
+        item = secrets.choice(candidate_pool)
+        candidate_pool.remove(item)
+        entry = pet_inventory_entry(inventory.get(item["id"], 0))
+        choices.append({"item_id": item["id"], "hidden_affix": pet_random_affix(item, entry["level"] if entry["count"] else 1, index)})
+    pending = {
+        "token": secrets.token_hex(16),
+        "reason": reason,
+        "at": utcnow().isoformat(),
+        "choices": choices,
+    }
+    inventory[PET_PENDING_DROPS_KEY] = [*pet_pending_drops(collection), pending][-PET_MAX_PENDING_DROPS:]
     collection.inventory = inventory
-    collection.drop_history = [event, *(collection.drop_history or [])][:30]
-    collection.total_drops += 1
     collection.updated_at = utcnow()
-    return event
+    return None
 
 
 def synthesize_pet_equipment_entry(item: dict[str, Any], raw_entry: Any) -> tuple[dict[str, Any], bool, int, list[dict[str, Any]]]:
@@ -1058,6 +1151,44 @@ def reforge_pet_equipment_entry(item: dict[str, Any], raw_entry: Any) -> tuple[d
         affix_count += 1
     entry["affixes"] = [pet_random_affix(item, entry["level"], index) for index in range(affix_count)]
     return entry, entry["affixes"]
+
+
+def claim_pet_drop_choice(collection: PetCollection, token: str, item_id: str) -> tuple[dict[str, Any], dict[str, Any], bool]:
+    pending_drops = pet_pending_drops(collection)
+    pending = next((entry for entry in pending_drops if hmac.compare_digest(entry["token"], token)), None)
+    if not pending:
+        raise ValueError("这次掉落已领取或已失效")
+    choice = next((entry for entry in pending["choices"] if entry["item_id"] == item_id), None)
+    if not choice:
+        raise ValueError("只能领取本次三选一中的装备")
+    item = PET_EQUIPMENT_CATALOG[item_id]
+    inventory = dict(collection.inventory or {})
+    owned = pet_inventory_entry(inventory.get(item_id, 0))
+    duplicate = owned["count"] > 0
+    owned["count"] += 1
+    identified_affix = choice["hidden_affix"]
+    affix_added = len(owned["affixes"]) < PET_EQUIPMENT_MAX_AFFIXES
+    if affix_added:
+        owned["affixes"] = [*owned["affixes"], identified_affix]
+    inventory[item_id] = owned
+    remaining = [entry for entry in pending_drops if not hmac.compare_digest(entry["token"], token)]
+    if remaining:
+        inventory[PET_PENDING_DROPS_KEY] = remaining
+    else:
+        inventory.pop(PET_PENDING_DROPS_KEY, None)
+    event = {
+        **pet_equipment_effect(item, owned),
+        "reason": pending["reason"],
+        "duplicate": duplicate,
+        "identified_affix": identified_affix,
+        "affix_added": affix_added,
+        "at": utcnow().isoformat(),
+    }
+    collection.inventory = inventory
+    collection.drop_history = [event, *(collection.drop_history or [])][:30]
+    collection.total_drops += 1
+    collection.updated_at = utcnow()
+    return event, identified_affix, affix_added
 
 
 def awaken_pet_skill(collection: PetCollection) -> dict[str, Any]:
@@ -2378,6 +2509,23 @@ def synthesize_pet_item(body: PetEquipmentActionBody, user: CurrentUser, db: DB)
         "success": success,
         "success_rate": success_rate,
         "gained_affixes": gained_affixes,
+    }
+
+
+@app.post("/api/pet/equipment/claim-drop")
+def claim_pet_equipment_drop(body: PetEquipmentClaimBody, user: CurrentUser, db: DB) -> dict[str, Any]:
+    profile, progress, evolution, collection = get_or_create_pet(db, user.id)
+    collection = db.scalar(select(PetCollection).where(PetCollection.user_id == user.id).with_for_update().execution_options(populate_existing=True)) or collection
+    try:
+        drop, identified_affix, affix_added = claim_pet_drop_choice(collection, body.token, body.item_id)
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    db.commit()
+    return {
+        "profile": pet_dict(profile, progress, evolution, collection),
+        "drop": drop,
+        "identified_affix": identified_affix,
+        "affix_added": affix_added,
     }
 
 

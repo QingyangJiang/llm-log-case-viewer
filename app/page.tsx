@@ -69,7 +69,10 @@ type PetEquipment = { id: string; name: string; slot: PetEquipmentSlot; slot_nam
 type PetEquipmentStats = { total_power: number; all_drop_bonus: number; pet_drop_bonus: number; annotation_drop_bonus: number; badcase_drop_bonus: number; evolution_bonus: number; rarity_boost: number };
 type PetEquipmentSet = { theme: string; name: string; pieces: number; bonuses: string[] };
 type PetSkill = { id: string; name: string; icon: string; description: string; level: number; active: boolean };
-type PetDropEvent = PetEquipment & { reason: "pet" | "annotation" | "badcase"; duplicate: boolean; at: string };
+type PetDropReason = "pet" | "annotation" | "badcase";
+type PetDropEvent = PetEquipment & { reason: PetDropReason; duplicate: boolean; identified_affix?: PetEquipmentAffix; affix_added?: boolean; at: string };
+type PetDropChoice = Pick<PetEquipment, "id" | "name" | "slot" | "slot_name" | "symbol" | "rarity" | "theme" | "effect_label" | "effect_value"> & { is_new: boolean; owned_count: number; owned_level?: number | null; owned_affix_count: number; count_after_claim: number; materials_to_synthesize: number; theme_owned_count: number; theme_equipped_count: number; theme_pieces_if_equipped: number; next_set_target?: number | null; equipped_same_slot?: { id: string; name: string; rarity: PetRarity; level: number; power: number } | null; hidden_affix?: PetEquipmentAffix };
+type PetPendingDrop = { token: string; reason: PetDropReason; at: string; choices: PetDropChoice[] };
 type PetEvolutionEvent = { at: string; type?: "gift" | "reroute"; spent: number; guaranteed?: boolean; success: boolean; stage: number; path: PetEvolutionPath; trait: string; traits?: string[]; critical?: boolean; success_rate?: number; pity_after?: number; amount?: number; sender?: string; previous_path?: PetEvolutionPath; route_reset?: boolean; skill?: PetSkill | null };
 type PetProfile = {
   name: string;
@@ -98,6 +101,7 @@ type PetProfile = {
   skills: PetSkill[];
   active_skills: string[];
   drop_history: PetDropEvent[];
+  pending_drops: PetPendingDrop[];
   total_drops: number;
   evolution_pity: number;
   evolution_success_rate: number;
@@ -234,7 +238,7 @@ const EMPTY_JUDGE_CONFIG: JudgeConfig = {
   verifier_prompt: "",
 };
 const DEFAULT_EQUIPMENT_STATS: PetEquipmentStats = { total_power: 0, all_drop_bonus: 0, pet_drop_bonus: 0, annotation_drop_bonus: 0, badcase_drop_bonus: 0, evolution_bonus: 0, rarity_boost: 0 };
-const DEFAULT_PET: PetProfile = { name: "小镜", color: "lime", accessory: "none", xp: 0, level: 1, current_level_xp: 0, next_level_xp: 20, earned_event_keys: [], evolution_chances: 0, evolution_credited_level: 1, evolution_stage: 0, evolution_path: "", evolution_variant: 0, evolution_traits: [], evolution_history: [], equipment_catalog_size: 300, inventory: [], equipped: {}, equipment_stats: DEFAULT_EQUIPMENT_STATS, equipment_sets: [], skills: [], active_skills: [], drop_history: [], total_drops: 0, evolution_pity: 0, evolution_success_rate: 10 };
+const DEFAULT_PET: PetProfile = { name: "小镜", color: "lime", accessory: "none", xp: 0, level: 1, current_level_xp: 0, next_level_xp: 20, earned_event_keys: [], evolution_chances: 0, evolution_credited_level: 1, evolution_stage: 0, evolution_path: "", evolution_variant: 0, evolution_traits: [], evolution_history: [], equipment_catalog_size: 300, inventory: [], equipped: {}, equipment_stats: DEFAULT_EQUIPMENT_STATS, equipment_sets: [], skills: [], active_skills: [], drop_history: [], pending_drops: [], total_drops: 0, evolution_pity: 0, evolution_success_rate: 10 };
 const PET_COLORS: { id: PetColor; label: string; value: string; level: number }[] = [
   { id: "lime", label: "青柠", value: "#d9ff78", level: 1 },
   { id: "aqua", label: "薄荷", value: "#9de8dc", level: 2 },
@@ -300,14 +304,16 @@ const PET_EQUIPMENT_EFFECTS: Record<PetEquipmentSlot, { key: Exclude<PetEquipmen
 };
 const PET_EQUIPMENT_MAX_LEVEL = 10;
 const PET_EQUIPMENT_MAX_AFFIXES = 24;
+const PET_MAX_PENDING_DROPS = 10;
 const PET_EQUIPMENT_SYNTHESIS_RATES: Record<number, number> = { 1: 90, 2: 80, 3: 70, 4: 60, 5: 50, 6: 40, 7: 32, 8: 24, 9: 18 };
 const PET_EQUIPMENT_RANDOM_AFFIXES: Record<PetEquipmentEffectKey, string> = { all_drop_bonus: "所有装备掉率", pet_drop_bonus: "摸摸掉率", annotation_drop_bonus: "提交标注掉率", badcase_drop_bonus: "Badcase 掉率", evolution_bonus: "单抽进化概率", rarity_boost: "稀有装备权重" };
+const PET_RARITY_LABELS: Record<PetRarity, string> = { common: "普通", uncommon: "优秀", rare: "稀有", epic: "史诗", legendary: "传说" };
 const PET_DROP_BASE_CHANCES = { pet: 350, annotation: 1500, badcase: 1500 };
 const PET_SKILL_DEFINITIONS: Omit<PetSkill, "level" | "active">[] = [
   { id: "lucky_nose", name: "幸运鼻尖", icon: "✦", description: "所有装备掉率 +1%/级" }, { id: "treasure_paws", name: "寻宝肉垫", icon: "◇", description: "摸摸装备掉率 +2%/级" },
   { id: "case_insight", name: "Case 洞察", icon: "◎", description: "提交标注装备掉率 +2%/级" }, { id: "badcase_hunter", name: "异常猎手", icon: "!", description: "发现 Badcase 装备掉率 +3%/级" },
   { id: "evolution_echo", name: "进化回声", icon: "↟", description: "单抽成功率 +1%/级" }, { id: "star_magnet", name: "星屑磁场", icon: "※", description: "稀有以上装备权重提升" },
-  { id: "collector", name: "图鉴学者", icon: "▦", description: "同名装备材料倾向 +5%/级" }, { id: "steady_heart", name: "稳定之心", icon: "♥", description: "连续失败的保底增幅 +1%/级" },
+  { id: "collector", name: "图鉴学者", icon: "▦", description: "三选一装备的稀有权重 +1/级" }, { id: "steady_heart", name: "稳定之心", icon: "♥", description: "连续失败的保底增幅 +1%/级" },
 ];
 
 function petEquipmentWithProgress(item: Pick<PetEquipment, "id" | "name" | "slot" | "slot_name" | "symbol" | "rarity" | "theme">, count: number, progress?: Partial<Pick<PetEquipment, "level" | "affixes" | "synthesis_failures">>): PetEquipment {
@@ -397,6 +403,31 @@ function normalizedPetProfile(value: Partial<PetProfile> | null | undefined): Pe
   const echo = activeSkills.includes("evolution_echo") ? skills.find((item) => item.id === "evolution_echo")?.level ?? 0 : 0;
   const steady = activeSkills.includes("steady_heart") ? skills.find((item) => item.id === "steady_heart")?.level ?? 0 : 0;
   const evolutionSuccessRate = Math.min(55, 10 + echo + Math.min(30, evolutionPity * (2 + steady)) + equipmentState.stats.evolution_bonus);
+  const pendingDrops = Array.isArray(value?.pending_drops) ? value.pending_drops.filter((pending): pending is PetPendingDrop => isObject(pending) && typeof pending.token === "string" && Array.isArray(pending.choices)).flatMap((pending) => {
+    const choices = pending.choices.flatMap((choice) => {
+      if (!isObject(choice) || typeof choice.id !== "string") return [];
+      const catalogItem = PET_EQUIPMENT_CATALOG.find((candidate) => candidate.id === choice.id);
+      if (!catalogItem) return [];
+      const base = petEquipmentWithProgress(catalogItem, 1);
+      const hiddenAffix = isObject(choice.hidden_affix) ? petEquipmentWithProgress(catalogItem, 1, { affixes: [choice.hidden_affix as PetEquipmentAffix] }).affixes[0] : undefined;
+      const equippedSameSlot = isObject(choice.equipped_same_slot) && typeof choice.equipped_same_slot.id === "string" ? {
+        id: choice.equipped_same_slot.id,
+        name: String(choice.equipped_same_slot.name ?? "当前装备"),
+        rarity: (String(choice.equipped_same_slot.rarity ?? "common") as PetRarity),
+        level: Math.max(1, Math.floor(Number(choice.equipped_same_slot.level) || 1)),
+        power: Math.max(1, Math.floor(Number(choice.equipped_same_slot.power) || 1)),
+      } : null;
+      return [{
+        id: base.id, name: base.name, slot: base.slot, slot_name: base.slot_name, symbol: base.symbol, rarity: base.rarity, theme: base.theme, effect_label: base.effect_label, effect_value: base.effect_value,
+        is_new: Boolean(choice.is_new), owned_count: Math.max(0, Math.floor(Number(choice.owned_count) || 0)), owned_level: Number(choice.owned_level) > 0 ? Math.floor(Number(choice.owned_level)) : null,
+        owned_affix_count: Math.max(0, Math.floor(Number(choice.owned_affix_count) || 0)), count_after_claim: Math.max(1, Math.floor(Number(choice.count_after_claim) || 1)), materials_to_synthesize: Math.max(0, Math.floor(Number(choice.materials_to_synthesize) || 0)),
+        theme_owned_count: Math.max(0, Math.floor(Number(choice.theme_owned_count) || 0)), theme_equipped_count: Math.max(0, Math.floor(Number(choice.theme_equipped_count) || 0)), theme_pieces_if_equipped: Math.max(1, Math.floor(Number(choice.theme_pieces_if_equipped) || 1)),
+        next_set_target: Number(choice.next_set_target) > 0 ? Math.floor(Number(choice.next_set_target)) : null, equipped_same_slot: equippedSameSlot, hidden_affix: hiddenAffix,
+      } satisfies PetDropChoice];
+    }).slice(0, 3);
+    const reason = pending.reason === "pet" || pending.reason === "badcase" ? pending.reason : "annotation";
+    return choices.length ? [{ token: pending.token, reason, at: typeof pending.at === "string" ? pending.at : new Date().toISOString(), choices }] : [];
+  }).slice(0, PET_MAX_PENDING_DROPS) : [];
   return {
     name: typeof value?.name === "string" && value.name.trim() ? value.name.trim().slice(0, 20) : "小镜",
     color,
@@ -427,6 +458,7 @@ function normalizedPetProfile(value: Partial<PetProfile> | null | undefined): Pe
       const catalogItem = PET_EQUIPMENT_CATALOG.find((candidate) => candidate.id === item.id);
       return catalogItem ? [{ ...petEquipmentWithProgress(catalogItem, Number(item.count) || 1, item), reason: item.reason, duplicate: Boolean(item.duplicate), at: item.at }] : [];
     }).slice(0, 30) : [],
+    pending_drops: pendingDrops,
     total_drops: Math.max(0, Math.floor(Number(value?.total_drops) || inventory.reduce((sum, item) => sum + item.count, 0))),
     evolution_pity: evolutionPity,
     evolution_success_rate: evolutionSuccessRate,
@@ -540,6 +572,42 @@ function randomLocalEquipmentAffix(item: PetEquipment, level: number, index: num
   return { id: `affix-${Date.now()}-${petRandomInt(1_000_000_000)}-${index}`, key, label: PET_EQUIPMENT_RANDOM_AFFIXES[key], value: (petRandomInt(ceiling) + 1) * (critical ? 2 : 1), critical };
 }
 
+function localDropChoiceContext(profile: PetProfile, item: PetEquipment, hiddenAffix?: PetEquipmentAffix): PetDropChoice {
+  const owned = profile.inventory.find((candidate) => candidate.id === item.id);
+  const equippedId = profile.equipped[item.slot];
+  const equippedSameSlot = profile.inventory.find((candidate) => candidate.id === equippedId);
+  const themeOwnedCount = profile.inventory.filter((candidate) => candidate.theme === item.theme).length;
+  const themeEquippedCount = Object.values(profile.equipped).filter((itemId) => profile.inventory.find((candidate) => candidate.id === itemId)?.theme === item.theme).length;
+  const otherThemeEquipped = Object.entries(profile.equipped).filter(([slot, itemId]) => slot !== item.slot && profile.inventory.find((candidate) => candidate.id === itemId)?.theme === item.theme).length;
+  const themePiecesIfEquipped = otherThemeEquipped + 1;
+  return {
+    id: item.id, name: item.name, slot: item.slot, slot_name: item.slot_name, symbol: item.symbol, rarity: item.rarity, theme: item.theme, effect_label: item.effect_label, effect_value: petEquipmentWithProgress(item, 1).effect_value,
+    is_new: !owned, owned_count: owned?.count ?? 0, owned_level: owned?.level ?? null, owned_affix_count: owned?.affixes.length ?? 0, count_after_claim: (owned?.count ?? 0) + 1,
+    materials_to_synthesize: Math.max(0, 3 - ((owned?.count ?? 0) + 1)), theme_owned_count: themeOwnedCount, theme_equipped_count: themeEquippedCount, theme_pieces_if_equipped: themePiecesIfEquipped,
+    next_set_target: [2, 3, 5].find((target) => target > themePiecesIfEquipped) ?? null,
+    equipped_same_slot: equippedSameSlot ? { id: equippedSameSlot.id, name: equippedSameSlot.name, rarity: equippedSameSlot.rarity, level: equippedSameSlot.level, power: equippedSameSlot.power } : null,
+    hidden_affix: hiddenAffix,
+  };
+}
+
+function claimLocalPetDrop(profile: PetProfile, token: string, itemId: string) {
+  const pending = profile.pending_drops.find((entry) => entry.token === token);
+  const choice = pending?.choices.find((entry) => entry.id === itemId);
+  const catalogItem = PET_EQUIPMENT_CATALOG.find((entry) => entry.id === itemId);
+  if (!pending || !choice || !catalogItem || !choice.hidden_affix) throw new Error("这次掉落已领取或已失效");
+  const current = profile.inventory.find((owned) => owned.id === itemId);
+  const affixAdded = (current?.affixes.length ?? 0) < PET_EQUIPMENT_MAX_AFFIXES;
+  const affixes = affixAdded ? [...(current?.affixes ?? []), choice.hidden_affix] : current?.affixes ?? [];
+  const claimed = petEquipmentWithProgress(catalogItem, (current?.count ?? 0) + 1, { level: current?.level ?? 1, affixes, synthesis_failures: current?.synthesis_failures ?? 0 });
+  const inventory = current ? profile.inventory.map((owned) => owned.id === itemId ? claimed : owned) : [claimed, ...profile.inventory];
+  const remaining = profile.pending_drops.filter((entry) => entry.token !== token).map((entry) => ({ ...entry, choices: entry.choices.map((entryChoice) => {
+    const candidate = PET_EQUIPMENT_CATALOG.find((item) => item.id === entryChoice.id)!;
+    return localDropChoiceContext({ ...profile, inventory }, candidate, entryChoice.hidden_affix);
+  }) }));
+  const drop: PetDropEvent = { ...claimed, reason: pending.reason, duplicate: Boolean(current), identified_affix: choice.hidden_affix, affix_added: affixAdded, at: new Date().toISOString() };
+  return { profile: normalizedPetProfile({ ...profile, inventory, pending_drops: remaining, drop_history: [drop, ...profile.drop_history].slice(0, 30), total_drops: profile.total_drops + 1 }), drop, identified_affix: choice.hidden_affix, affix_added: affixAdded };
+}
+
 function synthesizeLocalPetEquipment(profile: PetProfile, itemId: string) {
   const item = profile.inventory.find((owned) => owned.id === itemId);
   if (!item || item.count < 3 || item.level >= PET_EQUIPMENT_MAX_LEVEL) throw new Error(item?.level === PET_EQUIPMENT_MAX_LEVEL ? "这件装备已经达到 Lv.10" : "需要至少 3 件同名装备才能合成");
@@ -568,27 +636,28 @@ function reforgeLocalPetEquipment(profile: PetProfile, itemId: string) {
   return { profile: normalizedPetProfile({ ...profile, inventory: profile.inventory.map((owned) => owned.id === itemId ? nextItem : owned) }), affixes };
 }
 
-function rollLocalPetDrop(profile: PetProfile, reason: PetDropEvent["reason"]) {
+function rollLocalPetDrop(profile: PetProfile, reason: PetDropReason) {
+  if (profile.pending_drops.length >= PET_MAX_PENDING_DROPS) return { profile, drop: null as PetDropEvent | null, pending: false };
   let chance = PET_DROP_BASE_CHANCES[reason] + activePetSkillLevel(profile, "lucky_nose") * 100 + profile.equipment_stats.all_drop_bonus * 100;
   if (reason === "pet") chance += activePetSkillLevel(profile, "treasure_paws") * 200 + profile.equipment_stats.pet_drop_bonus * 100;
   if (reason === "annotation") chance += activePetSkillLevel(profile, "case_insight") * 200 + profile.equipment_stats.annotation_drop_bonus * 100;
   if (reason === "badcase") chance += activePetSkillLevel(profile, "badcase_hunter") * 300 + profile.equipment_stats.badcase_drop_bonus * 100;
-  if (petRandomInt(10000) >= Math.min(7500, chance)) return { profile, drop: null as PetDropEvent | null };
-  const magnet = activePetSkillLevel(profile, "star_magnet") + profile.equipment_stats.rarity_boost;
+  if (petRandomInt(10000) >= Math.min(7500, chance)) return { profile, drop: null as PetDropEvent | null, pending: false };
+  const magnet = activePetSkillLevel(profile, "star_magnet") + activePetSkillLevel(profile, "collector") + profile.equipment_stats.rarity_boost;
   const weights: [PetRarity, number][] = [["common", Math.max(30, 60 - magnet * 4)], ["uncommon", 25], ["rare", 10 + magnet * 2], ["epic", 4 + magnet], ["legendary", 1 + magnet]];
   let draw = petRandomInt(weights.reduce((sum, [, weight]) => sum + weight, 0));
   let rarity: PetRarity = "common";
   for (const [candidate, weight] of weights) { if (draw < weight) { rarity = candidate; break; } draw -= weight; }
-  let pool = PET_EQUIPMENT_CATALOG.filter((item) => item.rarity === rarity);
-  const collector = activePetSkillLevel(profile, "collector");
-  const ownedPool = pool.filter((candidate) => profile.inventory.some((owned) => owned.id === candidate.id));
-  if (ownedPool.length && petRandomInt(100) < Math.min(60, 25 + collector * 5)) pool = ownedPool;
-  const item = pool[petRandomInt(pool.length)];
-  const current = profile.inventory.find((owned) => owned.id === item.id);
-  const droppedItem = petEquipmentWithProgress(item, (current?.count ?? 0) + 1, current);
-  const drop: PetDropEvent = { ...droppedItem, reason, duplicate: Boolean(current), at: new Date().toISOString() };
-  const inventory = current ? profile.inventory.map((owned) => owned.id === item.id ? droppedItem : owned) : [droppedItem, ...profile.inventory];
-  return { profile: normalizedPetProfile({ ...profile, inventory, total_drops: profile.total_drops + 1, drop_history: [drop, ...profile.drop_history].slice(0, 30) }), drop };
+  const pool = PET_EQUIPMENT_CATALOG.filter((item) => item.rarity === rarity);
+  const choices: PetDropChoice[] = [];
+  for (let index = 0; index < 3; index += 1) {
+    const selectedIndex = petRandomInt(pool.length);
+    const item = pool.splice(selectedIndex, 1)[0];
+    const current = profile.inventory.find((owned) => owned.id === item.id);
+    choices.push(localDropChoiceContext(profile, item, randomLocalEquipmentAffix(item, current?.level ?? 1, index)));
+  }
+  const pending: PetPendingDrop = { token: `local-${Date.now()}-${petRandomInt(1_000_000_000)}`, reason, at: new Date().toISOString(), choices };
+  return { profile: normalizedPetProfile({ ...profile, pending_drops: [...profile.pending_drops, pending].slice(-PET_MAX_PENDING_DROPS) }), drop: null as PetDropEvent | null, pending: true };
 }
 const dimensionsToText = (dimensions?: AnnotationDimension[]) => (dimensions?.length ? dimensions : DEFAULT_DIMENSIONS)
   .map((item) => [item.key, item.label, item.description ?? "", item.min ?? 1, item.max ?? 5, item.required === false ? "false" : "true"].join(" | "))
@@ -1611,6 +1680,39 @@ function PetCreatureVisual({ profile, accessory }: { profile: PetProfile; access
   </span>;
 }
 
+function PetDropChoiceModal({ pending, queueSize, busy, onClaim }: { pending?: PetPendingDrop; queueSize: number; busy: boolean; onClaim: (token: string, itemId: string) => void }) {
+  const [dismissedToken, setDismissedToken] = useState("");
+  if (!pending) return null;
+  if (dismissedToken === pending.token) return <button className="pet-drop-reopen" type="button" onClick={() => setDismissedToken("")}>装备待领取 · {queueSize} 组</button>;
+  const source = pending.reason === "pet" ? "摸摸" : pending.reason === "badcase" ? "Badcase" : "提交标注";
+  const recommendation = (choice: PetDropChoice) => {
+    if (!choice.is_new && choice.owned_level === PET_EQUIPMENT_MAX_LEVEL) return "满级洗练材料";
+    if (!choice.is_new && choice.count_after_claim >= 3) return "领取后可合成";
+    if ([2, 3, 5].includes(choice.theme_pieces_if_equipped)) return `换上可达 ${choice.theme_pieces_if_equipped} 件套`;
+    if (choice.is_new) return "图鉴新收录";
+    if (!choice.equipped_same_slot) return "可补齐空部位";
+    return "同名合成材料";
+  };
+  return <div className="pet-drop-backdrop" role="presentation">
+    <section className="pet-drop-modal" role="dialog" aria-modal="true" aria-label="装备掉落三选一">
+      <header><div><span>EQUIPMENT DROP</span><h2>{source}掉落 · 三选一</h2><p>候选稀有度相同；固定效果和仓库信息可见，随机词条将在领取后鉴定。</p></div><b>{queueSize > 1 ? `待领取 ${queueSize} 组` : "选择 1 件"}</b></header>
+      <div className="pet-drop-choice-grid">{pending.choices.map((choice) => <article className={`rarity-${choice.rarity}`} key={choice.id}>
+        <div className="pet-drop-choice-title"><i>{choice.symbol}</i><div><em>{PET_RARITY_LABELS[choice.rarity]} · {choice.slot_name}</em><strong>{choice.name}</strong><small>{choice.theme}主题 · 固定：{choice.effect_label} +{choice.effect_value}%</small></div><mark>{recommendation(choice)}</mark></div>
+        <div className="pet-drop-hidden-affix"><b>???</b><span>随机词条未鉴定<small>类型、数值及是否暴击，领取后揭晓</small></span></div>
+        <dl className="pet-drop-warehouse">
+          <div><dt>仓库同名</dt><dd>{choice.is_new ? "未收录" : `Lv.${choice.owned_level} · ×${choice.owned_count} · ${choice.owned_affix_count} 条词条`}</dd></div>
+          <div><dt>领取之后</dt><dd>{choice.owned_level === PET_EQUIPMENT_MAX_LEVEL ? `库存 ×${choice.count_after_claim}，可用于洗词条` : choice.count_after_claim >= 3 ? `库存 ×${choice.count_after_claim}，可以合成` : `库存 ×${choice.count_after_claim}，距合成还差 ${choice.materials_to_synthesize} 件`}</dd></div>
+          <div><dt>{choice.theme}主题</dt><dd>仓库 {choice.theme_owned_count} 种 · 已穿戴 {choice.theme_equipped_count} 件</dd></div>
+          <div><dt>套装判断</dt><dd>若换上为 {choice.theme_pieces_if_equipped} 件{choice.next_set_target ? `，下一档 ${choice.next_set_target} 件` : "，已达 5 件档"}</dd></div>
+          <div><dt>同部位当前</dt><dd>{choice.equipped_same_slot ? `${choice.equipped_same_slot.name} · Lv.${choice.equipped_same_slot.level} · 战力 ${choice.equipped_same_slot.power}` : "当前为空"}</dd></div>
+        </dl>
+        <button type="button" disabled={busy} onClick={() => onClaim(pending.token, choice.id)}>{busy ? "鉴定中…" : `选择并鉴定 ${choice.name}`}</button>
+      </article>)}</div>
+      <footer><span>未选择会保存在账号中，刷新页面也不会丢失。</span><small>领取一件后，其余两件自动消失。</small><button type="button" onClick={() => setDismissedToken(pending.token)}>稍后选择</button></footer>
+    </section>
+  </div>;
+}
+
 function CompanionPet({ visible, message, mood, completed, total, pulse, hasNext, profile, settingsOpen, draftName, busy, persistenceLabel, isAdmin, currentUserId, adminUsers, onPet, onEvolve, onEquip, onSynthesize, onReforge, onToggleSkill, onGiftTickets, onNext, onHide, onShow, onToggleSettings, onDraftName, onSelectColor, onSelectAccessory, onSaveProfile }: {
   visible: boolean;
   message: string;
@@ -1699,7 +1801,7 @@ function CompanionPet({ visible, message, mood, completed, total, pulse, hasNext
             </section> : null}
             {studioSection === "equipment" ? <section className="pet-collection-panel">
               <header><div><span>EQUIPMENT CODEX</span><h3>随机装备图鉴</h3></div><b>{profile.inventory.length} / {profile.equipment_catalog_size}</b></header>
-              <p>摸摸基础掉率约 3.5%，每个候选首次提交约 15%，首次标记 Badcase 可额外再抽一次。掉到同名装备只增加材料数量，不会自动升级；3 件同名装备可合成，洗词条需额外消耗 1 件同名装备。</p>
+              <p>摸摸基础掉率约 3.5%，每个候选首次提交约 15%，首次标记 Badcase 可额外再抽一次。触发掉落后从 3 件同稀有度装备中选择 1 件，随机词条领取后才鉴定；重复装备只增加材料和词条，不会自动升级。</p>
               <div className="pet-equipment-summary">
                 <div><span>当前战力</span><strong>{profile.equipment_stats.total_power}</strong><small>稀有度与等级共同决定</small></div>
                 <div><span>提交掉率加成</span><strong>+{profile.equipment_stats.all_drop_bonus + profile.equipment_stats.annotation_drop_bonus}%</strong><small>所有掉率 + 标注专属</small></div>
@@ -4118,7 +4220,7 @@ export default function Home() {
           const earned = awardLocalPetExperience([{ key: `${keyPrefix}${hourlyTouches + 1}`, amount: 0.2 }], `摸摸 · 本小时 ${formatXp((hourlyTouches + 1) * 0.2)}/2`);
           if (earned) {
             const rolled = rollLocalPetDrop(petProfileRef.current, "pet");
-            if (rolled.drop) { applyPetProfile(rolled.profile); wakePet(petEquipmentDropMessage(rolled.drop, "摸摸"), rolled.drop.rarity === "legendary" ? "proud" : "happy"); }
+            if (rolled.profile !== petProfileRef.current) { applyPetProfile(rolled.profile); wakePet("摸摸掉落了装备，快从 3 件中选 1 件！", "proud"); }
           }
         }
       }
@@ -4215,6 +4317,26 @@ export default function Home() {
       wakePet(`洗练完成：获得 ${result.affixes.length} 条随机词条${criticalCount ? `，其中 ${criticalCount} 条暴击` : ""}。`, criticalCount ? "proud" : "curious");
     } catch (error) {
       wakePet(error instanceof Error ? error.message : "洗词条失败", "worried");
+    } finally {
+      setPetBusy(false);
+    }
+  };
+
+  const claimPetDrop = async (token: string, itemId: string) => {
+    if (petBusy) return;
+    setPetBusy(true);
+    try {
+      const result = serverUser
+        ? await apiRequest<{ profile: PetProfile; drop: PetDropEvent; identified_affix: PetEquipmentAffix; affix_added: boolean }>("/api/pet/equipment/claim-drop", { method: "POST", body: JSON.stringify({ token, item_id: itemId }) })
+        : claimLocalPetDrop(petProfileRef.current, token, itemId);
+      applyPetProfile(result.profile);
+      const affix = result.identified_affix;
+      const value = `${affix.value}${affix.key === "rarity_boost" ? "" : "%"}`;
+      if (result.affix_added) wakePet(`已领取「${result.drop.name}」！鉴定出${affix.critical ? "暴击词条" : "词条"}：${affix.label} +${value}`, affix.critical || result.drop.rarity === "legendary" ? "proud" : "happy");
+      else wakePet(`已领取「${result.drop.name}」作为同名材料；原装备已有 24 条词条，本次鉴定词条未刻录。`, "curious");
+    } catch (error) {
+      wakePet(error instanceof Error ? error.message : "领取装备失败", "worried");
+      if (serverUser) void refreshPetProfile().catch(() => undefined);
     } finally {
       setPetBusy(false);
     }
@@ -4399,7 +4521,7 @@ export default function Home() {
       if (earned) {
         let rolled = rollLocalPetDrop(petProfileRef.current, "annotation");
         if (value.badcase && !rolled.drop) rolled = rollLocalPetDrop(rolled.profile, "badcase");
-        if (rolled.drop) { applyPetProfile(rolled.profile); wakePet(petEquipmentDropMessage(rolled.drop, "标注"), rolled.drop.rarity === "legendary" ? "proud" : "happy"); }
+        if (rolled.profile !== petProfileRef.current) { applyPetProfile(rolled.profile); wakePet("标注掉落了装备，快从 3 件中选 1 件！", "proud"); }
       }
     }
     if (isTeamSave && selected.__server_case_id) {
@@ -4888,6 +5010,7 @@ export default function Home() {
       onDragLeave={(event) => { if (event.currentTarget === event.target) setDragging(false); }}
       onDrop={onDrop}
     >
+      <PetDropChoiceModal pending={petProfile.pending_drops[0]} queueSize={petProfile.pending_drops.length} busy={petBusy} onClaim={(token, itemId) => void claimPetDrop(token, itemId)} />
       <header className="topbar">
         <div className="brand">
           <button className="mobile-menu" onClick={() => setSidebarOpen((open) => !open)} aria-label="打开 Case 列表">☰</button>

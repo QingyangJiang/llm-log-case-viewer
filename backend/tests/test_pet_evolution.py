@@ -157,6 +157,32 @@ class PetEvolutionTest(unittest.TestCase):
         with patch.object(api.secrets, "randbelow", return_value=1500):
             self.assertIsNone(api.maybe_drop_pet_equipment(collection, "annotation"))
 
+    def test_drop_creates_three_hidden_choices_and_claims_only_one(self) -> None:
+        _, _, _, collection = api.get_or_create_pet(self.db, self.user.id)
+        hidden_affixes = [
+            {"id": f"hidden-{index}", "key": "all_drop_bonus", "label": "所有装备掉率", "value": index + 1, "critical": index == 2}
+            for index in range(3)
+        ]
+        with patch.object(api, "pet_choose_rarity", return_value="common"), patch.object(api.secrets, "randbelow", return_value=0), patch.object(api.secrets, "choice", side_effect=lambda choices: choices[0]), patch.object(api.secrets, "token_hex", return_value="drop-token"), patch.object(api, "pet_random_affix", side_effect=hidden_affixes):
+            self.assertIsNone(api.maybe_drop_pet_equipment(collection, "annotation"))
+
+        pending = api.pet_pending_drops(collection)
+        public = api.pet_pending_drop_payload(collection)
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(len(public[0]["choices"]), 3)
+        self.assertEqual(len({choice["id"] for choice in public[0]["choices"]}), 3)
+        self.assertNotIn("hidden_affix", public[0]["choices"][0])
+        self.assertEqual(collection.total_drops, 0)
+
+        selected_id = public[0]["choices"][0]["id"]
+        drop, affix, added = api.claim_pet_drop_choice(collection, "drop-token", selected_id)
+        self.assertTrue(added)
+        self.assertEqual(affix["id"], "hidden-0")
+        self.assertEqual(drop["count"], 1)
+        self.assertEqual(drop["affixes"][0]["id"], "hidden-0")
+        self.assertEqual(collection.total_drops, 1)
+        self.assertEqual(api.pet_pending_drops(collection), [])
+
     def test_admin_can_gift_tickets_after_password_recheck(self) -> None:
         admin = api.User(username="admin-pet", display_name="Admin", password_hash=api.hash_password("ticket-secret"), role="admin")
         self.db.add(admin)
