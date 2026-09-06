@@ -179,7 +179,9 @@ class PetEvolution(Base):
 class PetCollection(Base):
     __tablename__ = "pet_collections"
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), primary_key=True)
-    inventory: Mapped[dict[str, int]] = mapped_column(JSON, default=dict)
+    # Legacy rows store item_id -> count. New rows keep count, level, affixes and
+    # synthesis pity in the same JSON column so no destructive migration is needed.
+    inventory: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     equipped: Mapped[dict[str, str]] = mapped_column(JSON, default=dict)
     skills: Mapped[dict[str, int]] = mapped_column(JSON, default=dict)
     active_skills: Mapped[list[str]] = mapped_column(JSON, default=list)
@@ -636,6 +638,10 @@ class PetEquipmentBody(BaseModel):
     item_id: str | None = Field(default=None, max_length=120)
 
 
+class PetEquipmentActionBody(BaseModel):
+    item_id: str = Field(min_length=1, max_length=120)
+
+
 class PetSkillsBody(BaseModel):
     active_skill_ids: list[str] = Field(default_factory=list, max_length=3)
 
@@ -701,7 +707,18 @@ PET_EQUIPMENT_EFFECTS = {
     "back": ("evolution_bonus", "单抽进化概率"),
     "tail": ("pet_drop_bonus", "摸摸掉率"),
 }
-PET_DROP_BASE_CHANCES = {"pet": 250, "annotation": 1200, "badcase": 1200}
+PET_EQUIPMENT_MAX_LEVEL = 10
+PET_EQUIPMENT_MAX_AFFIXES = 24
+PET_EQUIPMENT_SYNTHESIS_RATES = {1: 90, 2: 80, 3: 70, 4: 60, 5: 50, 6: 40, 7: 32, 8: 24, 9: 18}
+PET_EQUIPMENT_RANDOM_AFFIXES = {
+    "all_drop_bonus": "所有装备掉率",
+    "pet_drop_bonus": "摸摸掉率",
+    "annotation_drop_bonus": "提交标注掉率",
+    "badcase_drop_bonus": "Badcase 掉率",
+    "evolution_bonus": "单抽进化概率",
+    "rarity_boost": "稀有装备权重",
+}
+PET_DROP_BASE_CHANCES = {"pet": 350, "annotation": 1500, "badcase": 1500}
 PET_SKILLS: dict[str, dict[str, Any]] = {
     "lucky_nose": {"name": "幸运鼻尖", "icon": "✦", "description": "所有装备掉率 +1%/级"},
     "treasure_paws": {"name": "寻宝肉垫", "icon": "◇", "description": "摸摸装备掉率 +2%/级"},
@@ -709,7 +726,7 @@ PET_SKILLS: dict[str, dict[str, Any]] = {
     "badcase_hunter": {"name": "异常猎手", "icon": "!", "description": "发现 Badcase 装备掉率 +3%/级"},
     "evolution_echo": {"name": "进化回声", "icon": "↟", "description": "单抽成功率 +1%/级"},
     "star_magnet": {"name": "星屑磁场", "icon": "※", "description": "稀有以上装备权重提升"},
-    "collector": {"name": "图鉴学者", "icon": "▦", "description": "重复装备更容易升为高稀有度"},
+    "collector": {"name": "图鉴学者", "icon": "▦", "description": "同名装备材料倾向 +5%/级"},
     "steady_heart": {"name": "稳定之心", "icon": "♥", "description": "连续失败的保底增幅 +1%/级"},
 }
 
@@ -778,12 +795,58 @@ def pet_active_skill_level(collection: PetCollection, skill_id: str) -> int:
     return int((collection.skills or {}).get(skill_id, 0)) if skill_id in (collection.active_skills or []) else 0
 
 
-def pet_equipment_level(count: int) -> int:
-    return min(5, max(1, int(count)))
+def pet_inventory_entry(raw: Any) -> dict[str, Any]:
+    if isinstance(raw, dict):
+        count = max(0, int(raw.get("count", 0) or 0))
+        level = min(PET_EQUIPMENT_MAX_LEVEL, max(1, int(raw.get("level", 1) or 1)))
+        failures = max(0, min(20, int(raw.get("synthesis_failures", 0) or 0)))
+        affixes = []
+        for affix in raw.get("affixes", []) if isinstance(raw.get("affixes"), list) else []:
+            if not isinstance(affix, dict) or affix.get("key") not in PET_EQUIPMENT_RANDOM_AFFIXES:
+                continue
+            key = str(affix["key"])
+            affixes.append({
+                "id": str(affix.get("id") or f"affix-{len(affixes) + 1}"),
+                "key": key,
+                "label": PET_EQUIPMENT_RANDOM_AFFIXES[key],
+                "value": max(1, min(99, int(affix.get("value", 1) or 1))),
+                "critical": bool(affix.get("critical", False)),
+            })
+            if len(affixes) >= PET_EQUIPMENT_MAX_AFFIXES:
+                break
+        return {"count": count, "level": level, "affixes": affixes, "synthesis_failures": failures}
+    # Preserve the level shown by the previous duplicate-count progression.
+    count = max(0, int(raw or 0))
+    return {"count": count, "level": min(5, max(1, count)), "affixes": [], "synthesis_failures": 0}
 
 
-def pet_equipment_effect(item: dict[str, Any], count: int) -> dict[str, Any]:
-    level = pet_equipment_level(count)
+def pet_synthesis_success_rate(entry: dict[str, Any]) -> int:
+    level = min(PET_EQUIPMENT_MAX_LEVEL, max(1, int(entry.get("level", 1))))
+    if level >= PET_EQUIPMENT_MAX_LEVEL:
+        return 0
+    return min(95, PET_EQUIPMENT_SYNTHESIS_RATES[level] + min(30, int(entry.get("synthesis_failures", 0)) * 5))
+
+
+def pet_random_affix(item: dict[str, Any], level: int, index: int) -> dict[str, Any]:
+    key = secrets.choice(tuple(PET_EQUIPMENT_RANDOM_AFFIXES))
+    rarity_power = PET_EQUIPMENT_RARITY_POWER.get(str(item.get("rarity")), 1)
+    ceiling = max(1, 1 + (rarity_power - 1) // 2 + max(0, level - 1) // 3)
+    value = secrets.randbelow(ceiling) + 1
+    critical = secrets.randbelow(100) < 18
+    if critical:
+        value *= 2
+    return {
+        "id": f"affix-{secrets.randbelow(1_000_000_000):09d}-{index}",
+        "key": key,
+        "label": PET_EQUIPMENT_RANDOM_AFFIXES[key],
+        "value": value,
+        "critical": critical,
+    }
+
+
+def pet_equipment_effect(item: dict[str, Any], raw_entry: Any) -> dict[str, Any]:
+    entry = pet_inventory_entry(raw_entry)
+    level = int(entry["level"])
     power = PET_EQUIPMENT_RARITY_POWER.get(str(item.get("rarity")), 1) + level - 1
     effect_key, effect_label = PET_EQUIPMENT_EFFECTS[str(item["slot"])]
     if effect_key == "all_drop_bonus":
@@ -796,13 +859,15 @@ def pet_equipment_effect(item: dict[str, Any], count: int) -> dict[str, Any]:
         effect_value = power
     return {
         **item,
-        "count": int(count),
+        "count": int(entry["count"]),
         "level": level,
-        "power": power,
+        "power": power + len(entry["affixes"]),
         "effect_key": effect_key,
         "effect_label": effect_label,
         "effect_value": effect_value,
-        "next_level_count": level + 1 if level < 5 else None,
+        "affixes": entry["affixes"],
+        "synthesis_failures": entry["synthesis_failures"],
+        "synthesis_success_rate": pet_synthesis_success_rate(entry),
     }
 
 
@@ -820,12 +885,14 @@ def pet_equipment_state(collection: PetCollection) -> tuple[dict[str, int], list
     inventory = collection.inventory or {}
     for slot, item_id in (collection.equipped or {}).items():
         item = PET_EQUIPMENT_CATALOG.get(item_id)
-        count = int(inventory.get(item_id, 0))
-        if not item or item["slot"] != slot or count < 1:
+        entry = pet_inventory_entry(inventory.get(item_id, 0))
+        if not item or item["slot"] != slot or entry["count"] < 1:
             continue
-        enriched = pet_equipment_effect(item, count)
+        enriched = pet_equipment_effect(item, entry)
         stats["total_power"] += int(enriched["power"])
         stats[str(enriched["effect_key"])] += int(enriched["effect_value"])
+        for affix in enriched["affixes"]:
+            stats[str(affix["key"])] += int(affix["value"])
         theme = str(item["theme"])
         theme_counts[theme] = theme_counts.get(theme, 0) + 1
     sets: list[dict[str, Any]] = []
@@ -854,9 +921,9 @@ def pet_evolution_success_rate(collection: PetCollection) -> int:
 def pet_collection_payload(collection: PetCollection) -> dict[str, Any]:
     inventory = collection.inventory or {}
     inventory_items = [
-        pet_equipment_effect(PET_EQUIPMENT_CATALOG[item_id], int(count))
-        for item_id, count in inventory.items()
-        if item_id in PET_EQUIPMENT_CATALOG and int(count) > 0
+        pet_equipment_effect(PET_EQUIPMENT_CATALOG[item_id], raw_entry)
+        for item_id, raw_entry in inventory.items()
+        if item_id in PET_EQUIPMENT_CATALOG and pet_inventory_entry(raw_entry)["count"] > 0
     ]
     rarity_rank = {"legendary": 0, "epic": 1, "rare": 2, "uncommon": 3, "common": 4}
     inventory_items.sort(key=lambda item: (rarity_rank.get(item["rarity"], 9), item["name"]))
@@ -940,23 +1007,57 @@ def maybe_drop_pet_equipment(collection: PetCollection, reason: str) -> dict[str
     if secrets.randbelow(10_000) >= min(7500, base_chance):
         return None
     rarity = pet_choose_rarity(collection)
-    candidates = [item for item in PET_EQUIPMENT_CATALOG.values() if item["rarity"] == rarity]
-    item = dict(secrets.choice(candidates))
     inventory = dict(collection.inventory or {})
-    duplicate = int(inventory.get(item["id"], 0)) > 0
     collector_level = pet_active_skill_level(collection, "collector")
-    rarity_order = ["common", "uncommon", "rare", "epic", "legendary"]
-    if duplicate and collector_level and rarity != "legendary" and secrets.randbelow(100) < collector_level * 15:
-        rarity = rarity_order[rarity_order.index(rarity) + 1]
-        item = dict(secrets.choice([candidate for candidate in PET_EQUIPMENT_CATALOG.values() if candidate["rarity"] == rarity]))
-        duplicate = int(inventory.get(item["id"], 0)) > 0
-    inventory[item["id"]] = int(inventory.get(item["id"], 0)) + 1
-    event = {**pet_equipment_effect(item, inventory[item["id"]]), "reason": reason, "duplicate": duplicate, "at": utcnow().isoformat()}
+    candidates = [item for item in PET_EQUIPMENT_CATALOG.values() if item["rarity"] == rarity]
+    owned_candidates = [item for item in candidates if pet_inventory_entry(inventory.get(item["id"], 0))["count"] > 0]
+    duplicate_bias = min(60, 25 + collector_level * 5)
+    pool = owned_candidates if owned_candidates and secrets.randbelow(100) < duplicate_bias else candidates
+    item = dict(secrets.choice(pool))
+    entry = pet_inventory_entry(inventory.get(item["id"], 0))
+    duplicate = entry["count"] > 0
+    entry["count"] += 1
+    inventory[item["id"]] = entry
+    event = {**pet_equipment_effect(item, entry), "reason": reason, "duplicate": duplicate, "at": utcnow().isoformat()}
     collection.inventory = inventory
     collection.drop_history = [event, *(collection.drop_history or [])][:30]
     collection.total_drops += 1
     collection.updated_at = utcnow()
     return event
+
+
+def synthesize_pet_equipment_entry(item: dict[str, Any], raw_entry: Any) -> tuple[dict[str, Any], bool, int, list[dict[str, Any]]]:
+    entry = pet_inventory_entry(raw_entry)
+    if entry["count"] < 3:
+        raise ValueError("需要至少 3 件同名装备才能合成")
+    if entry["level"] >= PET_EQUIPMENT_MAX_LEVEL:
+        raise ValueError("这件装备已经达到 Lv.10")
+    success_rate = pet_synthesis_success_rate(entry)
+    entry["count"] -= 2
+    success = secrets.randbelow(100) < success_rate
+    gained_affixes: list[dict[str, Any]] = []
+    if success:
+        entry["level"] += 1
+        entry["synthesis_failures"] = 0
+        gained_affixes.append(pet_random_affix(item, entry["level"], len(entry["affixes"])))
+        if len(entry["affixes"]) + len(gained_affixes) < PET_EQUIPMENT_MAX_AFFIXES and secrets.randbelow(100) < 15:
+            gained_affixes.append(pet_random_affix(item, entry["level"], len(entry["affixes"]) + 1))
+        entry["affixes"] = [*entry["affixes"], *gained_affixes][:PET_EQUIPMENT_MAX_AFFIXES]
+    else:
+        entry["synthesis_failures"] = min(20, entry["synthesis_failures"] + 1)
+    return entry, success, success_rate, gained_affixes
+
+
+def reforge_pet_equipment_entry(item: dict[str, Any], raw_entry: Any) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    entry = pet_inventory_entry(raw_entry)
+    if entry["count"] < 2:
+        raise ValueError("洗词条需要额外消耗 1 件同名装备")
+    entry["count"] -= 1
+    affix_count = max(1, len(entry["affixes"]))
+    if affix_count < PET_EQUIPMENT_MAX_AFFIXES and secrets.randbelow(100) < 15:
+        affix_count += 1
+    entry["affixes"] = [pet_random_affix(item, entry["level"], index) for index in range(affix_count)]
+    return entry, entry["affixes"]
 
 
 def awaken_pet_skill(collection: PetCollection) -> dict[str, Any]:
@@ -975,6 +1076,9 @@ def awaken_pet_skill(collection: PetCollection) -> dict[str, Any]:
 
 def grant_pet_experience(db: Session, user_id: int, reason: str, event_key: str) -> tuple[PetProfile, PetProgressV2, PetEvolution, PetCollection, bool, float, dict[str, Any] | None]:
     profile, progress, evolution, collection = get_or_create_pet(db, user_id)
+    # Serialize inventory changes so simultaneous candidate submissions cannot
+    # overwrite one another's equipment drops.
+    collection = db.scalar(select(PetCollection).where(PetCollection.user_id == user_id).with_for_update().execution_options(populate_existing=True)) or collection
     if db.scalar(select(PetExperienceEvent.id).where(PetExperienceEvent.user_id == user_id, PetExperienceEvent.event_key == event_key)):
         return profile, progress, evolution, collection, False, 0, None
     units = PET_XP_UNITS[reason]
@@ -2242,7 +2346,7 @@ def equip_pet_item(body: PetEquipmentBody, user: CurrentUser, db: DB) -> dict[st
         item = PET_EQUIPMENT_CATALOG.get(body.item_id)
         if not item or item["slot"] != body.slot:
             raise HTTPException(422, "装备与部位不匹配")
-        if int((collection.inventory or {}).get(body.item_id, 0)) < 1:
+        if pet_inventory_entry((collection.inventory or {}).get(body.item_id, 0))["count"] < 1:
             raise HTTPException(422, "尚未获得这件装备")
         equipped[body.slot] = body.item_id
     else:
@@ -2251,6 +2355,49 @@ def equip_pet_item(body: PetEquipmentBody, user: CurrentUser, db: DB) -> dict[st
     collection.updated_at = utcnow()
     db.commit()
     return pet_dict(profile, progress, evolution, collection)
+
+
+@app.post("/api/pet/equipment/synthesize")
+def synthesize_pet_item(body: PetEquipmentActionBody, user: CurrentUser, db: DB) -> dict[str, Any]:
+    profile, progress, evolution, collection = get_or_create_pet(db, user.id)
+    collection = db.scalar(select(PetCollection).where(PetCollection.user_id == user.id).with_for_update().execution_options(populate_existing=True)) or collection
+    item = PET_EQUIPMENT_CATALOG.get(body.item_id)
+    if not item:
+        raise HTTPException(422, "未知的装备")
+    inventory = dict(collection.inventory or {})
+    try:
+        entry, success, success_rate, gained_affixes = synthesize_pet_equipment_entry(item, inventory.get(body.item_id, 0))
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    inventory[body.item_id] = entry
+    collection.inventory = inventory
+    collection.updated_at = utcnow()
+    db.commit()
+    return {
+        "profile": pet_dict(profile, progress, evolution, collection),
+        "success": success,
+        "success_rate": success_rate,
+        "gained_affixes": gained_affixes,
+    }
+
+
+@app.post("/api/pet/equipment/reforge")
+def reforge_pet_item(body: PetEquipmentActionBody, user: CurrentUser, db: DB) -> dict[str, Any]:
+    profile, progress, evolution, collection = get_or_create_pet(db, user.id)
+    collection = db.scalar(select(PetCollection).where(PetCollection.user_id == user.id).with_for_update().execution_options(populate_existing=True)) or collection
+    item = PET_EQUIPMENT_CATALOG.get(body.item_id)
+    if not item:
+        raise HTTPException(422, "未知的装备")
+    inventory = dict(collection.inventory or {})
+    try:
+        entry, affixes = reforge_pet_equipment_entry(item, inventory.get(body.item_id, 0))
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    inventory[body.item_id] = entry
+    collection.inventory = inventory
+    collection.updated_at = utcnow()
+    db.commit()
+    return {"profile": pet_dict(profile, progress, evolution, collection), "affixes": affixes}
 
 
 @app.put("/api/pet/skills")

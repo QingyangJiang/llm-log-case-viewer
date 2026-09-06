@@ -93,7 +93,7 @@ class PetEvolutionTest(unittest.TestCase):
         self.assertEqual(len(api.PET_EQUIPMENT_CATALOG), 300)
         self.assertEqual(len({item["id"] for item in api.PET_EQUIPMENT_CATALOG.values()}), 300)
 
-    def test_equipment_duplicates_raise_level_and_activate_set_bonuses(self) -> None:
+    def test_legacy_equipment_levels_are_preserved_and_activate_set_bonuses(self) -> None:
         _, _, _, collection = api.get_or_create_pet(self.db, self.user.id)
         item_ids = ["gear-01-1-1", "gear-01-2-2", "gear-01-3-3", "gear-01-4-4", "gear-01-5-5"]
         collection.inventory = dict(zip(item_ids, [1, 3, 5, 5, 5]))
@@ -111,10 +111,50 @@ class PetEvolutionTest(unittest.TestCase):
         self.assertEqual(payload["equipment_sets"][0]["pieces"], 5)
         self.assertEqual(len(payload["equipment_sets"][0]["bonuses"]), 3)
 
-    def test_annotation_drop_base_chance_is_twelve_percent(self) -> None:
+    def test_new_inventory_entries_do_not_auto_level_from_duplicate_count(self) -> None:
+        item = api.PET_EQUIPMENT_CATALOG["gear-01-1-1"]
+        entry = {"count": 7, "level": 2, "affixes": [], "synthesis_failures": 0}
+        payload = api.pet_equipment_effect(item, entry)
+        self.assertEqual(payload["count"], 7)
+        self.assertEqual(payload["level"], 2)
+
+    def test_synthesis_consumes_two_materials_and_has_failure_pity(self) -> None:
+        item = api.PET_EQUIPMENT_CATALOG["gear-01-1-1"]
+        raw_entry = {"count": 5, "level": 1, "affixes": [], "synthesis_failures": 0}
+        generated = {"id": "affix-test", "key": "all_drop_bonus", "label": "所有装备掉率", "value": 2, "critical": True}
+        with patch.object(api.secrets, "randbelow", side_effect=[0, 99]), patch.object(api, "pet_random_affix", return_value=generated):
+            entry, success, success_rate, affixes = api.synthesize_pet_equipment_entry(item, raw_entry)
+        self.assertTrue(success)
+        self.assertEqual(success_rate, 90)
+        self.assertEqual(entry["count"], 3)
+        self.assertEqual(entry["level"], 2)
+        self.assertEqual(affixes, [generated])
+
+        with patch.object(api.secrets, "randbelow", return_value=99):
+            failed, success, success_rate, affixes = api.synthesize_pet_equipment_entry(item, {**entry, "count": 3})
+        self.assertFalse(success)
+        self.assertEqual(success_rate, 80)
+        self.assertEqual(failed["count"], 1)
+        self.assertEqual(failed["level"], 2)
+        self.assertEqual(failed["synthesis_failures"], 1)
+        self.assertEqual(failed["affixes"], [generated])
+        self.assertEqual(affixes, [])
+        self.assertEqual(api.pet_synthesis_success_rate(failed), 85)
+
+    def test_reforge_keeps_level_and_can_add_many_random_affixes(self) -> None:
+        item = api.PET_EQUIPMENT_CATALOG["gear-01-1-1"]
+        raw_entry = {"count": 4, "level": 6, "affixes": [{"id": "old", "key": "pet_drop_bonus", "value": 1}], "synthesis_failures": 2}
+        with patch.object(api.secrets, "randbelow", return_value=0), patch.object(api, "pet_random_affix", side_effect=lambda _item, _level, index: {"id": f"new-{index}", "key": "rarity_boost", "label": "稀有装备权重", "value": index + 1, "critical": False}):
+            entry, affixes = api.reforge_pet_equipment_entry(item, raw_entry)
+        self.assertEqual(entry["count"], 3)
+        self.assertEqual(entry["level"], 6)
+        self.assertEqual(entry["synthesis_failures"], 2)
+        self.assertEqual(len(affixes), 2)
+
+    def test_annotation_drop_base_chance_is_fifteen_percent(self) -> None:
         _, _, _, collection = api.get_or_create_pet(self.db, self.user.id)
-        self.assertEqual(api.PET_DROP_BASE_CHANCES["annotation"], 1200)
-        with patch.object(api.secrets, "randbelow", return_value=1200):
+        self.assertEqual(api.PET_DROP_BASE_CHANCES["annotation"], 1500)
+        with patch.object(api.secrets, "randbelow", return_value=1500):
             self.assertIsNone(api.maybe_drop_pet_equipment(collection, "annotation"))
 
     def test_admin_can_gift_tickets_after_password_recheck(self) -> None:
