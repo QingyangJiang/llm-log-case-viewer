@@ -693,6 +693,15 @@ PET_EVOLUTION_PATH_LOTTERY = ["starlight"] * 16 + ["guardian"] * 15 + ["forest"]
 PET_EQUIPMENT_SLOTS = {"head": ("头饰", "♛"), "face": ("面饰", "◉"), "neck": ("颈饰", "✦"), "back": ("背饰", "⌁"), "tail": ("尾饰", "◇")}
 PET_EQUIPMENT_THEMES = ["星尘", "森林", "雷云", "海盐", "琥珀", "月影", "霓虹", "机械", "云朵", "蜂蜜", "像素", "纸片"]
 PET_EQUIPMENT_AFFIXES = [("微光", "common"), ("鲜活", "uncommon"), ("幻彩", "rare"), ("秘仪", "epic"), ("神话", "legendary")]
+PET_EQUIPMENT_RARITY_POWER = {"common": 1, "uncommon": 2, "rare": 3, "epic": 4, "legendary": 5}
+PET_EQUIPMENT_EFFECTS = {
+    "head": ("all_drop_bonus", "所有装备掉率"),
+    "face": ("badcase_drop_bonus", "Badcase 掉率"),
+    "neck": ("annotation_drop_bonus", "提交标注掉率"),
+    "back": ("evolution_bonus", "单抽进化概率"),
+    "tail": ("pet_drop_bonus", "摸摸掉率"),
+}
+PET_DROP_BASE_CHANCES = {"pet": 250, "annotation": 1200, "badcase": 1200}
 PET_SKILLS: dict[str, dict[str, Any]] = {
     "lucky_nose": {"name": "幸运鼻尖", "icon": "✦", "description": "所有装备掉率 +1%/级"},
     "treasure_paws": {"name": "寻宝肉垫", "icon": "◇", "description": "摸摸装备掉率 +2%/级"},
@@ -711,12 +720,11 @@ def pet_equipment_catalog() -> dict[str, dict[str, str]]:
         for slot_index, (slot, (slot_name, symbol)) in enumerate(PET_EQUIPMENT_SLOTS.items()):
             for affix_index, (affix, rarity) in enumerate(PET_EQUIPMENT_AFFIXES):
                 item_id = f"gear-{theme_index + 1:02d}-{slot_index + 1}-{affix_index + 1}"
-                catalog[item_id] = {"id": item_id, "name": f"{affix}{theme}{slot_name}", "slot": slot, "slot_name": slot_name, "symbol": symbol, "rarity": rarity}
+                catalog[item_id] = {"id": item_id, "name": f"{affix}{theme}{slot_name}", "slot": slot, "slot_name": slot_name, "symbol": symbol, "rarity": rarity, "theme": theme}
     return catalog
 
 
 PET_EQUIPMENT_CATALOG = pet_equipment_catalog()
-PET_RARITY_WEIGHTS = [("common", 60), ("uncommon", 25), ("rare", 10), ("epic", 4), ("legendary", 1)]
 
 
 def pet_level_start_xp(level: int) -> int:
@@ -770,16 +778,83 @@ def pet_active_skill_level(collection: PetCollection, skill_id: str) -> int:
     return int((collection.skills or {}).get(skill_id, 0)) if skill_id in (collection.active_skills or []) else 0
 
 
+def pet_equipment_level(count: int) -> int:
+    return min(5, max(1, int(count)))
+
+
+def pet_equipment_effect(item: dict[str, Any], count: int) -> dict[str, Any]:
+    level = pet_equipment_level(count)
+    power = PET_EQUIPMENT_RARITY_POWER.get(str(item.get("rarity")), 1) + level - 1
+    effect_key, effect_label = PET_EQUIPMENT_EFFECTS[str(item["slot"])]
+    if effect_key == "all_drop_bonus":
+        effect_value = (power + 1) // 2
+    elif effect_key == "annotation_drop_bonus":
+        effect_value = (power * 3 + 3) // 4
+    elif effect_key == "evolution_bonus":
+        effect_value = (power + 2) // 3
+    else:
+        effect_value = power
+    return {
+        **item,
+        "count": int(count),
+        "level": level,
+        "power": power,
+        "effect_key": effect_key,
+        "effect_label": effect_label,
+        "effect_value": effect_value,
+        "next_level_count": level + 1 if level < 5 else None,
+    }
+
+
+def pet_equipment_state(collection: PetCollection) -> tuple[dict[str, int], list[dict[str, Any]]]:
+    stats = {
+        "total_power": 0,
+        "all_drop_bonus": 0,
+        "pet_drop_bonus": 0,
+        "annotation_drop_bonus": 0,
+        "badcase_drop_bonus": 0,
+        "evolution_bonus": 0,
+        "rarity_boost": 0,
+    }
+    theme_counts: dict[str, int] = {}
+    inventory = collection.inventory or {}
+    for slot, item_id in (collection.equipped or {}).items():
+        item = PET_EQUIPMENT_CATALOG.get(item_id)
+        count = int(inventory.get(item_id, 0))
+        if not item or item["slot"] != slot or count < 1:
+            continue
+        enriched = pet_equipment_effect(item, count)
+        stats["total_power"] += int(enriched["power"])
+        stats[str(enriched["effect_key"])] += int(enriched["effect_value"])
+        theme = str(item["theme"])
+        theme_counts[theme] = theme_counts.get(theme, 0) + 1
+    sets: list[dict[str, Any]] = []
+    for theme, pieces in sorted(theme_counts.items(), key=lambda entry: (-entry[1], entry[0])):
+        bonuses: list[str] = []
+        if pieces >= 2:
+            stats["all_drop_bonus"] += 1
+            bonuses.append("2件：所有装备掉率 +1%")
+        if pieces >= 3:
+            stats["rarity_boost"] += 1
+            bonuses.append("3件：稀有装备权重提升")
+        if pieces >= 5:
+            stats["evolution_bonus"] += 3
+            bonuses.append("5件：单抽进化概率 +3%")
+        sets.append({"theme": theme, "name": f"{theme}共鸣", "pieces": pieces, "bonuses": bonuses})
+    return stats, sets
+
+
 def pet_evolution_success_rate(collection: PetCollection) -> int:
     echo = pet_active_skill_level(collection, "evolution_echo")
     steady = pet_active_skill_level(collection, "steady_heart")
-    return min(45, 10 + echo + min(30, collection.pity * (2 + steady)))
+    equipment_stats, _ = pet_equipment_state(collection)
+    return min(55, 10 + echo + min(30, collection.pity * (2 + steady)) + equipment_stats["evolution_bonus"])
 
 
 def pet_collection_payload(collection: PetCollection) -> dict[str, Any]:
     inventory = collection.inventory or {}
     inventory_items = [
-        {**PET_EQUIPMENT_CATALOG[item_id], "count": int(count)}
+        pet_equipment_effect(PET_EQUIPMENT_CATALOG[item_id], int(count))
         for item_id, count in inventory.items()
         if item_id in PET_EQUIPMENT_CATALOG and int(count) > 0
     ]
@@ -789,10 +864,13 @@ def pet_collection_payload(collection: PetCollection) -> dict[str, Any]:
         {"id": skill_id, **definition, "level": int((collection.skills or {}).get(skill_id, 0)), "active": skill_id in (collection.active_skills or [])}
         for skill_id, definition in PET_SKILLS.items()
     ]
+    equipment_stats, equipment_sets = pet_equipment_state(collection)
     return {
         "equipment_catalog_size": len(PET_EQUIPMENT_CATALOG),
         "inventory": inventory_items,
         "equipped": collection.equipped or {},
+        "equipment_stats": equipment_stats,
+        "equipment_sets": equipment_sets,
         "skills": skills,
         "active_skills": collection.active_skills or [],
         "drop_history": collection.drop_history or [],
@@ -828,10 +906,15 @@ def pet_dict(profile: PetProfile, progress: PetProgressV2, evolution: PetEvoluti
 
 
 def pet_choose_rarity(collection: PetCollection) -> str:
-    weights = list(PET_RARITY_WEIGHTS)
-    if pet_active_skill_level(collection, "star_magnet"):
-        boost = pet_active_skill_level(collection, "star_magnet") * 2
-        weights = [(rarity, max(1, weight - boost * 2) if rarity == "common" else weight + boost if rarity in {"rare", "epic", "legendary"} else weight) for rarity, weight in weights]
+    equipment_stats, _ = pet_equipment_state(collection)
+    rarity_boost = pet_active_skill_level(collection, "star_magnet") + equipment_stats["rarity_boost"]
+    weights = [
+        ("common", max(30, 60 - rarity_boost * 4)),
+        ("uncommon", 25),
+        ("rare", 10 + rarity_boost * 2),
+        ("epic", 4 + rarity_boost),
+        ("legendary", 1 + rarity_boost),
+    ]
     draw = secrets.randbelow(sum(weight for _, weight in weights))
     for rarity, weight in weights:
         if draw < weight:
@@ -841,14 +924,19 @@ def pet_choose_rarity(collection: PetCollection) -> str:
 
 
 def maybe_drop_pet_equipment(collection: PetCollection, reason: str) -> dict[str, Any] | None:
-    base_chance = {"pet": 250, "annotation": 1800, "badcase": 1200}.get(reason, 0)
+    equipment_stats, _ = pet_equipment_state(collection)
+    base_chance = PET_DROP_BASE_CHANCES.get(reason, 0)
     base_chance += pet_active_skill_level(collection, "lucky_nose") * 100
+    base_chance += equipment_stats["all_drop_bonus"] * 100
     if reason == "pet":
         base_chance += pet_active_skill_level(collection, "treasure_paws") * 200
+        base_chance += equipment_stats["pet_drop_bonus"] * 100
     elif reason == "annotation":
         base_chance += pet_active_skill_level(collection, "case_insight") * 200
+        base_chance += equipment_stats["annotation_drop_bonus"] * 100
     elif reason == "badcase":
         base_chance += pet_active_skill_level(collection, "badcase_hunter") * 300
+        base_chance += equipment_stats["badcase_drop_bonus"] * 100
     if secrets.randbelow(10_000) >= min(7500, base_chance):
         return None
     rarity = pet_choose_rarity(collection)
@@ -863,7 +951,7 @@ def maybe_drop_pet_equipment(collection: PetCollection, reason: str) -> dict[str
         item = dict(secrets.choice([candidate for candidate in PET_EQUIPMENT_CATALOG.values() if candidate["rarity"] == rarity]))
         duplicate = int(inventory.get(item["id"], 0)) > 0
     inventory[item["id"]] = int(inventory.get(item["id"], 0)) + 1
-    event = {**item, "reason": reason, "duplicate": duplicate, "at": utcnow().isoformat()}
+    event = {**pet_equipment_effect(item, inventory[item["id"]]), "reason": reason, "duplicate": duplicate, "at": utcnow().isoformat()}
     collection.inventory = inventory
     collection.drop_history = [event, *(collection.drop_history or [])][:30]
     collection.total_drops += 1

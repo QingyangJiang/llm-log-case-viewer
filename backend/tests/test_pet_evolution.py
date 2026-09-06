@@ -53,7 +53,7 @@ class PetEvolutionTest(unittest.TestCase):
         self.assertEqual(result["profile"]["evolution_chances"], 1)
         self.assertEqual(result["profile"]["evolution_stage"], 0)
 
-    def test_five_chances_guarantee_success_and_later_stages_keep_path(self) -> None:
+    def test_five_chances_guarantee_success_and_reroute_from_stage_one(self) -> None:
         _, _, evolution, _ = api.get_or_create_pet(self.db, self.user.id)
         evolution.available_chances = 10
         self.db.commit()
@@ -64,23 +64,25 @@ class PetEvolutionTest(unittest.TestCase):
         self.assertEqual(first["profile"]["evolution_path"], "wonky")
         self.assertEqual(first["profile"]["evolution_stage"], 1)
 
-        with patch.object(api.secrets, "choice", side_effect=["歪斜尾鳍", "treasure_paws"]), patch.object(api.secrets, "randbelow", side_effect=[50, 3]):
+        with patch.object(api.secrets, "choice", side_effect=["forest", "新芽鹿角", "treasure_paws"]), patch.object(api.secrets, "randbelow", side_effect=[3]):
             second = api.evolve_pet(api.PetEvolutionBody(spend=5), self.user, self.db)
         self.assertTrue(second["success"])
-        self.assertEqual(second["profile"]["evolution_path"], "wonky")
-        self.assertEqual(second["profile"]["evolution_stage"], 2)
-        self.assertEqual(second["profile"]["evolution_traits"], ["参差尖牙", "歪斜尾鳍"])
+        self.assertTrue(second["route_reset"])
+        self.assertEqual(second["previous_path"], "wonky")
+        self.assertEqual(second["profile"]["evolution_path"], "forest")
+        self.assertEqual(second["profile"]["evolution_stage"], 1)
+        self.assertEqual(second["profile"]["evolution_traits"], ["新芽鹿角"])
 
     def test_evolution_has_no_three_stage_cap_and_builds_on_same_path(self) -> None:
         _, _, evolution, _ = api.get_or_create_pet(self.db, self.user.id)
-        evolution.available_chances = 5
+        evolution.available_chances = 1
         evolution.stage = 12
         evolution.path = "forest"
         evolution.traits = ["旧特征"]
         self.db.commit()
 
-        with patch.object(api.secrets, "choice", side_effect=["森神化身", "collector"]), patch.object(api.secrets, "randbelow", side_effect=[50, 5]):
-            result = api.evolve_pet(api.PetEvolutionBody(spend=5), self.user, self.db)
+        with patch.object(api.secrets, "choice", side_effect=["森神化身", "collector"]), patch.object(api.secrets, "randbelow", side_effect=[0, 50, 5]):
+            result = api.evolve_pet(api.PetEvolutionBody(spend=1), self.user, self.db)
 
         self.assertTrue(result["success"])
         self.assertEqual(result["profile"]["evolution_path"], "forest")
@@ -90,6 +92,30 @@ class PetEvolutionTest(unittest.TestCase):
     def test_equipment_catalog_contains_three_hundred_items(self) -> None:
         self.assertEqual(len(api.PET_EQUIPMENT_CATALOG), 300)
         self.assertEqual(len({item["id"] for item in api.PET_EQUIPMENT_CATALOG.values()}), 300)
+
+    def test_equipment_duplicates_raise_level_and_activate_set_bonuses(self) -> None:
+        _, _, _, collection = api.get_or_create_pet(self.db, self.user.id)
+        item_ids = ["gear-01-1-1", "gear-01-2-2", "gear-01-3-3", "gear-01-4-4", "gear-01-5-5"]
+        collection.inventory = dict(zip(item_ids, [1, 3, 5, 5, 5]))
+        collection.equipped = dict(zip(api.PET_EQUIPMENT_SLOTS, item_ids))
+
+        payload = api.pet_collection_payload(collection)
+        levels = {item["id"]: item["level"] for item in payload["inventory"]}
+        self.assertEqual(levels["gear-01-1-1"], 1)
+        self.assertEqual(levels["gear-01-2-2"], 3)
+        self.assertEqual(levels["gear-01-3-3"], 5)
+        self.assertEqual(payload["equipment_stats"]["total_power"], 29)
+        self.assertEqual(payload["equipment_stats"]["all_drop_bonus"], 2)
+        self.assertEqual(payload["equipment_stats"]["rarity_boost"], 1)
+        self.assertEqual(payload["equipment_stats"]["evolution_bonus"], 6)
+        self.assertEqual(payload["equipment_sets"][0]["pieces"], 5)
+        self.assertEqual(len(payload["equipment_sets"][0]["bonuses"]), 3)
+
+    def test_annotation_drop_base_chance_is_twelve_percent(self) -> None:
+        _, _, _, collection = api.get_or_create_pet(self.db, self.user.id)
+        self.assertEqual(api.PET_DROP_BASE_CHANCES["annotation"], 1200)
+        with patch.object(api.secrets, "randbelow", return_value=1200):
+            self.assertIsNone(api.maybe_drop_pet_equipment(collection, "annotation"))
 
     def test_admin_can_gift_tickets_after_password_recheck(self) -> None:
         admin = api.User(username="admin-pet", display_name="Admin", password_hash=api.hash_password("ticket-secret"), role="admin")
