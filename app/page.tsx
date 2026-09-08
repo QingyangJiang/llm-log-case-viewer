@@ -70,7 +70,7 @@ type PetEquipmentStats = { total_power: number; all_drop_bonus: number; pet_drop
 type PetEquipmentSetTier = { pieces: number; key: PetEquipmentEffectKey; value: number; label: string };
 type PetEquipmentSet = { theme: string; name: string; description: string; pieces: number; bonuses: string[]; tiers: (Omit<PetEquipmentSetTier, "key" | "value"> & { active: boolean })[] };
 type PetSkill = { id: string; name: string; icon: string; description: string; level: number; active: boolean };
-type PetDropReason = "pet" | "annotation" | "badcase";
+type PetDropReason = "pet" | "annotation" | "badcase" | "battle";
 type PetDropEvent = PetEquipment & { reason: PetDropReason; duplicate: boolean; identified_affix?: PetEquipmentAffix; affix_added?: boolean; at: string };
 type PetDropChoice = Pick<PetEquipment, "id" | "name" | "slot" | "slot_name" | "symbol" | "rarity" | "theme" | "effect_label" | "effect_value"> & { is_new: boolean; owned_count: number; owned_level?: number | null; owned_affix_count: number; count_after_claim: number; materials_to_synthesize: number; theme_owned_count: number; theme_equipped_count: number; theme_pieces_if_equipped: number; next_set_target?: number | null; next_set_bonus?: string | null; equipped_same_slot?: { id: string; name: string; rarity: PetRarity; level: number; power: number } | null; hidden_affix?: PetEquipmentAffix };
 type PetPendingDrop = { token: string; reason: PetDropReason; at: string; choices: PetDropChoice[] };
@@ -107,6 +107,60 @@ type PetProfile = {
   total_drops: number;
   evolution_pity: number;
   evolution_success_rate: number;
+};
+type PetHomeEquipment = Pick<PetEquipment, "id" | "name" | "slot" | "slot_name" | "symbol" | "rarity" | "theme" | "level" | "power">;
+type PetHomeSkill = Pick<PetSkill, "id" | "name" | "icon" | "level">;
+type PetHomeSet = Pick<PetEquipmentSet, "theme" | "name" | "pieces" | "bonuses">;
+type PetHomeResident = {
+  user_id: string;
+  owner_name: string;
+  pet_name: string;
+  color: PetColor;
+  accessory: PetAccessory;
+  level: number;
+  title: string;
+  evolution_stage: number;
+  evolution_path: PetEvolutionPath;
+  evolution_name: string;
+  evolution_variant: number;
+  evolution_traits: string[];
+  battle_power: number;
+  power_breakdown: { base: number; level: number; evolution: number; equipment: number; skills: number; sets: number };
+  equipped_items: PetHomeEquipment[];
+  active_skills: PetHomeSkill[];
+  active_sets: PetHomeSet[];
+  rank?: number;
+};
+type PetBattleHistory = {
+  id: string;
+  at: string;
+  day: string;
+  outcome: "win" | "loss" | "draw";
+  my_power: number;
+  opponent_power: number;
+  power_delta: number;
+  reward: boolean;
+  opponent: PetHomeResident;
+};
+type PetHomeData = {
+  me: PetHomeResident;
+  residents: PetHomeResident[];
+  resident_count: number;
+  battle_available: boolean;
+  battled_today: boolean;
+  battle_day: string;
+  next_battle_at: string;
+  recent_battles: PetBattleHistory[];
+};
+type PetBattleResult = {
+  outcome: "win" | "loss" | "draw";
+  won: boolean;
+  my_power: number;
+  opponent_power: number;
+  opponent: PetHomeResident;
+  reward_pending?: PetPendingDrop | null;
+  profile: PetProfile;
+  home: PetHomeData;
 };
 type AiResult = {
   resultId: string;
@@ -447,7 +501,7 @@ function normalizedPetProfile(value: Partial<PetProfile> | null | undefined): Pe
         next_set_target: nextSetTarget, next_set_bonus: nextSetBonus, equipped_same_slot: equippedSameSlot, hidden_affix: hiddenAffix,
       } satisfies PetDropChoice];
     }).slice(0, 3);
-    const reason = pending.reason === "pet" || pending.reason === "badcase" ? pending.reason : "annotation";
+    const reason: PetDropReason = pending.reason === "pet" || pending.reason === "badcase" || pending.reason === "battle" ? pending.reason : "annotation";
     return choices.length ? [{ token: pending.token, reason, at: typeof pending.at === "string" ? pending.at : new Date().toISOString(), choices }] : [];
   }).slice(0, PET_MAX_PENDING_DROPS) : [];
   return {
@@ -547,7 +601,7 @@ function evolveLocalPet(profile: PetProfile, spend: 1 | 5) {
   const event: PetEvolutionEvent = {
     at: new Date().toISOString(),
     ...(routeReset ? { type: "reroute" as const, previous_path: previousPath, route_reset: true } : {}),
-    spent,
+    spent: spend,
     guaranteed: spend === 5,
     success,
     stage,
@@ -659,7 +713,7 @@ function reforgeLocalPetEquipment(profile: PetProfile, itemId: string) {
   return { profile: normalizedPetProfile({ ...profile, inventory: profile.inventory.map((owned) => owned.id === itemId ? nextItem : owned) }), affixes };
 }
 
-function rollLocalPetDrop(profile: PetProfile, reason: PetDropReason) {
+function rollLocalPetDrop(profile: PetProfile, reason: Exclude<PetDropReason, "battle">) {
   if (profile.pending_drops.length >= PET_MAX_PENDING_DROPS) return { profile, drop: null as PetDropEvent | null, pending: false };
   let chance = PET_DROP_BASE_CHANCES[reason] + activePetSkillLevel(profile, "lucky_nose") * 100 + profile.equipment_stats.all_drop_bonus * 100;
   if (reason === "pet") chance += activePetSkillLevel(profile, "treasure_paws") * 200 + profile.equipment_stats.pet_drop_bonus * 100;
@@ -1703,11 +1757,132 @@ function PetCreatureVisual({ profile, accessory }: { profile: PetProfile; access
   </span>;
 }
 
+function petHomeVisualProfile(resident: PetHomeResident): PetProfile {
+  const inventory = resident.equipped_items.flatMap((item) => {
+    const catalogItem = PET_EQUIPMENT_CATALOG.find((candidate) => candidate.id === item.id);
+    return catalogItem ? [petEquipmentWithProgress(catalogItem, 1, { level: item.level })] : [];
+  });
+  const equipped = Object.fromEntries(inventory.map((item) => [item.slot, item.id])) as Partial<Record<PetEquipmentSlot, string>>;
+  return normalizedPetProfile({
+    ...DEFAULT_PET,
+    name: resident.pet_name,
+    color: resident.color,
+    accessory: resident.accessory,
+    xp: petLevelStartXp(resident.level),
+    evolution_credited_level: resident.level,
+    evolution_stage: resident.evolution_stage,
+    evolution_path: resident.evolution_path,
+    evolution_variant: resident.evolution_variant,
+    evolution_traits: resident.evolution_traits,
+    inventory,
+    equipped,
+  });
+}
+
+function PetHomeResidentCard({ resident, isMe = false }: { resident: PetHomeResident; isMe?: boolean }) {
+  const visualProfile = petHomeVisualProfile(resident);
+  const accessory = PET_ACCESSORIES.find((item) => item.id === resident.accessory)?.symbol ?? "";
+  const petColor = PET_COLORS.find((item) => item.id === resident.color)?.value ?? PET_COLORS[0].value;
+  return <article className={`pet-home-resident ${isMe ? "is-me" : ""}`} style={{ "--pet-color": petColor } as CSSProperties}>
+    <header>
+      <span>{isMe ? "MY PET" : `RANK ${resident.rank ? String(resident.rank).padStart(2, "0") : "–"}`}</span>
+      <b><i>战力</i>{resident.battle_power.toLocaleString()}</b>
+    </header>
+    <div className="pet-home-resident-stage">
+      <div className="pet-home-orbit"><PetCreatureVisual profile={visualProfile} accessory={accessory} /></div>
+      <div className="pet-home-resident-name"><small>{resident.owner_name} 的伙伴</small><strong>{resident.pet_name}</strong><span>Lv.{resident.level} · {resident.title}</span></div>
+    </div>
+    <div className="pet-home-route"><i>{resident.evolution_path ? PET_EVOLUTION_PATHS[resident.evolution_path].motif : "·"}</i><div><small>进化路线</small><strong>{resident.evolution_name}</strong><span>{resident.evolution_stage ? `第 ${resident.evolution_stage} 次进化` : "尚未开始进化"}</span></div></div>
+    <div className="pet-home-loadout">
+      <div><small>装扮</small><strong>{PET_COLORS.find((item) => item.id === resident.color)?.label ?? "青柠"} · {PET_ACCESSORIES.find((item) => item.id === resident.accessory)?.label ?? "无"}</strong></div>
+      <div><small>装备</small><span>{resident.equipped_items.length ? resident.equipped_items.map((item) => <i className={`rarity-${item.rarity}`} title={`${item.name} · Lv.${item.level}`} key={item.slot}>{item.symbol}</i>) : <em>暂无</em>}</span></div>
+    </div>
+    {resident.evolution_traits.length ? <div className="pet-home-traits">{resident.evolution_traits.slice(-3).map((trait) => <span key={trait}>{trait}</span>)}</div> : null}
+    <footer>
+      <div>{resident.active_sets.slice(0, 2).map((set) => <span key={set.theme}>{set.name} · {set.pieces}件</span>)}{!resident.active_sets.length ? <span>套装尚未激活</span> : null}</div>
+      <div>{resident.active_skills.map((skill) => <i title={`${skill.name} Lv.${skill.level}`} key={skill.id}>{skill.icon}<b>{skill.level}</b></i>)}{!resident.active_skills.length ? <small>暂无启用技能</small> : null}</div>
+    </footer>
+  </article>;
+}
+
+function PetHomestead({ open, user, data, busy, battleBusy, error, result, onRefresh, onBattle, onClose, onOpenTeam, onFinishResult }: {
+  open: boolean;
+  user: ServerUser | null;
+  data: PetHomeData | null;
+  busy: boolean;
+  battleBusy: boolean;
+  error: string;
+  result: PetBattleResult | null;
+  onRefresh: () => void;
+  onBattle: () => void;
+  onClose: () => void;
+  onOpenTeam: () => void;
+  onFinishResult: (claimReward: boolean) => void;
+}) {
+  if (!open) return null;
+  const meProfile = data?.me ? petHomeVisualProfile(data.me) : null;
+  const myAccessory = data?.me ? PET_ACCESSORIES.find((item) => item.id === data.me.accessory)?.symbol ?? "" : "";
+  const nextBattleLabel = data?.next_battle_at ? new Date(data.next_battle_at).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }) : "明日 00:00";
+  const opponentCount = data?.residents.length ?? 0;
+  return <section className="pet-home-page" aria-label="宠物家园">
+    <header className="pet-home-head">
+      <div><span>PET HOMESTEAD · TEAM NEIGHBORHOOD</span><h2>宠物家园</h2><p>看看伙伴们的成长路线，带上自己的装备完成每日切磋。</p></div>
+      <div><button type="button" disabled={!user || busy} onClick={onRefresh}>↻ 刷新</button><button type="button" onClick={onClose}>返回 Case</button></div>
+    </header>
+    <div className="pet-home-scroll">
+      {!user ? <section className="pet-home-login">
+        <div className="pet-home-login-mark">⌂</div><span>TEAM ACCOUNT REQUIRED</span><h3>登录后才能拜访队友的家园</h3><p>其他人的宠物、每日战斗次数和战利品都保存在团队账号中；本地宠物数据仍会原样保留。</p><button type="button" onClick={onOpenTeam}>打开团队模式</button>
+      </section> : null}
+      {user && busy && !data ? <section className="pet-home-loading"><i /><strong>正在打开家园大门…</strong><span>同步宠物装扮与战力</span></section> : null}
+      {user && error && !data ? <section className="pet-home-login error"><div className="pet-home-login-mark">!</div><h3>家园暂时没有打开</h3><p>{error}</p><button type="button" onClick={onRefresh}>重新加载</button></section> : null}
+      {user && data ? <>
+        <section className="pet-home-command">
+          <div className="pet-home-command-scene" style={{ "--pet-color": PET_COLORS.find((item) => item.id === data.me.color)?.value ?? PET_COLORS[0].value } as CSSProperties}>
+            <span className="pet-home-sun">DAILY<br />ARENA</span>
+            <div className="pet-home-grid-lines" />
+            {meProfile ? <div className="pet-home-main-pet"><PetCreatureVisual profile={meProfile} accessory={myAccessory} /><span>{data.me.pet_name}</span></div> : null}
+            <div className="pet-home-power-seal"><small>COMBAT POWER</small><strong>{data.me.battle_power.toLocaleString()}</strong><span>家园排行 #{data.me.rank ?? "–"}</span></div>
+          </div>
+          <div className="pet-home-command-copy">
+            <span className={data.battle_available ? "available" : "used"}>{data.battle_available ? "今日机会可用" : "今日已经出战"}</span>
+            <h3>{data.battle_available ? "随机拜访一位邻居" : "休整到下一个自然日"}</h3>
+            <p>{data.battle_available ? "系统会随机匹配一只宠物。你的战力严格高于对方即可获胜，并保证掉落一组隐藏词条的装备三选一。" : `每日仅一次机会，下一次于北京时间 ${nextBattleLabel} 恢复。`}</p>
+            <button className="pet-home-battle-button" type="button" disabled={battleBusy || !data.battle_available || !opponentCount} onClick={onBattle}>
+              <i>{battleBusy ? "…" : data.battle_available ? "⚔" : "✓"}</i><span><strong>{battleBusy ? "正在寻找对手" : data.battle_available ? opponentCount ? "开始随机战斗" : "暂无可匹配邻居" : "今日挑战已完成"}</strong><small>{data.battle_available ? "胜利必得装备三选一" : "失败或平局不会掉落装备"}</small></span>
+            </button>
+            {error ? <p className="pet-home-inline-error">{error}</p> : null}
+          </div>
+          <dl className="pet-home-power-breakdown">
+            <div><dt>基础</dt><dd>{data.me.power_breakdown.base}</dd></div><div><dt>等级</dt><dd>{data.me.power_breakdown.level}</dd></div><div><dt>进化</dt><dd>{data.me.power_breakdown.evolution}</dd></div><div><dt>装备</dt><dd>{data.me.power_breakdown.equipment}</dd></div><div><dt>技能</dt><dd>{data.me.power_breakdown.skills}</dd></div><div><dt>套装</dt><dd>{data.me.power_breakdown.sets}</dd></div>
+          </dl>
+        </section>
+
+        <section className="pet-home-neighborhood">
+          <header><div><span>NEIGHBORHOOD · {data.resident_count} RESIDENTS</span><h3>家园里的伙伴</h3></div><p>战斗对手从下列队友中随机产生；卡片展示当前装扮、路线、装备、套装与启用技能。</p></header>
+          {data.residents.length ? <div className="pet-home-resident-grid">{data.residents.map((resident) => <PetHomeResidentCard resident={resident} key={resident.user_id} />)}</div> : <div className="pet-home-empty-neighbors"><span>◇</span><strong>暂时还没有邻居</strong><p>创建其他有效团队账号后，对方的默认宠物就会入住。</p></div>}
+        </section>
+
+        {data.recent_battles.length ? <section className="pet-home-history"><header><span>BATTLE LOG</span><h3>最近切磋</h3></header><div>{data.recent_battles.map((battle) => <article className={battle.outcome} key={battle.id}><i>{battle.outcome === "win" ? "W" : battle.outcome === "draw" ? "D" : "L"}</i><div><strong>对阵 {battle.opponent.pet_name}</strong><span>{battle.opponent.owner_name} · {new Date(battle.at).toLocaleString("zh-CN")}</span></div><b>{battle.my_power} <em>:</em> {battle.opponent_power}</b><small>{battle.reward ? "装备已掉落" : "无掉落"}</small></article>)}</div></section> : null}
+      </> : null}
+    </div>
+    {result ? <div className={`pet-battle-result-backdrop ${result.outcome}`} role="presentation"><section className="pet-battle-result" role="dialog" aria-modal="true" aria-label="宠物战斗结果">
+      <header><span>DAILY BATTLE · COMPLETE</span><strong>{result.outcome === "win" ? "战斗胜利" : result.outcome === "draw" ? "势均力敌" : "挑战失败"}</strong></header>
+      <div className="pet-battle-versus">
+        <div style={{ "--pet-color": PET_COLORS.find((item) => item.id === data?.me.color)?.value ?? PET_COLORS[0].value } as CSSProperties}>{data?.me ? <PetCreatureVisual profile={petHomeVisualProfile(data.me)} accessory={myAccessory} /> : null}<strong>{data?.me.pet_name ?? "我的宠物"}</strong><span>{result.my_power.toLocaleString()}</span></div>
+        <i><small>POWER</small><b>VS</b><em>{result.my_power - result.opponent_power > 0 ? "+" : ""}{(result.my_power - result.opponent_power).toLocaleString()}</em></i>
+        <div style={{ "--pet-color": PET_COLORS.find((item) => item.id === result.opponent.color)?.value ?? PET_COLORS[0].value } as CSSProperties}><PetCreatureVisual profile={petHomeVisualProfile(result.opponent)} accessory={PET_ACCESSORIES.find((item) => item.id === result.opponent.accessory)?.symbol ?? ""} /><strong>{result.opponent.pet_name}</strong><span>{result.opponent_power.toLocaleString()}</span></div>
+      </div>
+      <div className="pet-battle-verdict"><span>{result.outcome === "win" ? "VICTORY REWARD" : result.outcome === "draw" ? "DRAW" : "KEEP TRAINING"}</span><h3>{result.outcome === "win" ? "发现一组装备战利品" : result.outcome === "draw" ? "战力相同，本次没有装备掉落" : "对手战力更高，本次没有装备掉落"}</h3><p>{result.outcome === "win" ? "三个候选的随机词条仍是隐藏状态，打开战利品后结合仓库与套装进度选择一件。" : "每日机会已经消耗。提升等级、继续进化或强化装备，可以提高下一次获胜概率。"}</p></div>
+      <button type="button" onClick={() => onFinishResult(result.won)}>{result.won ? "打开装备三选一" : "返回家园"}</button>
+    </section></div> : null}
+  </section>;
+}
+
 function PetDropChoiceModal({ pending, queueSize, busy, onClaim }: { pending?: PetPendingDrop; queueSize: number; busy: boolean; onClaim: (token: string, itemId: string) => void }) {
   const [dismissedToken, setDismissedToken] = useState("");
   if (!pending) return null;
   if (dismissedToken === pending.token) return <button className="pet-drop-reopen" type="button" onClick={() => setDismissedToken("")}>装备待领取 · {queueSize} 组</button>;
-  const source = pending.reason === "pet" ? "摸摸" : pending.reason === "badcase" ? "Badcase" : "提交标注";
+  const source = pending.reason === "pet" ? "摸摸" : pending.reason === "badcase" ? "Badcase" : pending.reason === "battle" ? "家园战斗" : "提交标注";
   const recommendation = (choice: PetDropChoice) => {
     if (!choice.is_new && choice.owned_level === PET_EQUIPMENT_MAX_LEVEL) return "满级洗练材料";
     if (!choice.is_new && choice.count_after_claim >= 3) return "领取后可合成";
@@ -2820,6 +2995,12 @@ export default function Home() {
   const [petPulse, setPetPulse] = useState(0);
   const [petProfile, setPetProfile] = useState<PetProfile>(DEFAULT_PET);
   const [petDropReveal, setPetDropReveal] = useState<PetDropReveal | null>(null);
+  const [petHomeOpen, setPetHomeOpen] = useState(false);
+  const [petHomeData, setPetHomeData] = useState<PetHomeData | null>(null);
+  const [petHomeBusy, setPetHomeBusy] = useState(false);
+  const [petBattleBusy, setPetBattleBusy] = useState(false);
+  const [petHomeError, setPetHomeError] = useState("");
+  const [petBattleResult, setPetBattleResult] = useState<PetBattleResult | null>(null);
   const [petSettingsOpen, setPetSettingsOpen] = useState(false);
   const [petDraftName, setPetDraftName] = useState(DEFAULT_PET.name);
   const [petBusy, setPetBusy] = useState(false);
@@ -3141,6 +3322,34 @@ export default function Home() {
     return profile;
   };
 
+  const refreshPetHomestead = async () => {
+    if (!serverUser) return null;
+    setPetHomeBusy(true);
+    setPetHomeError("");
+    try {
+      const home = await apiRequest<PetHomeData>("/api/pet/homestead");
+      setPetHomeData(home);
+      return home;
+    } catch (error) {
+      setPetHomeError(error instanceof Error ? error.message : "家园加载失败");
+      return null;
+    } finally {
+      setPetHomeBusy(false);
+    }
+  };
+
+  const openPetHomestead = () => {
+    setPetHomeOpen(true);
+    setPetBattleResult(null);
+    setMetricsOpen(false);
+    setTeamOpen(false);
+    setPromptWorkspaceOpen(false);
+    setAiOpen(false);
+    setChatOpen(false);
+    setPetHomeError("");
+    if (serverUser) void refreshPetHomestead();
+  };
+
   const refreshAssignmentAdmin = async (projectId: number) => {
     const [members, overview, users] = await Promise.all([
       apiRequest<ProjectMemberOption[]>(`/api/projects/${projectId}/members`),
@@ -3228,6 +3437,7 @@ export default function Home() {
           ]);
           setServerProjects(projects);
           const normalized = normalizedPetProfile(profile);
+          petProfileRef.current = normalized;
           setPetProfile(normalized);
           setPetDraftName(normalized.name);
         } catch {
@@ -3301,8 +3511,17 @@ export default function Home() {
   useEffect(() => {
     const handleKeys = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+        if (petHomeOpen) return;
         event.preventDefault();
         searchInput.current?.focus();
+        return;
+      }
+      if (event.key === "Escape" && petBattleResult) {
+        setPetBattleResult(null);
+        return;
+      }
+      if (event.key === "Escape" && petHomeOpen) {
+        setPetHomeOpen(false);
         return;
       }
       if (event.key === "Escape" && aiOpen) {
@@ -3332,7 +3551,7 @@ export default function Home() {
       }
       const target = event.target instanceof HTMLElement ? event.target : null;
       const editing = Boolean(target && (["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName) || target.isContentEditable));
-      if (editing || event.metaKey || event.ctrlKey || event.altKey || aiOpen || chatOpen || teamOpen || petSettingsOpen || metricsOpen) return;
+      if (editing || event.metaKey || event.ctrlKey || event.altKey || aiOpen || chatOpen || teamOpen || petHomeOpen || petSettingsOpen || metricsOpen) return;
       if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
         event.preventDefault();
         const currentTab = Math.max(0, VIEW_TABS.indexOf(tab));
@@ -3350,7 +3569,7 @@ export default function Home() {
     };
     window.addEventListener("keydown", handleKeys);
     return () => window.removeEventListener("keydown", handleKeys);
-  }, [filtered, selectedKey, tab, aiOpen, chatOpen, teamOpen, petSettingsOpen, metricsOpen, selectCase, switchViewTab]);
+  }, [filtered, selectedKey, tab, aiOpen, chatOpen, teamOpen, petHomeOpen, petBattleResult, petSettingsOpen, metricsOpen, selectCase, switchViewTab]);
 
   const loadText = async (text: string, name: string) => {
     setNotice(text.length >= 2_000_000 ? "正在分批解析大型日志…" : "正在解析日志…");
@@ -3428,7 +3647,12 @@ export default function Home() {
       setJudgeApiKey("");
       setJudgeHistoryByCase({});
       setJudgeHistoryBusyCaseId(null);
+      setPetHomeOpen(false);
+      setPetHomeData(null);
+      setPetBattleResult(null);
+      setPetHomeError("");
       const localProfile = normalizedPetProfile(safeStorageGet<Partial<PetProfile>>("case-lens-pet-profile", DEFAULT_PET));
+      petProfileRef.current = localProfile;
       setPetProfile(localProfile);
       setPetDraftName(localProfile.name);
     }
@@ -4046,7 +4270,7 @@ export default function Home() {
     let failed = 0;
     try {
       const pending = targetCases.filter((item) => {
-        const existing = item.__server_case_id ? judgeStatus.cases[String(item.__server_case_id)] : undefined;
+        const existing = item.__server_case_id ? judgeStatus?.cases[String(item.__server_case_id)] : undefined;
         if (existing?.status === "succeeded" && existing.config_version === config.version) {
           skipped += 1;
           return false;
@@ -4236,6 +4460,30 @@ export default function Home() {
     }
     else if (earned > 0) wakePet(`${fallbackMessage} +${earned} EXP`, "proud");
     return next;
+  };
+
+  const battleInPetHomestead = async () => {
+    if (!serverUser || petBattleBusy || !petHomeData?.battle_available) return;
+    setPetBattleBusy(true);
+    setPetHomeError("");
+    try {
+      const result = await apiRequest<PetBattleResult>("/api/pet/homestead/battle", { method: "POST", body: "{}" });
+      applyPetProfile(result.profile);
+      setPetHomeData(result.home);
+      setPetBattleResult(result);
+      if (result.won) wakePet("家园战斗胜利！发现了一组装备。", "proud");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "战斗失败，请稍后重试";
+      if (error instanceof ApiError && error.status === 409) await refreshPetHomestead();
+      setPetHomeError(message);
+    } finally {
+      setPetBattleBusy(false);
+    }
+  };
+
+  const finishPetBattleResult = (claimReward: boolean) => {
+    setPetBattleResult(null);
+    if (claimReward) setPetHomeOpen(false);
   };
 
   const awardLocalPetExperience = (awards: { key: string; amount: number }[], message: string) => {
@@ -5066,8 +5314,9 @@ export default function Home() {
       onDragLeave={(event) => { if (event.currentTarget === event.target) setDragging(false); }}
       onDrop={onDrop}
     >
-      <PetDropChoiceModal pending={petDropReveal ? undefined : petProfile.pending_drops[0]} queueSize={petProfile.pending_drops.length} busy={petBusy} onClaim={(token, itemId) => void claimPetDrop(token, itemId)} />
+      <PetDropChoiceModal pending={petDropReveal || petHomeOpen ? undefined : petProfile.pending_drops[0]} queueSize={petProfile.pending_drops.length} busy={petBusy} onClaim={(token, itemId) => void claimPetDrop(token, itemId)} />
       <PetDropRevealModal result={petDropReveal} queueSize={petProfile.pending_drops.length} onClose={() => setPetDropReveal(null)} />
+      <PetHomestead open={petHomeOpen} user={serverUser} data={petHomeData} busy={petHomeBusy} battleBusy={petBattleBusy} error={petHomeError} result={petBattleResult} onRefresh={() => void refreshPetHomestead()} onBattle={() => void battleInPetHomestead()} onClose={() => { setPetHomeOpen(false); setPetBattleResult(null); }} onOpenTeam={() => { setPetHomeOpen(false); setTeamOpen(true); }} onFinishResult={finishPetBattleResult} />
       <header className="topbar">
         <div className="brand">
           <button className="mobile-menu" onClick={() => setSidebarOpen((open) => !open)} aria-label="打开 Case 列表">☰</button>
@@ -5078,6 +5327,7 @@ export default function Home() {
           <span className={`privacy-badge ${providerMode === "external" ? "external" : ""}`}>
             <Icon>●</Icon>{providerMode === "local" ? "日志默认仅在本机处理" : "外部 API 仅在执行任务时接收文本"}
           </span>
+          <button className={`button pet-home-nav ${petHomeOpen ? "active" : ""}`} onClick={openPetHomestead}><Icon>⌂</Icon>宠物家园</button>
           <button className={`button metrics-button ${metricsOpen ? "active" : ""}`} onClick={() => { setMetricsOpen(true); setTeamOpen(false); setPromptWorkspaceOpen(false); setAiOpen(false); setChatOpen(false); }}><Icon>▥</Icon>指标看板</button>
           <button className={`button chat-button ${chatOpen ? "active" : ""}`} onClick={() => { setChatOpen((current) => !current); setAiOpen(false); setTeamOpen(false); setPromptWorkspaceOpen(false); }}><Icon>◌</Icon>问答</button>
           <button className="button ai-button" onClick={() => openAiPanel({ kind: "case" }, "summary")}><Icon>✦</Icon>AI 处理</button>

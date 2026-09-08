@@ -23,7 +23,7 @@ test("builds Anthropic Messages headers and body", () => {
 
 test("keeps the existing OpenAI-compatible request shape", () => {
   const request = modelApiRequest({ protocol: "openai", apiKey: "sk-test", model: "model-a", maxOutputTokens: 512, systemPrompt: "system", userContent: "hello" });
-  assert.equal(request.headers.Authorization, "Bearer sk-test");
+  assert.equal("Authorization" in request.headers ? request.headers.Authorization : undefined, "Bearer sk-test");
   assert.deepEqual(JSON.parse(request.body).messages, [{ role: "system", content: "system" }, { role: "user", content: "hello" }]);
 });
 

@@ -715,7 +715,10 @@ PET_EQUIPMENT_EFFECTS = {
 PET_EQUIPMENT_MAX_LEVEL = 10
 PET_EQUIPMENT_MAX_AFFIXES = 24
 PET_PENDING_DROPS_KEY = "__pending_drops__"
+PET_BATTLE_STATE_KEY = "__homestead_battle__"
 PET_MAX_PENDING_DROPS = 10
+PET_BATTLE_HISTORY_LIMIT = 20
+PET_HOME_TIMEZONE = timezone(timedelta(hours=8))
 PET_EQUIPMENT_SYNTHESIS_RATES = {1: 90, 2: 80, 3: 70, 4: 60, 5: 50, 6: 40, 7: 32, 8: 24, 9: 18}
 PET_EQUIPMENT_RANDOM_AFFIXES = {
     "all_drop_bonus": "所有装备掉率",
@@ -1078,6 +1081,151 @@ def pet_dict(profile: PetProfile, progress: PetProgressV2, evolution: PetEvoluti
     }
 
 
+def pet_battle_day(now: datetime | None = None) -> str:
+    moment = now or utcnow()
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.astimezone(PET_HOME_TIMEZONE).date().isoformat()
+
+
+def pet_next_battle_at(now: datetime | None = None) -> str:
+    moment = now or utcnow()
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    local = moment.astimezone(PET_HOME_TIMEZONE)
+    next_midnight = (local + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    return next_midnight.astimezone(timezone.utc).isoformat()
+
+
+def pet_battle_state(collection: PetCollection) -> dict[str, Any]:
+    raw = (collection.inventory or {}).get(PET_BATTLE_STATE_KEY, {})
+    if not isinstance(raw, dict):
+        return {"last_battle_date": "", "history": []}
+    history = [event for event in raw.get("history", []) if isinstance(event, dict)] if isinstance(raw.get("history"), list) else []
+    return {
+        "last_battle_date": str(raw.get("last_battle_date") or ""),
+        "history": history[:PET_BATTLE_HISTORY_LIMIT],
+    }
+
+
+def pet_battle_power(progress: PetProgressV2, evolution: PetEvolution, collection: PetCollection) -> tuple[int, dict[str, int]]:
+    level = pet_level(progress.xp_units / 5)
+    equipment_stats, equipment_sets = pet_equipment_state(collection)
+    active_skill_levels = sum(
+        max(0, min(5, int((collection.skills or {}).get(skill_id, 0) or 0)))
+        for skill_id in (collection.active_skills or [])[:3]
+        if skill_id in PET_SKILLS
+    )
+    active_set_tiers = sum(len(equipment_set["bonuses"]) for equipment_set in equipment_sets)
+    breakdown = {
+        "base": 100,
+        "level": level * 12,
+        "evolution": max(0, int(evolution.stage or 0)) * 22,
+        "equipment": max(0, int(equipment_stats["total_power"])) * 6,
+        "skills": active_skill_levels * 7,
+        "sets": active_set_tiers * 15,
+    }
+    return sum(breakdown.values()), breakdown
+
+
+def pet_home_resident_payload(
+    user: User,
+    profile: PetProfile,
+    progress: PetProgressV2,
+    evolution: PetEvolution,
+    collection: PetCollection,
+) -> dict[str, Any]:
+    level = pet_level(progress.xp_units / 5)
+    power, power_breakdown = pet_battle_power(progress, evolution, collection)
+    inventory = collection.inventory or {}
+    equipped_items: list[dict[str, Any]] = []
+    for slot, item_id in (collection.equipped or {}).items():
+        item = PET_EQUIPMENT_CATALOG.get(item_id)
+        entry = pet_inventory_entry(inventory.get(item_id, 0))
+        if not item or item["slot"] != slot or entry["count"] < 1:
+            continue
+        enriched = pet_equipment_effect(item, entry)
+        equipped_items.append({
+            key: enriched[key]
+            for key in ("id", "name", "slot", "slot_name", "symbol", "rarity", "theme", "level", "power")
+        })
+    equipped_items.sort(key=lambda item: list(PET_EQUIPMENT_SLOTS).index(str(item["slot"])))
+    active_skills = []
+    for skill_id in (collection.active_skills or [])[:3]:
+        definition = PET_SKILLS.get(skill_id)
+        level_value = max(0, min(5, int((collection.skills or {}).get(skill_id, 0) or 0)))
+        if definition and level_value:
+            active_skills.append({"id": skill_id, "name": definition["name"], "icon": definition["icon"], "level": level_value})
+    _, equipment_sets = pet_equipment_state(collection)
+    active_sets = [
+        {"theme": entry["theme"], "name": entry["name"], "pieces": entry["pieces"], "bonuses": entry["bonuses"]}
+        for entry in equipment_sets
+        if entry["bonuses"]
+    ]
+    path = evolution.path if evolution.path in PET_EVOLUTION_PATHS else ""
+    return {
+        "user_id": str(user.id),
+        "owner_name": user.display_name,
+        "pet_name": profile.name,
+        "color": profile.color if profile.color in PET_COLORS else "lime",
+        "accessory": profile.accessory if profile.accessory in PET_ACCESSORIES else "none",
+        "level": level,
+        "title": pet_title(level),
+        "evolution_stage": max(0, int(evolution.stage or 0)) if path else 0,
+        "evolution_path": path,
+        "evolution_name": PET_EVOLUTION_PATHS.get(path, {}).get("name", "未变身"),
+        "evolution_variant": max(0, min(7, int(evolution.variant_seed or 0))),
+        "evolution_traits": [str(trait) for trait in (evolution.traits or [])[-6:]],
+        "battle_power": power,
+        "power_breakdown": power_breakdown,
+        "equipped_items": equipped_items,
+        "active_skills": active_skills,
+        "active_sets": active_sets,
+    }
+
+
+def pet_home_rows(db: Session) -> list[Any]:
+    # An active teammate who has never opened the pet panel still owns the
+    # compatible default pet and should appear as a neighbor/opponent.
+    for active_user in db.scalars(select(User).where(User.active.is_(True))).all():
+        get_or_create_pet(db, active_user.id)
+    db.flush()
+    return list(db.execute(
+        select(User, PetProfile, PetProgressV2, PetEvolution, PetCollection)
+        .join(PetProfile, PetProfile.user_id == User.id)
+        .join(PetProgressV2, PetProgressV2.user_id == User.id)
+        .join(PetEvolution, PetEvolution.user_id == User.id)
+        .join(PetCollection, PetCollection.user_id == User.id)
+        .where(User.active.is_(True))
+        .order_by(User.display_name, User.id)
+    ).all())
+
+
+def pet_homestead_payload(db: Session, current_user: User) -> dict[str, Any]:
+    profile, progress, evolution, collection = get_or_create_pet(db, current_user.id)
+    db.flush()
+    residents = [pet_home_resident_payload(*row) for row in pet_home_rows(db)]
+    residents.sort(key=lambda resident: (-int(resident["battle_power"]), str(resident["owner_name"]), int(resident["user_id"])))
+    for rank, resident in enumerate(residents, start=1):
+        resident["rank"] = rank
+    me = next((resident for resident in residents if resident["user_id"] == str(current_user.id)), None)
+    if me is None:
+        me = pet_home_resident_payload(current_user, profile, progress, evolution, collection)
+        me["rank"] = len(residents) + 1
+    state = pet_battle_state(collection)
+    today = pet_battle_day()
+    return {
+        "me": me,
+        "residents": [resident for resident in residents if resident["user_id"] != str(current_user.id)],
+        "resident_count": len(residents),
+        "battle_available": state["last_battle_date"] != today,
+        "battled_today": state["last_battle_date"] == today,
+        "battle_day": today,
+        "next_battle_at": pet_next_battle_at(),
+        "recent_battles": state["history"][:8],
+    }
+
+
 def pet_choose_rarity(collection: PetCollection) -> str:
     equipment_stats, _ = pet_equipment_state(collection)
     rarity_boost = pet_active_skill_level(collection, "star_magnet") + pet_active_skill_level(collection, "collector") + equipment_stats["rarity_boost"]
@@ -1094,6 +1242,32 @@ def pet_choose_rarity(collection: PetCollection) -> str:
             return rarity
         draw -= weight
     return "common"
+
+
+def queue_pet_equipment_drop(collection: PetCollection, reason: str, *, prepend: bool = False) -> dict[str, Any] | None:
+    """Create one persisted three-choice drop without rolling its trigger chance."""
+    pending_drops = pet_pending_drops(collection)
+    if len(pending_drops) >= PET_MAX_PENDING_DROPS:
+        return None
+    rarity = pet_choose_rarity(collection)
+    inventory = dict(collection.inventory or {})
+    candidate_pool = [dict(item) for item in PET_EQUIPMENT_CATALOG.values() if item["rarity"] == rarity]
+    choices: list[dict[str, Any]] = []
+    for index in range(3):
+        item = secrets.choice(candidate_pool)
+        candidate_pool.remove(item)
+        entry = pet_inventory_entry(inventory.get(item["id"], 0))
+        choices.append({"item_id": item["id"], "hidden_affix": pet_random_affix(item, entry["level"] if entry["count"] else 1, index)})
+    pending = {
+        "token": secrets.token_hex(16),
+        "reason": reason,
+        "at": utcnow().isoformat(),
+        "choices": choices,
+    }
+    inventory[PET_PENDING_DROPS_KEY] = ([pending, *pending_drops] if prepend else [*pending_drops, pending])[:PET_MAX_PENDING_DROPS]
+    collection.inventory = inventory
+    collection.updated_at = utcnow()
+    return pending
 
 
 def maybe_drop_pet_equipment(collection: PetCollection, reason: str) -> dict[str, Any] | None:
@@ -1114,24 +1288,7 @@ def maybe_drop_pet_equipment(collection: PetCollection, reason: str) -> dict[str
         base_chance += equipment_stats["badcase_drop_bonus"] * 100
     if secrets.randbelow(10_000) >= min(7500, base_chance):
         return None
-    rarity = pet_choose_rarity(collection)
-    inventory = dict(collection.inventory or {})
-    candidate_pool = [dict(item) for item in PET_EQUIPMENT_CATALOG.values() if item["rarity"] == rarity]
-    choices: list[dict[str, Any]] = []
-    for index in range(3):
-        item = secrets.choice(candidate_pool)
-        candidate_pool.remove(item)
-        entry = pet_inventory_entry(inventory.get(item["id"], 0))
-        choices.append({"item_id": item["id"], "hidden_affix": pet_random_affix(item, entry["level"] if entry["count"] else 1, index)})
-    pending = {
-        "token": secrets.token_hex(16),
-        "reason": reason,
-        "at": utcnow().isoformat(),
-        "choices": choices,
-    }
-    inventory[PET_PENDING_DROPS_KEY] = [*pet_pending_drops(collection), pending][-PET_MAX_PENDING_DROPS:]
-    collection.inventory = inventory
-    collection.updated_at = utcnow()
+    queue_pet_equipment_drop(collection, reason)
     return None
 
 
@@ -2377,6 +2534,79 @@ def get_pet(user: CurrentUser, db: DB) -> dict[str, Any]:
     profile, progress, evolution, collection = get_or_create_pet(db, user.id)
     db.commit()
     return pet_dict(profile, progress, evolution, collection)
+
+
+@app.get("/api/pet/homestead")
+def get_pet_homestead(user: CurrentUser, db: DB) -> dict[str, Any]:
+    payload = pet_homestead_payload(db, user)
+    db.commit()
+    return payload
+
+
+@app.post("/api/pet/homestead/battle")
+def battle_pet_in_homestead(user: CurrentUser, db: DB) -> dict[str, Any]:
+    profile, progress, evolution, collection = get_or_create_pet(db, user.id)
+    db.flush()
+    collection = db.scalar(
+        select(PetCollection)
+        .where(PetCollection.user_id == user.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ) or collection
+    now = utcnow()
+    today = pet_battle_day(now)
+    state = pet_battle_state(collection)
+    if state["last_battle_date"] == today:
+        raise HTTPException(409, "今天已经出战过了，明天 00:00 后再来")
+
+    opponent_rows = [row for row in pet_home_rows(db) if row[0].id != user.id]
+    if not opponent_rows:
+        raise HTTPException(422, "家园里还没有其他宠物，等队友登录并养成宠物后再来")
+    opponent_user, opponent_profile, opponent_progress, opponent_evolution, opponent_collection = secrets.choice(opponent_rows)
+    my_power, _ = pet_battle_power(progress, evolution, collection)
+    opponent_power, _ = pet_battle_power(opponent_progress, opponent_evolution, opponent_collection)
+    outcome = "win" if my_power > opponent_power else "draw" if my_power == opponent_power else "loss"
+    if outcome == "win" and len(pet_pending_drops(collection)) >= PET_MAX_PENDING_DROPS:
+        raise HTTPException(409, "待领取装备已达 10 组，请先完成一次装备三选一再出战")
+
+    opponent = pet_home_resident_payload(opponent_user, opponent_profile, opponent_progress, opponent_evolution, opponent_collection)
+    reward_token = ""
+    if outcome == "win":
+        reward = queue_pet_equipment_drop(collection, "battle", prepend=True)
+        if not reward:
+            raise HTTPException(409, "战利品暂时无法存入，请先领取已有装备")
+        reward_token = reward["token"]
+
+    battle_event = {
+        "id": secrets.token_hex(8),
+        "at": now.isoformat(),
+        "day": today,
+        "outcome": outcome,
+        "my_power": my_power,
+        "opponent_power": opponent_power,
+        "power_delta": my_power - opponent_power,
+        "reward": outcome == "win",
+        "opponent": opponent,
+    }
+    inventory = dict(collection.inventory or {})
+    inventory[PET_BATTLE_STATE_KEY] = {
+        "last_battle_date": today,
+        "history": [battle_event, *state["history"]][:PET_BATTLE_HISTORY_LIMIT],
+    }
+    collection.inventory = inventory
+    collection.updated_at = now
+    db.commit()
+    public_reward = next((pending for pending in pet_pending_drop_payload(collection) if pending["token"] == reward_token), None)
+    return {
+        "outcome": outcome,
+        "won": outcome == "win",
+        "my_power": my_power,
+        "opponent_power": opponent_power,
+        "opponent": opponent,
+        "reward_pending": public_reward,
+        "profile": pet_dict(profile, progress, evolution, collection),
+        "home": pet_homestead_payload(db, user),
+    }
 
 
 @app.put("/api/pet")

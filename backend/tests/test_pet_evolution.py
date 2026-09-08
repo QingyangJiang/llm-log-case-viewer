@@ -24,6 +24,14 @@ class PetEvolutionTest(unittest.TestCase):
         self.db.close()
         self.engine.dispose()
 
+    def add_opponent(self, username: str = "pet-neighbor", display_name: str = "Pet Neighbor"):
+        opponent = api.User(username=username, display_name=display_name, password_hash="unused", role="annotator")
+        self.db.add(opponent)
+        self.db.flush()
+        profile, progress, evolution, collection = api.get_or_create_pet(self.db, opponent.id)
+        self.db.commit()
+        return opponent, profile, progress, evolution, collection
+
     def test_existing_levels_credit_one_chance_per_upgrade_once(self) -> None:
         _, _, evolution, _ = api.get_or_create_pet(self.db, self.user.id)
         self.assertEqual(api.pet_level(80), 3)
@@ -189,6 +197,91 @@ class PetEvolutionTest(unittest.TestCase):
         self.assertEqual(drop["affixes"][0]["id"], "hidden-0")
         self.assertEqual(collection.total_drops, 1)
         self.assertEqual(api.pet_pending_drops(collection), [])
+
+    def test_homestead_lists_other_pets_with_appearance_route_and_power(self) -> None:
+        _, _, my_evolution, _ = api.get_or_create_pet(self.db, self.user.id)
+        my_evolution.path = "forest"
+        my_evolution.stage = 2
+        neighbor, profile, progress, evolution, collection = self.add_opponent()
+        profile.name = "小雷"
+        profile.color = "sky"
+        profile.accessory = "glasses"
+        progress.xp_units = api.pet_level_start_xp(8) * 5
+        evolution.path = "storm"
+        evolution.stage = 4
+        evolution.traits = ["闪电耳羽", "疾风羽翼"]
+        item_id = "gear-03-1-3"
+        collection.inventory = {item_id: {"count": 1, "level": 3, "affixes": [], "synthesis_failures": 0}}
+        collection.equipped = {"head": item_id}
+        self.db.commit()
+
+        home = api.pet_homestead_payload(self.db, self.user)
+
+        self.assertEqual(home["resident_count"], 2)
+        self.assertTrue(home["battle_available"])
+        self.assertEqual(len(home["residents"]), 1)
+        resident = home["residents"][0]
+        self.assertEqual(resident["user_id"], str(neighbor.id))
+        self.assertEqual(resident["pet_name"], "小雷")
+        self.assertEqual(resident["color"], "sky")
+        self.assertEqual(resident["accessory"], "glasses")
+        self.assertEqual(resident["evolution_path"], "storm")
+        self.assertEqual(resident["evolution_stage"], 4)
+        self.assertEqual(resident["equipped_items"][0]["id"], item_id)
+        self.assertGreater(resident["battle_power"], 0)
+        self.assertEqual(resident["battle_power"], sum(resident["power_breakdown"].values()))
+        self.assertNotIn("inventory", resident)
+        self.assertNotIn("password_hash", resident)
+
+    def test_daily_battle_win_queues_guaranteed_drop_and_cannot_repeat(self) -> None:
+        _, progress, evolution, collection = api.get_or_create_pet(self.db, self.user.id)
+        progress.xp_units = api.pet_level_start_xp(20) * 5
+        evolution.path = "guardian"
+        evolution.stage = 8
+        self.add_opponent()
+        self.db.commit()
+
+        with patch.object(api.secrets, "choice", side_effect=lambda choices: choices[0]), patch.object(api.secrets, "randbelow", return_value=0), patch.object(api.secrets, "token_hex", side_effect=["battle-drop", "battle-event"]):
+            result = api.battle_pet_in_homestead(self.user, self.db)
+
+        self.assertTrue(result["won"])
+        self.assertEqual(result["outcome"], "win")
+        self.assertGreater(result["my_power"], result["opponent_power"])
+        self.assertEqual(result["reward_pending"]["reason"], "battle")
+        self.assertEqual(len(result["reward_pending"]["choices"]), 3)
+        self.assertEqual(result["profile"]["pending_drops"][0]["token"], "battle-drop")
+        self.assertFalse(result["home"]["battle_available"])
+        state = api.pet_battle_state(collection)
+        self.assertEqual(state["last_battle_date"], api.pet_battle_day())
+        self.assertEqual(state["history"][0]["outcome"], "win")
+
+        with self.assertRaises(api.HTTPException) as raised:
+            api.battle_pet_in_homestead(self.user, self.db)
+        self.assertEqual(raised.exception.status_code, 409)
+
+    def test_daily_battle_loss_consumes_chance_without_drop(self) -> None:
+        api.get_or_create_pet(self.db, self.user.id)
+        _, _, progress, evolution, _ = self.add_opponent()
+        progress.xp_units = api.pet_level_start_xp(30) * 5
+        evolution.path = "starlight"
+        evolution.stage = 12
+        self.db.commit()
+
+        with patch.object(api.secrets, "choice", side_effect=lambda choices: choices[0]), patch.object(api.secrets, "token_hex", return_value="loss-event"):
+            result = api.battle_pet_in_homestead(self.user, self.db)
+
+        self.assertFalse(result["won"])
+        self.assertEqual(result["outcome"], "loss")
+        self.assertIsNone(result["reward_pending"])
+        self.assertEqual(result["profile"]["pending_drops"], [])
+        self.assertFalse(result["home"]["battle_available"])
+
+    def test_battle_day_uses_china_calendar_day(self) -> None:
+        before_midnight = api.datetime(2026, 9, 8, 15, 59, tzinfo=api.timezone.utc)
+        after_midnight = api.datetime(2026, 9, 8, 16, 1, tzinfo=api.timezone.utc)
+        self.assertEqual(api.pet_battle_day(before_midnight), "2026-09-08")
+        self.assertEqual(api.pet_battle_day(after_midnight), "2026-09-09")
+        self.assertEqual(api.pet_next_battle_at(before_midnight), "2026-09-08T16:00:00+00:00")
 
     def test_admin_can_gift_tickets_after_password_recheck(self) -> None:
         admin = api.User(username="admin-pet", display_name="Admin", password_hash=api.hash_password("ticket-secret"), role="admin")
