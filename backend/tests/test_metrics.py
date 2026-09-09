@@ -4,7 +4,7 @@ import unittest
 
 os.environ.setdefault("DATABASE_URL", "sqlite://")
 
-from backend.app.main import Annotation, Case, Project, User, project_metrics_payload
+from backend.app.main import Annotation, Case, Project, User, metric_case_is_agent, project_metrics_payload
 
 
 def annotation(user: User, candidate_id: str, score: int, badcase: bool = False) -> Annotation:
@@ -22,6 +22,56 @@ def annotation(user: User, candidate_id: str, score: int, badcase: bool = False)
 
 
 class MetricsPayloadTest(unittest.TestCase):
+    def test_agent_case_type_filter_recalculates_all_metrics(self) -> None:
+        alice = User(id=1, username="alice", display_name="Alice", password_hash="x", role="annotator")
+        project = Project(
+            id=1,
+            name="Agent metrics",
+            created_by=1,
+            annotation_config={"dimensions": [{"key": "quality", "label": "质量", "min": 1, "max": 10}]},
+        )
+        non_agent = Case(
+            id=1,
+            project_id=1,
+            external_id="non-agent",
+            ordinal=0,
+            payload={"messages": [{"role": "user", "content": "hello"}], "tools": [], "candidates": [{"id": "plain", "model": "model-a"}]},
+            annotations=[annotation(alice, "plain", 4)],
+        )
+        agent_with_tools = Case(
+            id=2,
+            project_id=1,
+            external_id="agent-tools",
+            ordinal=1,
+            payload={"messages": [{"role": "user", "content": "weather"}], "tools": [{"type": "function", "function": {"name": "weather"}}], "candidates": [{"id": "tools", "model": "model-a"}]},
+            annotations=[annotation(alice, "tools", 7)],
+        )
+        agent_with_trace = Case(
+            id=3,
+            project_id=1,
+            external_id="agent-trace",
+            ordinal=2,
+            payload={"messages": [{"role": "assistant", "tool_calls": [{"id": "call-1"}]}], "tools": [], "candidates": [{"id": "trace", "model": "model-a"}]},
+            annotations=[annotation(alice, "trace", 9)],
+        )
+
+        self.assertFalse(metric_case_is_agent(non_agent.payload))
+        self.assertTrue(metric_case_is_agent(agent_with_tools.payload))
+        self.assertTrue(metric_case_is_agent(agent_with_trace.payload))
+
+        cases = [non_agent, agent_with_tools, agent_with_trace]
+        agent_result = project_metrics_payload(project, cases, "quality", "agent")
+        self.assertEqual(agent_result["case_type"], "agent")
+        self.assertEqual(agent_result["case_type_counts"], {"all": 3, "agent": 2, "non_agent": 1})
+        self.assertEqual(agent_result["total_case_count"], 2)
+        self.assertEqual(agent_result["scopes"][0]["complete_case_count"], 2)
+        self.assertEqual(agent_result["scopes"][0]["models"][0]["avg"], 8.0)
+
+        non_agent_result = project_metrics_payload(project, cases, "quality", "non_agent")
+        self.assertEqual(non_agent_result["total_case_count"], 1)
+        self.assertEqual(non_agent_result["scopes"][0]["complete_case_count"], 1)
+        self.assertEqual(non_agent_result["scopes"][0]["models"][0]["avg"], 4.0)
+
     def test_complete_cases_are_case_weighted_and_incomplete_cases_are_dropped(self) -> None:
         alice = User(id=1, username="alice", display_name="Alice", password_hash="x", role="annotator")
         bob = User(id=2, username="bob", display_name="Bob", password_hash="x", role="annotator")

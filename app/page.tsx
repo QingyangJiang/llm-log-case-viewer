@@ -187,6 +187,7 @@ type AiSource = { item: LogCase; caseIndex: number; caseId: string; target: stri
 type AiPlan = { sourceTokens: number; calls: number; chunks: number; blocked: boolean; clipped: boolean };
 type AiContentOptions = { includeSystem: boolean; includeThinking: boolean; includeTools: boolean };
 type MetricDimension = { key: string; label: string; min?: number; max?: number };
+type MetricCaseType = "all" | "agent" | "non_agent";
 type MetricTier = { count: number; pct: number };
 type MetricModel = {
   model: string;
@@ -211,7 +212,7 @@ type MetricScope = {
   complete_rate: number;
   models: MetricModel[];
 };
-type MetricsData = { dimension: MetricDimension; dimensions: MetricDimension[]; models: string[]; total_case_count: number; scopes: MetricScope[] };
+type MetricsData = { dimension: MetricDimension; dimensions: MetricDimension[]; models: string[]; case_type: MetricCaseType; case_type_counts: Record<MetricCaseType, number>; total_case_count: number; scopes: MetricScope[] };
 type ChatMessage = ModelApiMessage & { id: string };
 type JudgeConfig = {
   configured: boolean;
@@ -1099,7 +1100,7 @@ function summarizeMetricModel(model: string, points: { score: number; badcase: b
   };
 }
 
-function buildMetricScope(items: LogCase[], records: Record<string, CaseAnnotation[]>, models: string[], dimensionKey: string, annotator?: { id: string; name: string }): MetricScope {
+function buildMetricScope(items: { item: LogCase; index: number }[], records: Record<string, CaseAnnotation[]>, models: string[], dimensionKey: string, annotator?: { id: string; name: string }): MetricScope {
   const targetModels = new Set(models);
   const points = new Map(models.map((model) => [model, [] as { score: number; badcase: boolean }[]]));
   let candidateComplete = 0;
@@ -1111,7 +1112,7 @@ function buildMetricScope(items: LogCase[], records: Record<string, CaseAnnotati
       candidate_complete_case_count: 0, attempted_case_count: 0, complete_case_count: 0, dropped_case_count: 0, complete_rate: 0, models: [],
     };
   }
-  items.forEach((item, index) => {
+  items.forEach(({ item, index }) => {
     const candidateToModel = new Map((item.candidates ?? []).map((candidate) => [candidate.id, candidate.model || candidate.id]));
     if (![...targetModels].every((model) => [...candidateToModel.values()].includes(model))) return;
     candidateComplete += 1;
@@ -1138,18 +1139,23 @@ function buildMetricScope(items: LogCase[], records: Record<string, CaseAnnotati
   };
 }
 
-function buildLocalMetrics(items: LogCase[], records: Record<string, CaseAnnotation[]>, dimensionKey?: string): MetricsData {
+function buildLocalMetrics(items: LogCase[], records: Record<string, CaseAnnotation[]>, dimensionKey?: string, caseType: MetricCaseType = "all"): MetricsData {
   const dimensions = (items.find((item) => item.annotation_config?.dimensions?.length)?.annotation_config?.dimensions ?? DEFAULT_DIMENSIONS).map((item) => ({ key: item.key, label: item.label, min: item.min ?? 1, max: item.max ?? 10 }));
   const dimension = dimensions.find((item) => item.key === dimensionKey) ?? dimensions[0];
-  const discovered = Array.from(new Set(items.flatMap((item) => (item.candidates ?? []).map((candidate) => candidate.model || candidate.id))));
+  const indexedItems = items.map((item, index) => ({ item, index }));
+  const agentCount = indexedItems.filter(({ item }) => isAgentCase(item)).length;
+  const caseTypeCounts = { all: items.length, agent: agentCount, non_agent: items.length - agentCount };
+  const scopedItems = caseType === "all" ? indexedItems : indexedItems.filter(({ item }) => isAgentCase(item) === (caseType === "agent"));
+  const scopedCases = scopedItems.map(({ item }) => item);
+  const discovered = Array.from(new Set(scopedCases.flatMap((item) => (item.candidates ?? []).map((candidate) => candidate.model || candidate.id))));
   const configured = items.find((item) => item.annotation_config?.model_order?.length)?.annotation_config?.model_order ?? [];
   const models = [...configured.filter((model) => discovered.includes(model)), ...discovered.filter((model) => !configured.includes(model))];
   const annotators = new Map<string, string>();
-  items.forEach((item, index) => (records[caseAnnotationKey(item, index)] ?? []).forEach((record) => {
+  scopedItems.forEach(({ item, index }) => (records[caseAnnotationKey(item, index)] ?? []).forEach((record) => {
     if (record.status === "submitted" && metricScore(record.scores[dimension.key]) !== null) annotators.set(record.annotator.id, record.annotator.name);
   }));
-  const scopes = [buildMetricScope(items, records, models, dimension.key), ...[...annotators].sort((left, right) => left[1].localeCompare(right[1])).map(([id, name]) => buildMetricScope(items, records, models, dimension.key, { id, name }))];
-  return { dimension, dimensions, models, total_case_count: items.length, scopes };
+  const scopes = [buildMetricScope(scopedItems, records, models, dimension.key), ...[...annotators].sort((left, right) => left[1].localeCompare(right[1])).map(([id, name]) => buildMetricScope(scopedItems, records, models, dimension.key, { id, name }))];
+  return { dimension, dimensions, models, case_type: caseType, case_type_counts: caseTypeCounts, total_case_count: scopedCases.length, scopes };
 }
 
 function downloadText(content: string, name: string, type: string) {
@@ -1269,6 +1275,23 @@ function getToolCalls(item: LogCase) {
     }
   }
   return count;
+}
+
+function isAgentCase(item: LogCase) {
+  if (Array.isArray(item.tools) && item.tools.length > 0) return true;
+  const hasAgentContent = (value: unknown): boolean => {
+    if (Array.isArray(value)) return value.some(hasAgentContent);
+    if (!isObject(value)) return false;
+    const blockType = String(value.type ?? "").toLowerCase();
+    if (["tool_use", "tool_result", "function_call", "function_call_output"].includes(blockType)) return true;
+    const role = String(value.role ?? "").toLowerCase();
+    if (role === "tool" || role === "function") return true;
+    if (Array.isArray(value.tool_calls) && value.tool_calls.length > 0) return true;
+    if (value.tool_call_id != null || value.tool_use_id != null) return true;
+    return hasAgentContent(value.content);
+  };
+  if (hasAgentContent(item.messages)) return true;
+  return (item.candidates ?? []).some((candidate) => hasAgentContent(candidate.reasoning) || hasAgentContent(candidate.response));
 }
 
 function parseJsonl(text: string) {
@@ -2820,7 +2843,7 @@ function CandidateWorkspace({ item, caseIndex, records, annotator, judgeAvailabl
   );
 }
 
-function MetricsDashboard({ data, busy, error, dimensionKey, onDimensionChange, onClose }: { data?: MetricsData; busy: boolean; error: string; dimensionKey: string; onDimensionChange: (key: string) => void; onClose: () => void }) {
+function MetricsDashboard({ data, busy, error, dimensionKey, caseType, onDimensionChange, onCaseTypeChange, onClose }: { data?: MetricsData; busy: boolean; error: string; dimensionKey: string; caseType: MetricCaseType; onDimensionChange: (key: string) => void; onCaseTypeChange: (value: MetricCaseType) => void; onClose: () => void }) {
   const [scopeId, setScopeId] = useState("overall");
   const validScopeId = data?.scopes.some((scope) => scope.id === scopeId) ? scopeId : "overall";
   const scope = data?.scopes.find((item) => item.id === validScopeId) ?? data?.scopes[0];
@@ -2834,7 +2857,18 @@ function MetricsDashboard({ data, busy, error, dimensionKey, onDimensionChange, 
       </header>
       <div className="metrics-controls">
         <label><span>评分维度</span><select value={dimensionKey || data?.dimension.key || ""} onChange={(event) => onDimensionChange(event.target.value)} disabled={busy}>{data?.dimensions.map((dimension) => <option value={dimension.key} key={dimension.key}>{dimension.label} · {dimension.min ?? 1}–{dimension.max ?? 10}</option>)}</select></label>
-        <div className="metrics-method"><strong>统计口径</strong><p>仅使用已提交标注；先按 candidate_id 映射模型。总体中，同一 Case、同一模型的多人评分先取均值，手动 Badcase 按多数决；缺少任一模型评分的 Case 整条排除。</p></div>
+        <fieldset className="metrics-case-type" disabled={busy}>
+          <legend>Case 类型</legend>
+          <div>
+            {(["all", "agent", "non_agent"] as MetricCaseType[]).map((value) => (
+              <button type="button" className={caseType === value ? "active" : ""} aria-pressed={caseType === value} onClick={() => onCaseTypeChange(value)} key={value}>
+                <span>{value === "all" ? "总体" : value === "agent" ? "Agent" : "非 Agent"}</span>
+                <small>{data?.case_type_counts?.[value] ?? "—"} Cases</small>
+              </button>
+            ))}
+          </div>
+        </fieldset>
+        <div className="metrics-method"><strong>统计口径</strong><p>Agent 指含工具定义或工具调用 / 结果轨迹的 Case。仅使用已提交标注；先按 candidate_id 映射模型。总体中，同一 Case、同一模型的多人评分先取均值，手动 Badcase 按多数决；缺少任一模型评分的 Case 整条排除。</p></div>
       </div>
       {!isTenPointScale && data ? <p className="metrics-warning">当前维度量表为 {data.dimension.min ?? 1}–{data.dimension.max ?? 10} 分；三档和客观 Badcase 率仍按固定的 1–10 分口径计算，建议管理员将该维度配置为 1–10 分。</p> : null}
       {error ? <div className="metrics-error"><strong>指标加载失败</strong><p>{error}</p></div> : null}
@@ -2845,7 +2879,7 @@ function MetricsDashboard({ data, busy, error, dimensionKey, onDimensionChange, 
             {data.scopes.map((item) => <button type="button" className={item.id === scope.id ? "active" : ""} onClick={() => setScopeId(item.id)} key={item.id}><span>{item.id === "overall" ? "ALL" : "标注员"}</span><strong>{item.label}</strong><small>{item.complete_case_count} 个完整 Case</small></button>)}
           </nav>
           <div className="metrics-quality-strip">
-            <div><span>项目 Case</span><strong>{data.total_case_count}</strong></div>
+            <div><span>当前口径 Case</span><strong>{data.total_case_count}</strong></div>
             <div><span>模型结构完整</span><strong>{scope.candidate_complete_case_count}</strong></div>
             <div><span>参与评分</span><strong>{scope.attempted_case_count}</strong></div>
             <div><span>最终纳入</span><strong>{scope.complete_case_count}</strong></div>
@@ -2902,6 +2936,7 @@ export default function Home() {
   const [promptWorkspaceOpen, setPromptWorkspaceOpen] = useState(false);
   const [metricsOpen, setMetricsOpen] = useState(false);
   const [metricsDimensionKey, setMetricsDimensionKey] = useState("");
+  const [metricsCaseType, setMetricsCaseType] = useState<MetricCaseType>("all");
   const [metricsData, setMetricsData] = useState<MetricsData>();
   const [metricsBusy, setMetricsBusy] = useState(false);
   const [metricsError, setMetricsError] = useState("");
@@ -3217,14 +3252,14 @@ export default function Home() {
       setMetricsError("");
       setMetricsData(undefined);
       if (activeProjectId && serverUser) {
-        void apiRequest<MetricsData>(`/api/projects/${activeProjectId}/metrics?dimension=${encodeURIComponent(activeMetricDimensionKey)}`)
+        void apiRequest<MetricsData>(`/api/projects/${activeProjectId}/metrics?dimension=${encodeURIComponent(activeMetricDimensionKey)}&case_type=${metricsCaseType}`)
           .then((result) => { if (!cancelled) setMetricsData(result); })
           .catch((error) => { if (!cancelled) setMetricsError(error instanceof Error ? error.message : "指标加载失败"); })
           .finally(() => { if (!cancelled) setMetricsBusy(false); });
         return;
       }
       try {
-        setMetricsData(buildLocalMetrics(cases, annotations, activeMetricDimensionKey));
+        setMetricsData(buildLocalMetrics(cases, annotations, activeMetricDimensionKey, metricsCaseType));
       } catch (error) {
         setMetricsError(error instanceof Error ? error.message : "指标计算失败");
       } finally {
@@ -3232,7 +3267,7 @@ export default function Home() {
       }
     }, 0);
     return () => { cancelled = true; window.clearTimeout(timer); };
-  }, [metricsOpen, activeProjectId, serverUser, activeMetricDimensionKey, cases, annotations]);
+  }, [metricsOpen, activeProjectId, serverUser, activeMetricDimensionKey, metricsCaseType, cases, annotations]);
 
   useEffect(() => {
     if (selectedPair?.index === undefined) return;
@@ -5354,7 +5389,7 @@ export default function Home() {
         </details>
       ) : null}
 
-      {metricsOpen ? <MetricsDashboard data={metricsData} busy={metricsBusy} error={metricsError} dimensionKey={activeMetricDimensionKey} onDimensionChange={setMetricsDimensionKey} onClose={() => setMetricsOpen(false)} /> : (
+      {metricsOpen ? <MetricsDashboard data={metricsData} busy={metricsBusy} error={metricsError} dimensionKey={activeMetricDimensionKey} caseType={metricsCaseType} onDimensionChange={setMetricsDimensionKey} onCaseTypeChange={setMetricsCaseType} onClose={() => setMetricsOpen(false)} /> : (
       <div className="workspace">
         <aside className={`sidebar ${sidebarOpen ? "open" : ""}`}>
           <div className="sidebar-tools">

@@ -1419,6 +1419,41 @@ def metric_number(value: Any) -> float | None:
     return number if math.isfinite(number) else None
 
 
+def metric_case_is_agent(payload: dict[str, Any]) -> bool:
+    tools = payload.get("tools")
+    if isinstance(tools, list) and bool(tools):
+        return True
+
+    def has_agent_content(value: Any) -> bool:
+        if isinstance(value, list):
+            return any(has_agent_content(item) for item in value)
+        if not isinstance(value, dict):
+            return False
+        block_type = str(value.get("type") or "").lower()
+        if block_type in {"tool_use", "tool_result", "function_call", "function_call_output"}:
+            return True
+        role = str(value.get("role") or "").lower()
+        if role in {"tool", "function"}:
+            return True
+        tool_calls = value.get("tool_calls")
+        if isinstance(tool_calls, list) and bool(tool_calls):
+            return True
+        if value.get("tool_call_id") is not None or value.get("tool_use_id") is not None:
+            return True
+        return has_agent_content(value.get("content"))
+
+    if has_agent_content(payload.get("messages")):
+        return True
+    candidates = payload.get("candidates")
+    if isinstance(candidates, list):
+        return any(
+            isinstance(candidate, dict)
+            and (has_agent_content(candidate.get("reasoning")) or has_agent_content(candidate.get("response")))
+            for candidate in candidates
+        )
+    return False
+
+
 def metric_model_summary(model: str, points: list[dict[str, Any]]) -> dict[str, Any]:
     values = [float(point["score"]) for point in points]
     count = len(values)
@@ -1557,14 +1592,24 @@ def project_metric_dimensions(config: dict[str, Any], cases: list[Case]) -> list
     return dimensions
 
 
-def project_metrics_payload(project: Project, cases: list[Case], dimension_key: str | None = None) -> dict[str, Any]:
+def project_metrics_payload(project: Project, cases: list[Case], dimension_key: str | None = None, case_type: str = "all") -> dict[str, Any]:
+    if case_type not in {"all", "agent", "non_agent"}:
+        raise HTTPException(422, "未知的 Case 类型")
     config = project_config(project)
     dimensions = project_metric_dimensions(config, cases)
     selected = next((item for item in dimensions if item["key"] == dimension_key), None) if dimension_key else dimensions[0]
     if selected is None:
         raise HTTPException(422, "未知的评分维度")
+    agent_cases = [case for case in cases if metric_case_is_agent(case.payload)]
+    case_type_counts = {
+        "all": len(cases),
+        "agent": len(agent_cases),
+        "non_agent": len(cases) - len(agent_cases),
+    }
+    non_agent_cases = [case for case in cases if not metric_case_is_agent(case.payload)]
+    scoped_cases = cases if case_type == "all" else agent_cases if case_type == "agent" else non_agent_cases
     discovered: list[str] = []
-    for case in cases:
+    for case in scoped_cases:
         for candidate in case.payload.get("candidates", []):
             if not isinstance(candidate, dict) or candidate.get("id") is None:
                 continue
@@ -1574,17 +1619,19 @@ def project_metrics_payload(project: Project, cases: list[Case], dimension_key: 
     configured = [str(value) for value in config.get("model_order", []) if str(value) in discovered]
     models = [*configured, *(model for model in discovered if model not in configured)]
     annotators: dict[int, str] = {}
-    for case in cases:
+    for case in scoped_cases:
         for record in case.annotations:
             if record.status == "submitted" and metric_number((record.scores or {}).get(str(selected["key"]))) is not None:
                 annotators[record.user_id] = record.user.display_name
-    scopes = [metric_scope(cases, models, str(selected["key"]), None, "总体")]
-    scopes.extend(metric_scope(cases, models, str(selected["key"]), user_id, label) for user_id, label in sorted(annotators.items(), key=lambda item: item[1]))
+    scopes = [metric_scope(scoped_cases, models, str(selected["key"]), None, "总体")]
+    scopes.extend(metric_scope(scoped_cases, models, str(selected["key"]), user_id, label) for user_id, label in sorted(annotators.items(), key=lambda item: item[1]))
     return {
         "dimension": {"key": str(selected["key"]), "label": str(selected.get("label") or selected["key"]), "min": selected.get("min", 1), "max": selected.get("max", 10)},
         "dimensions": [{"key": str(item["key"]), "label": str(item.get("label") or item["key"]), "min": item.get("min", 1), "max": item.get("max", 10)} for item in dimensions],
         "models": models,
-        "total_case_count": len(cases),
+        "case_type": case_type,
+        "case_type_counts": case_type_counts,
+        "total_case_count": len(scoped_cases),
         "scopes": scopes,
     }
 
@@ -3621,7 +3668,13 @@ def project_cases(project_id: int, user: CurrentUser, db: DB, offset: int = 0, l
 
 
 @app.get("/api/projects/{project_id}/metrics")
-def project_metrics(project_id: int, user: CurrentUser, db: DB, dimension: str | None = Query(default=None, max_length=200)) -> dict[str, Any]:
+def project_metrics(
+    project_id: int,
+    user: CurrentUser,
+    db: DB,
+    dimension: str | None = Query(default=None, max_length=200),
+    case_type: str = Query(default="all", pattern="^(all|agent|non_agent)$"),
+) -> dict[str, Any]:
     project = ensure_project_access(project_id, user, db)
     cases = db.scalars(
         select(Case)
@@ -3629,7 +3682,7 @@ def project_metrics(project_id: int, user: CurrentUser, db: DB, dimension: str |
         .options(selectinload(Case.annotations).selectinload(Annotation.user))
         .order_by(Case.ordinal)
     ).all()
-    return project_metrics_payload(project, cases, dimension)
+    return project_metrics_payload(project, cases, dimension, case_type)
 
 
 @app.get("/api/projects/{project_id}/assignment-overview")
