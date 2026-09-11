@@ -652,9 +652,9 @@ class PetSkillsBody(BaseModel):
 
 
 class PetTicketGiftBody(BaseModel):
-    recipient_user_id: int = Field(ge=1)
+    recipient_user_id: int | None = Field(default=None, ge=1)
+    recipient_user_ids: list[int] = Field(default_factory=list, max_length=500)
     amount: int = Field(ge=1, le=50)
-    password: str = Field(min_length=1, max_length=300)
     note: str = Field(default="", max_length=300)
 
 
@@ -716,6 +716,7 @@ PET_EQUIPMENT_MAX_LEVEL = 10
 PET_EQUIPMENT_MAX_AFFIXES = 24
 PET_PENDING_DROPS_KEY = "__pending_drops__"
 PET_BATTLE_STATE_KEY = "__homestead_battle__"
+PET_EQUIPMENT_PARTS_KEY = "__equipment_parts__"
 PET_MAX_PENDING_DROPS = 10
 PET_BATTLE_HISTORY_LIMIT = 20
 PET_HOME_TIMEZONE = timezone(timedelta(hours=8))
@@ -842,6 +843,10 @@ def pet_inventory_entry(raw: Any) -> dict[str, Any]:
     # Preserve the level shown by the previous duplicate-count progression.
     count = max(0, int(raw or 0))
     return {"count": count, "level": min(5, max(1, count)), "affixes": [], "synthesis_failures": 0}
+
+
+def pet_equipment_parts(collection: PetCollection) -> int:
+    return max(0, int((collection.inventory or {}).get(PET_EQUIPMENT_PARTS_KEY, 0) or 0))
 
 
 def pet_synthesis_success_rate(entry: dict[str, Any]) -> int:
@@ -1042,6 +1047,7 @@ def pet_collection_payload(collection: PetCollection) -> dict[str, Any]:
     equipment_stats, equipment_sets = pet_equipment_state(collection)
     return {
         "equipment_catalog_size": len(PET_EQUIPMENT_CATALOG),
+        "equipment_parts": pet_equipment_parts(collection),
         "inventory": inventory_items,
         "equipped": collection.equipped or {},
         "equipment_stats": equipment_stats,
@@ -1326,6 +1332,52 @@ def reforge_pet_equipment_entry(item: dict[str, Any], raw_entry: Any) -> tuple[d
     return entry, entry["affixes"]
 
 
+def dismantle_pet_equipment(collection: PetCollection, item_id: str) -> tuple[dict[str, Any], int]:
+    item = PET_EQUIPMENT_CATALOG.get(item_id)
+    if not item:
+        raise ValueError("未知的装备")
+    inventory = dict(collection.inventory or {})
+    entry = pet_inventory_entry(inventory.get(item_id, 0))
+    if entry["count"] < 1:
+        raise ValueError("仓库中没有这件装备")
+    if (collection.equipped or {}).get(str(item["slot"])) == item_id and entry["count"] == 1:
+        raise ValueError("请先卸下这件装备再分解")
+    entry["count"] -= 1
+    if entry["count"]:
+        inventory[item_id] = entry
+    else:
+        inventory.pop(item_id, None)
+    parts = max(0, int(inventory.get(PET_EQUIPMENT_PARTS_KEY, 0) or 0)) + 1
+    inventory[PET_EQUIPMENT_PARTS_KEY] = parts
+    collection.inventory = inventory
+    collection.updated_at = utcnow()
+    return item, parts
+
+
+def forge_random_pet_equipment(collection: PetCollection) -> tuple[dict[str, Any], bool, dict[str, Any], bool]:
+    inventory = dict(collection.inventory or {})
+    parts = max(0, int(inventory.get(PET_EQUIPMENT_PARTS_KEY, 0) or 0))
+    if parts < 2:
+        raise ValueError("随机熔铸需要 2 枚装备零件")
+    rarity = pet_choose_rarity(collection)
+    pool = [item for item in PET_EQUIPMENT_CATALOG.values() if item["rarity"] == rarity]
+    item = dict(secrets.choice(pool))
+    entry = pet_inventory_entry(inventory.get(item["id"], 0))
+    entry["count"] += 1
+    level_up = entry["level"] < PET_EQUIPMENT_MAX_LEVEL and secrets.randbelow(100) < 1
+    if level_up:
+        entry["level"] += 1
+    affix = pet_random_affix(item, entry["level"], len(entry["affixes"]))
+    affix_added = len(entry["affixes"]) < PET_EQUIPMENT_MAX_AFFIXES
+    if affix_added:
+        entry["affixes"] = [*entry["affixes"], affix]
+    inventory[item["id"]] = entry
+    inventory[PET_EQUIPMENT_PARTS_KEY] = parts - 2
+    collection.inventory = inventory
+    collection.updated_at = utcnow()
+    return pet_equipment_effect(item, entry), level_up, affix, affix_added
+
+
 def claim_pet_drop_choice(collection: PetCollection, token: str, item_id: str) -> tuple[dict[str, Any], dict[str, Any], bool]:
     pending_drops = pet_pending_drops(collection)
     pending = next((entry for entry in pending_drops if hmac.compare_digest(entry["token"], token)), None)
@@ -1498,6 +1550,18 @@ def metric_model_summary(model: str, points: list[dict[str, Any]]) -> dict[str, 
     }
 
 
+def metric_latest_annotations(records: list[Annotation]) -> list[Annotation]:
+    latest: dict[tuple[int, str], tuple[tuple[int, float, int, int], Annotation]] = {}
+    for position, record in enumerate(records):
+        updated_at = record.updated_at or record.created_at
+        timestamp = updated_at.timestamp() if isinstance(updated_at, datetime) else 0.0
+        rank = (int(record.revision or 0), timestamp, int(record.id or 0), position)
+        key = (int(record.user_id), str(record.candidate_id))
+        if key not in latest or rank >= latest[key][0]:
+            latest[key] = (rank, record)
+    return [value[1] for value in latest.values()]
+
+
 def metric_scope(cases: list[Case], models: list[str], dimension_key: str, user_id: int | None, label: str) -> dict[str, Any]:
     model_set = set(models)
     points = {model: [] for model in models}
@@ -1527,7 +1591,7 @@ def metric_scope(cases: list[Case], models: list[str], dimension_key: str, user_
             continue
         candidate_complete += 1
         grouped: dict[str, list[tuple[float, bool]]] = {model: [] for model in models}
-        for record in case.annotations:
+        for record in metric_latest_annotations(case.annotations):
             if record.status != "submitted" or (user_id is not None and record.user_id != user_id):
                 continue
             model = candidate_to_model.get(record.candidate_id)
@@ -1620,7 +1684,7 @@ def project_metrics_payload(project: Project, cases: list[Case], dimension_key: 
     models = [*configured, *(model for model in discovered if model not in configured)]
     annotators: dict[int, str] = {}
     for case in scoped_cases:
-        for record in case.annotations:
+        for record in metric_latest_annotations(case.annotations):
             if record.status == "submitted" and metric_number((record.scores or {}).get(str(selected["key"]))) is not None:
                 annotators[record.user_id] = record.user.display_name
     scopes = [metric_scope(scoped_cases, models, str(selected["key"]), None, "总体")]
@@ -2605,6 +2669,8 @@ def battle_pet_in_homestead(user: CurrentUser, db: DB) -> dict[str, Any]:
     state = pet_battle_state(collection)
     if state["last_battle_date"] == today:
         raise HTTPException(409, "今天已经出战过了，明天 00:00 后再来")
+    if len(pet_pending_drops(collection)) >= PET_MAX_PENDING_DROPS:
+        raise HTTPException(409, "待领取装备已达 10 组，请先完成一次装备三选一再出战")
 
     opponent_rows = [row for row in pet_home_rows(db) if row[0].id != user.id]
     if not opponent_rows:
@@ -2613,12 +2679,11 @@ def battle_pet_in_homestead(user: CurrentUser, db: DB) -> dict[str, Any]:
     my_power, _ = pet_battle_power(progress, evolution, collection)
     opponent_power, _ = pet_battle_power(opponent_progress, opponent_evolution, opponent_collection)
     outcome = "win" if my_power > opponent_power else "draw" if my_power == opponent_power else "loss"
-    if outcome == "win" and len(pet_pending_drops(collection)) >= PET_MAX_PENDING_DROPS:
-        raise HTTPException(409, "待领取装备已达 10 组，请先完成一次装备三选一再出战")
 
     opponent = pet_home_resident_payload(opponent_user, opponent_profile, opponent_progress, opponent_evolution, opponent_collection)
     reward_token = ""
-    if outcome == "win":
+    lucky_loss_reward = outcome == "loss" and secrets.randbelow(100) < 10
+    if outcome == "win" or lucky_loss_reward:
         reward = queue_pet_equipment_drop(collection, "battle", prepend=True)
         if not reward:
             raise HTTPException(409, "战利品暂时无法存入，请先领取已有装备")
@@ -2632,7 +2697,7 @@ def battle_pet_in_homestead(user: CurrentUser, db: DB) -> dict[str, Any]:
         "my_power": my_power,
         "opponent_power": opponent_power,
         "power_delta": my_power - opponent_power,
-        "reward": outcome == "win",
+        "reward": bool(reward_token),
         "opponent": opponent,
     }
     inventory = dict(collection.inventory or {})
@@ -2647,6 +2712,7 @@ def battle_pet_in_homestead(user: CurrentUser, db: DB) -> dict[str, Any]:
     return {
         "outcome": outcome,
         "won": outcome == "win",
+        "lucky_reward": lucky_loss_reward,
         "my_power": my_power,
         "opponent_power": opponent_power,
         "opponent": opponent,
@@ -2841,6 +2907,36 @@ def reforge_pet_item(body: PetEquipmentActionBody, user: CurrentUser, db: DB) ->
     return {"profile": pet_dict(profile, progress, evolution, collection), "affixes": affixes}
 
 
+@app.post("/api/pet/equipment/dismantle")
+def dismantle_pet_item(body: PetEquipmentActionBody, user: CurrentUser, db: DB) -> dict[str, Any]:
+    profile, progress, evolution, collection = get_or_create_pet(db, user.id)
+    collection = db.scalar(select(PetCollection).where(PetCollection.user_id == user.id).with_for_update().execution_options(populate_existing=True)) or collection
+    try:
+        item, parts = dismantle_pet_equipment(collection, body.item_id)
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    db.commit()
+    return {"profile": pet_dict(profile, progress, evolution, collection), "dismantled": item, "equipment_parts": parts}
+
+
+@app.post("/api/pet/equipment/random-forge")
+def random_forge_pet_item(user: CurrentUser, db: DB) -> dict[str, Any]:
+    profile, progress, evolution, collection = get_or_create_pet(db, user.id)
+    collection = db.scalar(select(PetCollection).where(PetCollection.user_id == user.id).with_for_update().execution_options(populate_existing=True)) or collection
+    try:
+        item, level_up, affix, affix_added = forge_random_pet_equipment(collection)
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    db.commit()
+    return {
+        "profile": pet_dict(profile, progress, evolution, collection),
+        "item": item,
+        "level_up": level_up,
+        "identified_affix": affix,
+        "affix_added": affix_added,
+    }
+
+
 @app.put("/api/pet/skills")
 def set_pet_skills(body: PetSkillsBody, user: CurrentUser, db: DB) -> dict[str, Any]:
     profile, progress, evolution, collection = get_or_create_pet(db, user.id)
@@ -2855,22 +2951,34 @@ def set_pet_skills(body: PetSkillsBody, user: CurrentUser, db: DB) -> dict[str, 
 
 @app.post("/api/pet/admin/gift-tickets")
 def gift_pet_tickets(body: PetTicketGiftBody, admin: AdminUser, db: DB) -> dict[str, Any]:
-    if not verify_password(body.password, admin.password_hash):
-        raise HTTPException(403, "管理员密码不正确")
-    recipient = db.get(User, body.recipient_user_id)
-    if not recipient or not recipient.active:
-        raise HTTPException(404, "接收人不存在或已停用")
-    if recipient.id == admin.id:
-        raise HTTPException(422, "进化券只能发送给其他用户")
-    profile, progress, evolution, collection = get_or_create_pet(db, recipient.id)
-    db.flush()
-    evolution = db.scalar(select(PetEvolution).where(PetEvolution.user_id == recipient.id).with_for_update().execution_options(populate_existing=True)) or evolution
-    evolution.available_chances += body.amount
-    evolution.history = [{"at": utcnow().isoformat(), "type": "gift", "success": True, "spent": 0, "stage": evolution.stage, "path": evolution.path, "trait": f"管理员赠送 {body.amount} 张进化券", "amount": body.amount, "sender": admin.display_name}, *(evolution.history or [])][:50]
-    evolution.updated_at = utcnow()
-    db.add(PetTicketGift(sender_user_id=admin.id, recipient_user_id=recipient.id, amount=body.amount, note=body.note.strip()))
+    recipient_ids = list(dict.fromkeys([*body.recipient_user_ids, *([body.recipient_user_id] if body.recipient_user_id else [])]))
+    if not recipient_ids:
+        raise HTTPException(422, "请至少选择一位接收人")
+    recipients = [db.get(User, recipient_id) for recipient_id in recipient_ids]
+    if any(recipient is None or not recipient.active for recipient in recipients):
+        raise HTTPException(404, "部分接收人不存在或已停用")
+    now = utcnow()
+    first_profile: dict[str, Any] | None = None
+    for recipient in recipients:
+        assert recipient is not None
+        profile, progress, evolution, collection = get_or_create_pet(db, recipient.id)
+        db.flush()
+        evolution = db.scalar(select(PetEvolution).where(PetEvolution.user_id == recipient.id).with_for_update().execution_options(populate_existing=True)) or evolution
+        evolution.available_chances += body.amount
+        evolution.history = [{"at": now.isoformat(), "type": "gift", "success": True, "spent": 0, "stage": evolution.stage, "path": evolution.path, "trait": f"管理员赠送 {body.amount} 张进化券", "amount": body.amount, "sender": admin.display_name}, *(evolution.history or [])][:50]
+        evolution.updated_at = now
+        db.add(PetTicketGift(sender_user_id=admin.id, recipient_user_id=recipient.id, amount=body.amount, note=body.note.strip()))
+        if first_profile is None:
+            first_profile = pet_dict(profile, progress, evolution, collection)
     db.commit()
-    return {"recipient": user_dict(recipient), "amount": body.amount, "profile": pet_dict(profile, progress, evolution, collection)}
+    recipient_payloads = [user_dict(recipient) for recipient in recipients if recipient is not None]
+    return {
+        "recipient": recipient_payloads[0],
+        "recipients": recipient_payloads,
+        "amount": body.amount,
+        "total_amount": body.amount * len(recipient_payloads),
+        "profile": first_profile,
+    }
 
 
 @app.post("/api/pet/pet")

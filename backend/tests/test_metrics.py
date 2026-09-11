@@ -150,6 +150,32 @@ class MetricsPayloadTest(unittest.TestCase):
         self.assertEqual(result["models"], [])
         self.assertEqual(result["scopes"][0]["complete_case_count"], 0)
 
+    def test_duplicate_annotation_rows_only_use_latest_revision(self) -> None:
+        alice = User(id=1, username="alice", display_name="Alice", password_hash="x", role="annotator")
+        project = Project(id=1, name="Deduplicated", created_by=1, annotation_config={"dimensions": [{"key": "quality", "label": "质量", "min": 1, "max": 10}]})
+        old = annotation(alice, "candidate-a", 2, False)
+        old.id = 10
+        old.revision = 1
+        latest = annotation(alice, "candidate-a", 9, True)
+        latest.id = 11
+        latest.revision = 2
+        duplicate_case = Case(
+            id=1,
+            project_id=1,
+            external_id="duplicate-annotation",
+            ordinal=0,
+            payload={"candidates": [{"id": "candidate-a", "model": "model-a"}]},
+            annotations=[old, latest],
+        )
+
+        result = project_metrics_payload(project, [duplicate_case], "quality")
+        overall = result["scopes"][0]["models"][0]
+        self.assertEqual(overall["n"], 1)
+        self.assertEqual(overall["avg"], 9.0)
+        self.assertEqual(overall["manual_badcase_rate"], 100.0)
+        alice_scope = next(scope for scope in result["scopes"] if scope["label"] == "Alice")
+        self.assertEqual(alice_scope["models"][0]["avg"], 9.0)
+
     def test_old_project_uses_case_and_historical_score_dimensions(self) -> None:
         alice = User(id=1, username="alice", display_name="Alice", password_hash="x", role="annotator")
         project = Project(id=1, name="Legacy", created_by=1, annotation_config={})

@@ -164,6 +164,29 @@ class PetEvolutionTest(unittest.TestCase):
         self.assertEqual(entry["synthesis_failures"], 2)
         self.assertEqual(len(affixes), 2)
 
+    def test_dismantle_two_items_then_random_forge_can_level_up(self) -> None:
+        _, _, _, collection = api.get_or_create_pet(self.db, self.user.id)
+        source_id = "gear-01-1-1"
+        collection.inventory = {source_id: {"count": 2, "level": 4, "affixes": [], "synthesis_failures": 0}}
+
+        _, parts = api.dismantle_pet_equipment(collection, source_id)
+        self.assertEqual(parts, 1)
+        _, parts = api.dismantle_pet_equipment(collection, source_id)
+        self.assertEqual(parts, 2)
+        self.assertNotIn(source_id, collection.inventory)
+
+        generated = {"id": "forge-affix", "key": "all_drop_bonus", "label": "所有装备掉率", "value": 2, "critical": True}
+        with patch.object(api, "pet_choose_rarity", return_value="common"), patch.object(api.secrets, "choice", side_effect=lambda choices: choices[0]), patch.object(api.secrets, "randbelow", return_value=0), patch.object(api, "pet_random_affix", return_value=generated):
+            item, level_up, affix, affix_added = api.forge_random_pet_equipment(collection)
+
+        self.assertTrue(level_up)
+        self.assertTrue(affix_added)
+        self.assertEqual(affix, generated)
+        self.assertEqual(item["level"], 2)
+        self.assertEqual(item["count"], 1)
+        self.assertEqual(item["affixes"], [generated])
+        self.assertEqual(api.pet_equipment_parts(collection), 0)
+
     def test_annotation_drop_base_chance_is_eighteen_percent(self) -> None:
         _, _, _, collection = api.get_or_create_pet(self.db, self.user.id)
         self.assertEqual(api.PET_DROP_BASE_CHANCES["pet"], 500)
@@ -267,7 +290,7 @@ class PetEvolutionTest(unittest.TestCase):
         evolution.stage = 12
         self.db.commit()
 
-        with patch.object(api.secrets, "choice", side_effect=lambda choices: choices[0]), patch.object(api.secrets, "token_hex", return_value="loss-event"):
+        with patch.object(api.secrets, "choice", side_effect=lambda choices: choices[0]), patch.object(api.secrets, "randbelow", return_value=99), patch.object(api.secrets, "token_hex", return_value="loss-event"):
             result = api.battle_pet_in_homestead(self.user, self.db)
 
         self.assertFalse(result["won"])
@@ -276,6 +299,24 @@ class PetEvolutionTest(unittest.TestCase):
         self.assertEqual(result["profile"]["pending_drops"], [])
         self.assertFalse(result["home"]["battle_available"])
 
+    def test_daily_battle_loss_has_ten_percent_lucky_drop(self) -> None:
+        api.get_or_create_pet(self.db, self.user.id)
+        _, _, progress, evolution, _ = self.add_opponent()
+        progress.xp_units = api.pet_level_start_xp(30) * 5
+        evolution.path = "starlight"
+        evolution.stage = 12
+        self.db.commit()
+
+        with patch.object(api.secrets, "choice", side_effect=lambda choices: choices[0]), patch.object(api.secrets, "randbelow", return_value=0), patch.object(api.secrets, "token_hex", side_effect=["lucky-drop", "loss-event"]):
+            result = api.battle_pet_in_homestead(self.user, self.db)
+
+        self.assertFalse(result["won"])
+        self.assertEqual(result["outcome"], "loss")
+        self.assertTrue(result["lucky_reward"])
+        self.assertEqual(result["reward_pending"]["reason"], "battle")
+        self.assertEqual(result["profile"]["pending_drops"][0]["token"], "lucky-drop")
+        self.assertTrue(api.pet_battle_state(self.db.scalar(api.select(api.PetCollection).where(api.PetCollection.user_id == self.user.id)))["history"][0]["reward"])
+
     def test_battle_day_uses_china_calendar_day(self) -> None:
         before_midnight = api.datetime(2026, 9, 8, 15, 59, tzinfo=api.timezone.utc)
         after_midnight = api.datetime(2026, 9, 8, 16, 1, tzinfo=api.timezone.utc)
@@ -283,14 +324,21 @@ class PetEvolutionTest(unittest.TestCase):
         self.assertEqual(api.pet_battle_day(after_midnight), "2026-09-09")
         self.assertEqual(api.pet_next_battle_at(before_midnight), "2026-09-08T16:00:00+00:00")
 
-    def test_admin_can_gift_tickets_after_password_recheck(self) -> None:
+    def test_admin_can_bulk_gift_tickets_to_annotators_and_admins_without_password(self) -> None:
         admin = api.User(username="admin-pet", display_name="Admin", password_hash=api.hash_password("ticket-secret"), role="admin")
-        self.db.add(admin)
+        other_admin = api.User(username="admin-other", display_name="Other Admin", password_hash="unused", role="admin")
+        self.db.add_all([admin, other_admin])
         self.db.commit()
-        result = api.gift_pet_tickets(api.PetTicketGiftBody(recipient_user_id=self.user.id, amount=7, password="ticket-secret", note="奖励"), admin, self.db)
+        result = api.gift_pet_tickets(api.PetTicketGiftBody(recipient_user_ids=[self.user.id, admin.id, other_admin.id], amount=7, note="奖励"), admin, self.db)
         self.assertEqual(result["amount"], 7)
+        self.assertEqual(result["total_amount"], 21)
+        self.assertEqual(len(result["recipients"]), 3)
         self.assertEqual(result["profile"]["evolution_chances"], 9)
-        self.assertEqual(self.db.scalar(api.select(api.PetTicketGift.amount)), 7)
+        admin_evolution = self.db.scalar(api.select(api.PetEvolution).where(api.PetEvolution.user_id == admin.id))
+        other_admin_evolution = self.db.scalar(api.select(api.PetEvolution).where(api.PetEvolution.user_id == other_admin.id))
+        self.assertEqual(admin_evolution.available_chances, 7)
+        self.assertEqual(other_admin_evolution.available_chances, 7)
+        self.assertEqual(len(self.db.scalars(api.select(api.PetTicketGift)).all()), 3)
 
 
 if __name__ == "__main__":
