@@ -11,6 +11,7 @@ import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+from itertools import product
 from pathlib import Path
 from typing import Any, Annotated
 from urllib.parse import urlsplit
@@ -647,6 +648,16 @@ class PetEquipmentClaimBody(BaseModel):
     item_id: str = Field(min_length=1, max_length=120)
 
 
+class PetAutoEquipBody(BaseModel):
+    mode: str = Field(min_length=1, max_length=30)
+
+
+class PetWardrobeBody(BaseModel):
+    action: str = Field(min_length=1, max_length=20)
+    preset_id: str | None = Field(default=None, max_length=120)
+    name: str = Field(default="", max_length=30)
+
+
 class PetSkillsBody(BaseModel):
     active_skill_ids: list[str] = Field(default_factory=list, max_length=3)
 
@@ -717,7 +728,9 @@ PET_EQUIPMENT_MAX_AFFIXES = 24
 PET_PENDING_DROPS_KEY = "__pending_drops__"
 PET_BATTLE_STATE_KEY = "__homestead_battle__"
 PET_EQUIPMENT_PARTS_KEY = "__equipment_parts__"
+PET_WARDROBE_KEY = "__wardrobe_presets__"
 PET_MAX_PENDING_DROPS = 10
+PET_MAX_WARDROBE_PRESETS = 8
 PET_BATTLE_HISTORY_LIMIT = 20
 PET_HOME_TIMEZONE = timezone(timedelta(hours=8))
 PET_EQUIPMENT_SYNTHESIS_RATES = {1: 90, 2: 80, 3: 70, 4: 60, 5: 50, 6: 40, 7: 32, 8: 24, 9: 18}
@@ -985,7 +998,7 @@ def pet_pending_drop_payload(collection: PetCollection) -> list[dict[str, Any]]:
     } for pending in pet_pending_drops(collection)]
 
 
-def pet_equipment_state(collection: PetCollection) -> tuple[dict[str, int], list[dict[str, Any]]]:
+def pet_equipment_state(collection: PetCollection, equipped_override: dict[str, str] | None = None) -> tuple[dict[str, int], list[dict[str, Any]]]:
     stats = {
         "total_power": 0,
         "all_drop_bonus": 0,
@@ -997,7 +1010,7 @@ def pet_equipment_state(collection: PetCollection) -> tuple[dict[str, int], list
     }
     theme_counts: dict[str, int] = {}
     inventory = collection.inventory or {}
-    for slot, item_id in (collection.equipped or {}).items():
+    for slot, item_id in (equipped_override if equipped_override is not None else collection.equipped or {}).items():
         item = PET_EQUIPMENT_CATALOG.get(item_id)
         entry = pet_inventory_entry(inventory.get(item_id, 0))
         if not item or item["slot"] != slot or entry["count"] < 1:
@@ -1022,6 +1035,132 @@ def pet_equipment_state(collection: PetCollection) -> tuple[dict[str, int], list
             tiers.append({"pieces": required, "label": label, "active": active})
         sets.append({"theme": theme, "name": definition["name"], "description": definition["description"], "pieces": pieces, "bonuses": bonuses, "tiers": tiers})
     return stats, sets
+
+
+def pet_wardrobe_presets(collection: PetCollection) -> list[dict[str, Any]]:
+    raw_presets = (collection.inventory or {}).get(PET_WARDROBE_KEY, [])
+    if not isinstance(raw_presets, list):
+        return []
+    presets: list[dict[str, Any]] = []
+    for raw in raw_presets[:PET_MAX_WARDROBE_PRESETS]:
+        if not isinstance(raw, dict) or not str(raw.get("id") or ""):
+            continue
+        equipped = {
+            str(slot): str(item_id)
+            for slot, item_id in (raw.get("equipped") or {}).items()
+            if slot in PET_EQUIPMENT_SLOTS and item_id in PET_EQUIPMENT_CATALOG and PET_EQUIPMENT_CATALOG[item_id]["slot"] == slot
+        } if isinstance(raw.get("equipped"), dict) else {}
+        presets.append({
+            "id": str(raw["id"])[:120],
+            "name": str(raw.get("name") or "未命名搭配")[:30],
+            "color": str(raw.get("color") or "lime") if raw.get("color") in PET_COLORS else "lime",
+            "accessory": str(raw.get("accessory") or "none") if raw.get("accessory") in PET_ACCESSORIES else "none",
+            "equipped": equipped,
+            "created_at": str(raw.get("created_at") or utcnow().isoformat()),
+        })
+    return presets
+
+
+def pet_loadout_score(collection: PetCollection, equipped: dict[str, str], mode: str) -> tuple[int, int, int]:
+    stats, sets = pet_equipment_state(collection, equipped)
+    active_tiers = sum(len(entry["bonuses"]) for entry in sets)
+    if mode == "combat":
+        primary = stats["total_power"] * 6 + active_tiers * 15
+    elif mode == "evolution":
+        primary = stats["evolution_bonus"]
+    elif mode == "annotation":
+        primary = stats["all_drop_bonus"] + stats["annotation_drop_bonus"]
+    elif mode == "pet":
+        primary = stats["all_drop_bonus"] + stats["pet_drop_bonus"]
+    elif mode == "badcase":
+        primary = stats["all_drop_bonus"] + stats["badcase_drop_bonus"]
+    elif mode == "rarity":
+        primary = stats["rarity_boost"]
+    else:
+        raise ValueError("未知的自动配装场景")
+    return primary, stats["total_power"], active_tiers
+
+
+def pet_item_mode_value(item: dict[str, Any], mode: str) -> int:
+    values = {key: 0 for key in PET_EQUIPMENT_RANDOM_AFFIXES}
+    values[str(item["effect_key"])] += int(item["effect_value"])
+    for affix in item["affixes"]:
+        values[str(affix["key"])] += int(affix["value"])
+    if mode == "combat":
+        return int(item["power"])
+    if mode == "evolution":
+        return values["evolution_bonus"]
+    if mode == "annotation":
+        return values["all_drop_bonus"] + values["annotation_drop_bonus"]
+    if mode == "pet":
+        return values["all_drop_bonus"] + values["pet_drop_bonus"]
+    if mode == "badcase":
+        return values["all_drop_bonus"] + values["badcase_drop_bonus"]
+    return values["rarity_boost"]
+
+
+def pet_candidate_loadout_score(items: tuple[dict[str, Any] | None, ...], mode: str) -> tuple[int, int, int]:
+    stats = {key: 0 for key in PET_EQUIPMENT_RANDOM_AFFIXES}
+    total_power = 0
+    theme_counts: dict[str, int] = {}
+    for item in items:
+        if item is None:
+            continue
+        total_power += int(item["power"])
+        stats[str(item["effect_key"])] += int(item["effect_value"])
+        for affix in item["affixes"]:
+            stats[str(affix["key"])] += int(affix["value"])
+        theme = str(item["theme"])
+        theme_counts[theme] = theme_counts.get(theme, 0) + 1
+    active_tiers = 0
+    for theme, pieces in theme_counts.items():
+        for required, key, value, _ in PET_EQUIPMENT_SET_EFFECTS[theme]["tiers"]:
+            if pieces >= required:
+                stats[key] += value
+                active_tiers += 1
+    if mode == "combat":
+        primary = total_power * 6 + active_tiers * 15
+    elif mode == "evolution":
+        primary = stats["evolution_bonus"]
+    elif mode == "annotation":
+        primary = stats["all_drop_bonus"] + stats["annotation_drop_bonus"]
+    elif mode == "pet":
+        primary = stats["all_drop_bonus"] + stats["pet_drop_bonus"]
+    elif mode == "badcase":
+        primary = stats["all_drop_bonus"] + stats["badcase_drop_bonus"]
+    else:
+        primary = stats["rarity_boost"]
+    return primary, total_power, active_tiers
+
+
+def pet_auto_equip(collection: PetCollection, mode: str) -> tuple[dict[str, str], tuple[int, int, int], tuple[int, int, int]]:
+    if mode not in {"combat", "evolution", "annotation", "pet", "badcase", "rarity"}:
+        raise ValueError("未知的自动配装场景")
+    inventory = collection.inventory or {}
+    candidates: list[list[dict[str, Any] | None]] = []
+    for slot in PET_EQUIPMENT_SLOTS:
+        owned = [
+            pet_equipment_effect(item, inventory[item_id])
+            for item_id, item in PET_EQUIPMENT_CATALOG.items()
+            if item["slot"] == slot and pet_inventory_entry(inventory.get(item_id, 0))["count"] > 0
+        ]
+        best_by_theme: dict[str, dict[str, Any]] = {}
+        for item in owned:
+            current = best_by_theme.get(str(item["theme"]))
+            if current is None or (pet_item_mode_value(item, mode), int(item["power"]), int(item["level"])) > (pet_item_mode_value(current, mode), int(current["power"]), int(current["level"])):
+                best_by_theme[str(item["theme"])] = item
+        candidates.append([None, *best_by_theme.values()])
+    before = pet_loadout_score(collection, dict(collection.equipped or {}), mode)
+    best_equipped: dict[str, str] = {}
+    best_score = (-1, -1, -1)
+    for combination in product(*candidates):
+        score = pet_candidate_loadout_score(combination, mode)
+        if score > best_score:
+            best_score = score
+            best_equipped = {str(item["slot"]): str(item["id"]) for item in combination if item is not None}
+    collection.equipped = best_equipped
+    collection.updated_at = utcnow()
+    return best_equipped, before, best_score
 
 
 def pet_evolution_success_rate(collection: PetCollection) -> int:
@@ -1052,6 +1191,7 @@ def pet_collection_payload(collection: PetCollection) -> dict[str, Any]:
         "equipped": collection.equipped or {},
         "equipment_stats": equipment_stats,
         "equipment_sets": equipment_sets,
+        "wardrobe_presets": pet_wardrobe_presets(collection),
         "skills": skills,
         "active_skills": collection.active_skills or [],
         "drop_history": collection.drop_history or [],
@@ -2845,6 +2985,62 @@ def equip_pet_item(body: PetEquipmentBody, user: CurrentUser, db: DB) -> dict[st
     collection.updated_at = utcnow()
     db.commit()
     return pet_dict(profile, progress, evolution, collection)
+
+
+@app.post("/api/pet/equipment/auto")
+def auto_equip_pet_items(body: PetAutoEquipBody, user: CurrentUser, db: DB) -> dict[str, Any]:
+    profile, progress, evolution, collection = get_or_create_pet(db, user.id)
+    try:
+        equipped, before, after = pet_auto_equip(collection, body.mode)
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    db.commit()
+    return {"profile": pet_dict(profile, progress, evolution, collection), "mode": body.mode, "equipped": equipped, "score_before": before[0], "score_after": after[0]}
+
+
+@app.post("/api/pet/wardrobe")
+def manage_pet_wardrobe(body: PetWardrobeBody, user: CurrentUser, db: DB) -> dict[str, Any]:
+    profile, progress, evolution, collection = get_or_create_pet(db, user.id)
+    presets = pet_wardrobe_presets(collection)
+    inventory = dict(collection.inventory or {})
+    action = body.action.strip().lower()
+    if action == "save":
+        if len(presets) >= PET_MAX_WARDROBE_PRESETS:
+            raise HTTPException(422, f"衣柜最多保存 {PET_MAX_WARDROBE_PRESETS} 套搭配")
+        preset = {
+            "id": f"look-{secrets.token_hex(6)}",
+            "name": body.name.strip() or f"搭配 {len(presets) + 1}",
+            "color": profile.color,
+            "accessory": profile.accessory,
+            "equipped": dict(collection.equipped or {}),
+            "created_at": utcnow().isoformat(),
+        }
+        presets = [preset, *presets]
+    elif action == "apply":
+        preset = next((entry for entry in presets if entry["id"] == body.preset_id), None)
+        if not preset:
+            raise HTTPException(404, "衣柜搭配不存在")
+        level = pet_level(progress.xp_units / 5)
+        if PET_COLORS.get(preset["color"], 999) <= level:
+            profile.color = preset["color"]
+        if PET_ACCESSORIES.get(preset["accessory"], 999) <= level:
+            profile.accessory = preset["accessory"]
+        collection.equipped = {
+            slot: item_id for slot, item_id in preset["equipped"].items()
+            if pet_inventory_entry(inventory.get(item_id, 0))["count"] > 0
+        }
+    elif action == "delete":
+        if not any(entry["id"] == body.preset_id for entry in presets):
+            raise HTTPException(404, "衣柜搭配不存在")
+        presets = [entry for entry in presets if entry["id"] != body.preset_id]
+    else:
+        raise HTTPException(422, "未知的衣柜操作")
+    inventory[PET_WARDROBE_KEY] = presets
+    collection.inventory = inventory
+    profile.updated_at = utcnow()
+    collection.updated_at = utcnow()
+    db.commit()
+    return {"profile": pet_dict(profile, progress, evolution, collection), "action": action}
 
 
 @app.post("/api/pet/equipment/synthesize")

@@ -124,6 +124,51 @@ class PetEvolutionTest(unittest.TestCase):
         self.assertEqual(payload["equipment_sets"][0]["name"], "星愿引力")
         self.assertTrue(all(tier["active"] for tier in payload["equipment_sets"][0]["tiers"]))
 
+    def test_auto_equip_uses_owned_items_and_never_reduces_selected_goal(self) -> None:
+        _, _, _, collection = api.get_or_create_pet(self.db, self.user.id)
+        item_ids = ["gear-01-1-1", "gear-01-2-2", "gear-01-3-3", "gear-01-4-4", "gear-01-5-5"]
+        collection.inventory = {
+            item_id: {"count": 1, "level": index + 1, "affixes": [], "synthesis_failures": 0}
+            for index, item_id in enumerate(item_ids)
+        }
+        collection.equipped = {"head": item_ids[0]}
+        before = api.pet_loadout_score(collection, collection.equipped, "evolution")
+
+        equipped, reported_before, after = api.pet_auto_equip(collection, "evolution")
+
+        self.assertEqual(reported_before, before)
+        self.assertGreaterEqual(after, before)
+        self.assertEqual(set(equipped), set(api.PET_EQUIPMENT_SLOTS))
+        self.assertTrue(all(item_id in collection.inventory for item_id in equipped.values()))
+        self.assertEqual(api.pet_equipment_state(collection)[0]["evolution_bonus"], after[0])
+
+    def test_wardrobe_saves_applies_and_deletes_a_complete_look(self) -> None:
+        profile, _, _, collection = api.get_or_create_pet(self.db, self.user.id)
+        item_id = "gear-01-1-1"
+        collection.inventory = {item_id: {"count": 1, "level": 2, "affixes": [], "synthesis_failures": 0}}
+        collection.equipped = {"head": item_id}
+        profile.color = "aqua"
+        profile.accessory = "leaf"
+        self.db.commit()
+
+        saved = api.manage_pet_wardrobe(api.PetWardrobeBody(action="save", name="寻宝套"), self.user, self.db)
+        presets = saved["profile"]["wardrobe_presets"]
+        self.assertEqual(len(presets), 1)
+        self.assertEqual(presets[0]["name"], "寻宝套")
+        self.assertEqual(presets[0]["equipped"], {"head": item_id})
+
+        profile.color = "lime"
+        profile.accessory = "none"
+        collection.equipped = {}
+        self.db.commit()
+        applied = api.manage_pet_wardrobe(api.PetWardrobeBody(action="apply", preset_id=presets[0]["id"]), self.user, self.db)
+        self.assertEqual(applied["profile"]["color"], "aqua")
+        self.assertEqual(applied["profile"]["accessory"], "leaf")
+        self.assertEqual(applied["profile"]["equipped"], {"head": item_id})
+
+        deleted = api.manage_pet_wardrobe(api.PetWardrobeBody(action="delete", preset_id=presets[0]["id"]), self.user, self.db)
+        self.assertEqual(deleted["profile"]["wardrobe_presets"], [])
+
     def test_new_inventory_entries_do_not_auto_level_from_duplicate_count(self) -> None:
         item = api.PET_EQUIPMENT_CATALOG["gear-01-1-1"]
         entry = {"count": 7, "level": 2, "affixes": [], "synthesis_failures": 0}

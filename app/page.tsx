@@ -64,12 +64,14 @@ type PetEvolutionPath = "" | "starlight" | "guardian" | "forest" | "storm" | "oc
 type PetRarity = "common" | "uncommon" | "rare" | "epic" | "legendary";
 type PetEquipmentSlot = "head" | "face" | "neck" | "back" | "tail";
 type PetEquipmentSort = "theme_slot" | "slot_theme" | "power" | "level" | "rarity" | "count";
+type PetAutoEquipMode = "combat" | "evolution" | "annotation" | "pet" | "badcase" | "rarity";
 type PetEquipmentEffectKey = "all_drop_bonus" | "pet_drop_bonus" | "annotation_drop_bonus" | "badcase_drop_bonus" | "evolution_bonus" | "rarity_boost";
 type PetEquipmentAffix = { id: string; key: PetEquipmentEffectKey; label: string; value: number; critical: boolean };
 type PetEquipment = { id: string; name: string; slot: PetEquipmentSlot; slot_name: string; symbol: string; rarity: PetRarity; theme: string; count: number; level: number; power: number; effect_key: Exclude<PetEquipmentEffectKey, "rarity_boost">; effect_label: string; effect_value: number; affixes: PetEquipmentAffix[]; synthesis_failures: number; synthesis_success_rate: number };
 type PetEquipmentStats = { total_power: number; all_drop_bonus: number; pet_drop_bonus: number; annotation_drop_bonus: number; badcase_drop_bonus: number; evolution_bonus: number; rarity_boost: number };
 type PetEquipmentSetTier = { pieces: number; key: PetEquipmentEffectKey; value: number; label: string };
 type PetEquipmentSet = { theme: string; name: string; description: string; pieces: number; bonuses: string[]; tiers: (Omit<PetEquipmentSetTier, "key" | "value"> & { active: boolean })[] };
+type PetWardrobePreset = { id: string; name: string; color: PetColor; accessory: PetAccessory; equipped: Partial<Record<PetEquipmentSlot, string>>; created_at: string };
 type PetSkill = { id: string; name: string; icon: string; description: string; level: number; active: boolean };
 type PetDropReason = "pet" | "annotation" | "badcase" | "battle";
 type PetDropEvent = PetEquipment & { reason: PetDropReason; duplicate: boolean; identified_affix?: PetEquipmentAffix; affix_added?: boolean; at: string };
@@ -102,6 +104,7 @@ type PetProfile = {
   equipped: Partial<Record<PetEquipmentSlot, string>>;
   equipment_stats: PetEquipmentStats;
   equipment_sets: PetEquipmentSet[];
+  wardrobe_presets: PetWardrobePreset[];
   skills: PetSkill[];
   active_skills: string[];
   drop_history: PetDropEvent[];
@@ -299,7 +302,7 @@ const EMPTY_JUDGE_CONFIG: JudgeConfig = {
   verifier_prompt: "",
 };
 const DEFAULT_EQUIPMENT_STATS: PetEquipmentStats = { total_power: 0, all_drop_bonus: 0, pet_drop_bonus: 0, annotation_drop_bonus: 0, badcase_drop_bonus: 0, evolution_bonus: 0, rarity_boost: 0 };
-const DEFAULT_PET: PetProfile = { name: "小镜", color: "lime", accessory: "none", xp: 0, level: 1, current_level_xp: 0, next_level_xp: 20, earned_event_keys: [], evolution_chances: 0, evolution_credited_level: 1, evolution_stage: 0, evolution_path: "", evolution_variant: 0, evolution_traits: [], evolution_history: [], equipment_catalog_size: 300, equipment_parts: 0, inventory: [], equipped: {}, equipment_stats: DEFAULT_EQUIPMENT_STATS, equipment_sets: [], skills: [], active_skills: [], drop_history: [], pending_drops: [], total_drops: 0, evolution_pity: 0, evolution_success_rate: 10 };
+const DEFAULT_PET: PetProfile = { name: "小镜", color: "lime", accessory: "none", xp: 0, level: 1, current_level_xp: 0, next_level_xp: 20, earned_event_keys: [], evolution_chances: 0, evolution_credited_level: 1, evolution_stage: 0, evolution_path: "", evolution_variant: 0, evolution_traits: [], evolution_history: [], equipment_catalog_size: 300, equipment_parts: 0, inventory: [], equipped: {}, equipment_stats: DEFAULT_EQUIPMENT_STATS, equipment_sets: [], wardrobe_presets: [], skills: [], active_skills: [], drop_history: [], pending_drops: [], total_drops: 0, evolution_pity: 0, evolution_success_rate: 10 };
 const PET_COLORS: { id: PetColor; label: string; value: string; level: number }[] = [
   { id: "lime", label: "青柠", value: "#d9ff78", level: 1 },
   { id: "aqua", label: "薄荷", value: "#9de8dc", level: 2 },
@@ -383,6 +386,14 @@ const PET_EQUIPMENT_SET_EFFECTS: Record<string, { name: string; description: str
   纸片: { name: "灵感归档", description: "Badcase 追踪与标注", tiers: [{ pieces: 2, key: "badcase_drop_bonus", value: 3, label: "Badcase 掉率 +3%" }, { pieces: 3, key: "all_drop_bonus", value: 2, label: "所有装备掉率 +2%" }, { pieces: 5, key: "annotation_drop_bonus", value: 5, label: "提交标注掉率 +5%" }] },
 };
 const PET_RARITY_LABELS: Record<PetRarity, string> = { common: "普通", uncommon: "优秀", rare: "稀有", epic: "史诗", legendary: "传说" };
+const PET_AUTO_EQUIP_MODES: { id: PetAutoEquipMode; icon: string; label: string; description: string }[] = [
+  { id: "combat", icon: "⚔", label: "家园战力", description: "优先总战力，并计算已激活套装层数" },
+  { id: "evolution", icon: "↟", label: "单抽进化", description: "最大化背饰、词条与套装的进化加成" },
+  { id: "annotation", icon: "✓", label: "提交标注", description: "最大化所有掉率与标注专属掉率" },
+  { id: "pet", icon: "♡", label: "摸摸寻宝", description: "最大化所有掉率与摸摸专属掉率" },
+  { id: "badcase", icon: "!", label: "Badcase", description: "最大化所有掉率与 Badcase 专属掉率" },
+  { id: "rarity", icon: "✦", label: "稀有收藏", description: "优先稀有装备权重，再比较战力" },
+];
 const PET_DROP_BASE_CHANCES = { pet: 500, annotation: 1800, badcase: 2000 };
 const PET_SKILL_DEFINITIONS: Omit<PetSkill, "level" | "active">[] = [
   { id: "lucky_nose", name: "幸运鼻尖", icon: "✦", description: "所有装备掉率 +1%/级" }, { id: "treasure_paws", name: "寻宝肉垫", icon: "◇", description: "摸摸装备掉率 +2%/级" },
@@ -436,6 +447,67 @@ function petEquipmentState(inventory: PetEquipment[], equipped: Partial<Record<P
   return { stats, sets };
 }
 
+function petAutoLoadout(profile: PetProfile, mode: PetAutoEquipMode) {
+  const slotEntries = Object.keys(PET_EQUIPMENT_SLOTS) as PetEquipmentSlot[];
+  const isBetter = (left: readonly number[], right: readonly number[]) => left.some((value, index) => value > right[index] && left.slice(0, index).every((earlier, earlierIndex) => earlier === right[earlierIndex]));
+  const itemValue = (item: PetEquipment) => {
+    const values = { ...DEFAULT_EQUIPMENT_STATS };
+    values.total_power = item.power;
+    values[item.effect_key] += item.effect_value;
+    item.affixes.forEach((affix) => { values[affix.key] += affix.value; });
+    if (mode === "combat") return item.power;
+    if (mode === "evolution") return values.evolution_bonus;
+    if (mode === "annotation") return values.all_drop_bonus + values.annotation_drop_bonus;
+    if (mode === "pet") return values.all_drop_bonus + values.pet_drop_bonus;
+    if (mode === "badcase") return values.all_drop_bonus + values.badcase_drop_bonus;
+    return values.rarity_boost;
+  };
+  const candidates = slotEntries.map((slot) => {
+    const bestByTheme = new Map<string, PetEquipment>();
+    profile.inventory.filter((item) => item.slot === slot).forEach((item) => {
+      const current = bestByTheme.get(item.theme);
+      if (!current || isBetter([itemValue(item), item.power, item.level], [itemValue(current), current.power, current.level])) bestByTheme.set(item.theme, item);
+    });
+    return [null, ...bestByTheme.values()] as (PetEquipment | null)[];
+  });
+  const loadoutScore = (items: (PetEquipment | null)[]) => {
+    const equipped = Object.fromEntries(items.filter((item): item is PetEquipment => Boolean(item)).map((item) => [item.slot, item.id])) as Partial<Record<PetEquipmentSlot, string>>;
+    const stats = { ...DEFAULT_EQUIPMENT_STATS };
+    const themeCounts = new Map<string, number>();
+    items.forEach((item) => {
+      if (!item) return;
+      stats.total_power += item.power;
+      stats[item.effect_key] += item.effect_value;
+      item.affixes.forEach((affix) => { stats[affix.key] += affix.value; });
+      themeCounts.set(item.theme, (themeCounts.get(item.theme) ?? 0) + 1);
+    });
+    let activeTiers = 0;
+    themeCounts.forEach((pieces, theme) => PET_EQUIPMENT_SET_EFFECTS[theme].tiers.forEach((tier) => {
+      if (pieces < tier.pieces) return;
+      stats[tier.key] += tier.value;
+      activeTiers += 1;
+    }));
+    const primary = mode === "combat" ? stats.total_power * 6 + activeTiers * 15
+      : mode === "evolution" ? stats.evolution_bonus
+        : mode === "annotation" ? stats.all_drop_bonus + stats.annotation_drop_bonus
+          : mode === "pet" ? stats.all_drop_bonus + stats.pet_drop_bonus
+            : mode === "badcase" ? stats.all_drop_bonus + stats.badcase_drop_bonus
+              : stats.rarity_boost;
+    return { equipped, score: [primary, stats.total_power, activeTiers] as const };
+  };
+  let best = loadoutScore([]);
+  const visit = (slotIndex: number, selected: (PetEquipment | null)[]) => {
+    if (slotIndex === candidates.length) {
+      const result = loadoutScore(selected);
+      if (isBetter(result.score, best.score)) best = result;
+      return;
+    }
+    candidates[slotIndex].forEach((item) => visit(slotIndex + 1, [...selected, item]));
+  };
+  visit(0, []);
+  return best;
+}
+
 function petEquipmentDropMessage(drop: PetDropEvent, source: "摸摸" | "标注") {
   if (!drop.duplicate) return `${source}掉落「${drop.name}」！`;
   return `${source}掉落同名材料「${drop.name}」，现有 ×${drop.count}`;
@@ -475,6 +547,14 @@ function normalizedPetProfile(value: Partial<PetProfile> | null | undefined): Pe
   }).slice(0, PET_EQUIPMENT_CATALOG.length) : [];
   const equipped = isObject(value?.equipped) ? value.equipped as Partial<Record<PetEquipmentSlot, string>> : {};
   const equipmentState = petEquipmentState(inventory, equipped);
+  const wardrobePresets = Array.isArray(value?.wardrobe_presets) ? value.wardrobe_presets.filter((preset): preset is PetWardrobePreset => isObject(preset) && typeof preset.id === "string").map((preset) => ({
+    id: preset.id.slice(0, 120),
+    name: typeof preset.name === "string" && preset.name.trim() ? preset.name.trim().slice(0, 30) : "未命名搭配",
+    color: PET_COLORS.some((item) => item.id === preset.color) ? preset.color : "lime",
+    accessory: PET_ACCESSORIES.some((item) => item.id === preset.accessory) ? preset.accessory : "none",
+    equipped: isObject(preset.equipped) ? Object.fromEntries(Object.entries(preset.equipped).filter(([slot, itemId]) => slot in PET_EQUIPMENT_SLOTS && typeof itemId === "string" && PET_EQUIPMENT_CATALOG.some((item) => item.id === itemId && item.slot === slot))) as Partial<Record<PetEquipmentSlot, string>> : {},
+    created_at: typeof preset.created_at === "string" ? preset.created_at : new Date().toISOString(),
+  })).slice(0, 8) : [];
   const activeSkills = Array.isArray(value?.active_skills) ? value.active_skills.filter((item): item is string => typeof item === "string").slice(0, 3) : [];
   const skills = Array.isArray(value?.skills) && value.skills.length ? value.skills.filter((item): item is PetSkill => isObject(item) && typeof item.id === "string" && typeof item.name === "string").map((item) => ({ ...item, level: Math.max(0, Math.min(5, Math.floor(Number(item.level) || 0))), active: activeSkills.includes(item.id) })) : PET_SKILL_DEFINITIONS.map((item) => ({ ...item, level: 0, active: false }));
   const evolutionPity = Math.max(0, Math.min(20, Math.floor(Number(value?.evolution_pity) || 0)));
@@ -534,6 +614,7 @@ function normalizedPetProfile(value: Partial<PetProfile> | null | undefined): Pe
     equipped,
     equipment_stats: equipmentState.stats,
     equipment_sets: equipmentState.sets,
+    wardrobe_presets: wardrobePresets,
     skills,
     active_skills: activeSkills,
     drop_history: Array.isArray(value?.drop_history) ? value.drop_history.filter((item): item is PetDropEvent => isObject(item) && typeof item.id === "string" && typeof item.at === "string").flatMap((item) => {
@@ -1815,7 +1896,7 @@ function Icon({ children }: { children: ReactNode }) {
   return <span className="icon" aria-hidden="true">{children}</span>;
 }
 
-function PetCreatureVisual({ profile, accessory }: { profile: PetProfile; accessory?: string }) {
+function PetCreatureVisual({ profile, accessory, showEquipment = true }: { profile: PetProfile; accessory?: string; showEquipment?: boolean }) {
   const path = profile.evolution_path;
   const pathInfo = path ? PET_EVOLUTION_PATHS[path] : null;
   const equippedItems = Object.values(profile.equipped).map((itemId) => profile.inventory.find((item) => item.id === itemId)).filter((item): item is PetEquipment => Boolean(item));
@@ -1825,7 +1906,7 @@ function PetCreatureVisual({ profile, accessory }: { profile: PetProfile; access
     {profile.evolution_stage >= 2 ? <><span className="pet-evolution-wing left" /><span className="pet-evolution-wing right" /></> : null}
     {profile.evolution_stage >= 3 ? <span className="pet-evolution-crown" /> : null}
     {accessory ? <span className={`pet-accessory accessory-${profile.accessory}`}>{accessory}</span> : null}
-    {equippedItems.map((item) => <span className={`pet-equipment pet-equipment-${item.slot} rarity-${item.rarity}`} key={item.slot}>{item.symbol}</span>)}
+    {showEquipment ? equippedItems.map((item) => <span className={`pet-equipment pet-equipment-${item.slot} rarity-${item.rarity}`} key={item.slot}>{item.symbol}</span>) : null}
     <i className="pet-ear left" /><i className="pet-ear right" /><b className="pet-eye left" /><b className="pet-eye right" /><em /><span className="pet-tail" />
   </span>;
 }
@@ -1862,7 +1943,7 @@ function PetHomeResidentCard({ resident, isMe = false }: { resident: PetHomeResi
       <b><i>战力</i>{resident.battle_power.toLocaleString()}</b>
     </header>
     <div className="pet-home-resident-stage">
-      <div className="pet-home-orbit"><PetCreatureVisual profile={visualProfile} accessory={accessory} /></div>
+      <div className="pet-home-orbit"><span className="pet-home-orbit-glow" /><PetCreatureVisual profile={visualProfile} accessory={accessory} showEquipment={false} /><span className="pet-home-orbit-shadow" /></div>
       <div className="pet-home-resident-overview">
         <div className="pet-home-resident-name"><small>{resident.owner_name} 的伙伴</small><strong>{resident.pet_name}</strong><span>Lv.{resident.level} · {resident.title}</span></div>
         <div className="pet-home-route"><i>{resident.evolution_path ? PET_EVOLUTION_PATHS[resident.evolution_path].motif : "·"}</i><div><small>进化路线</small><strong>{resident.evolution_name}</strong><span>{resident.evolution_stage ? `第 ${resident.evolution_stage} 次进化` : "尚未开始进化"}</span></div></div>
@@ -1914,7 +1995,7 @@ function PetHomestead({ open, user, data, busy, battleBusy, error, result, onRef
           <div className="pet-home-command-scene" style={{ "--pet-color": PET_COLORS.find((item) => item.id === data.me.color)?.value ?? PET_COLORS[0].value } as CSSProperties}>
             <span className="pet-home-sun">DAILY<br />ARENA</span>
             <div className="pet-home-grid-lines" />
-            {meProfile ? <div className="pet-home-main-pet"><PetCreatureVisual profile={meProfile} accessory={myAccessory} /><span>{data.me.pet_name}</span></div> : null}
+            {meProfile ? <div className="pet-home-main-pet"><i className="pet-home-pedestal" /><PetCreatureVisual profile={meProfile} accessory={myAccessory} showEquipment={false} /><span>{data.me.pet_name}</span></div> : null}
           </div>
           <div className="pet-home-command-copy">
             <div className="pet-home-profile-heading"><div><span>MY COMPANION</span><h3>{data.me.pet_name}</h3><p>Lv.{data.me.level} · {data.me.title}</p></div><b><small>COMBAT POWER</small><strong>{data.me.battle_power.toLocaleString()}</strong><em>家园排行 #{data.me.rank ?? "–"}</em></b></div>
@@ -2056,7 +2137,7 @@ function PetEquipmentGuide({ open, profile, onClose }: { open: boolean; profile:
   </section>;
 }
 
-function CompanionPet({ visible, message, mood, completed, total, pulse, hasNext, profile, settingsOpen, draftName, busy, persistenceLabel, isAdmin, currentUserId, adminUsers, onPet, onEvolve, onEquip, onSynthesize, onReforge, onDismantle, onRandomForge, onOpenEquipmentGuide, onToggleSkill, onGiftTickets, onNext, onHide, onShow, onToggleSettings, onDraftName, onSelectColor, onSelectAccessory, onSaveProfile }: {
+function CompanionPet({ visible, message, mood, completed, total, pulse, hasNext, profile, settingsOpen, draftName, busy, persistenceLabel, isAdmin, currentUserId, adminUsers, onPet, onEvolve, onEquip, onAutoEquip, onSynthesize, onReforge, onDismantle, onRandomForge, onOpenEquipmentGuide, onSaveWardrobe, onApplyWardrobe, onDeleteWardrobe, onToggleSkill, onGiftTickets, onNext, onHide, onShow, onToggleSettings, onDraftName, onSelectColor, onSelectAccessory, onSaveProfile }: {
   visible: boolean;
   message: string;
   mood: PetMood;
@@ -2075,11 +2156,15 @@ function CompanionPet({ visible, message, mood, completed, total, pulse, hasNext
   onPet: () => void;
   onEvolve: (spend: 1 | 5) => void;
   onEquip: (slot: PetEquipmentSlot, itemId: string | null) => void;
+  onAutoEquip: (mode: PetAutoEquipMode) => void;
   onSynthesize: (itemId: string) => void;
   onReforge: (itemId: string) => void;
   onDismantle: (itemId: string) => void;
   onRandomForge: () => void;
   onOpenEquipmentGuide: () => void;
+  onSaveWardrobe: (name: string) => Promise<void>;
+  onApplyWardrobe: (presetId: string) => void;
+  onDeleteWardrobe: (presetId: string) => void;
   onToggleSkill: (skillId: string) => void;
   onGiftTickets: (userIds: string[], amount: number, note: string) => Promise<void>;
   onNext: () => void;
@@ -2091,7 +2176,7 @@ function CompanionPet({ visible, message, mood, completed, total, pulse, hasNext
   onSelectAccessory: (value: PetAccessory) => void;
   onSaveProfile: () => void;
 }) {
-  const [studioSection, setStudioSection] = useState<"evolution" | "equipment" | "skills" | "appearance">("evolution");
+  const [studioSection, setStudioSection] = useState<"evolution" | "equipment" | "wardrobe" | "skills" | "appearance">("evolution");
   const [equipmentFilter, setEquipmentFilter] = useState<"all" | "synthesis" | "reforge" | "equipped">("all");
   const [equipmentSlotFilter, setEquipmentSlotFilter] = useState<"all" | PetEquipmentSlot>("all");
   const [equipmentThemeFilter, setEquipmentThemeFilter] = useState("all");
@@ -2100,6 +2185,7 @@ function CompanionPet({ visible, message, mood, completed, total, pulse, hasNext
   const [giftUserIds, setGiftUserIds] = useState<string[]>([]);
   const [giftAmount, setGiftAmount] = useState(1);
   const [giftNote, setGiftNote] = useState("");
+  const [wardrobeName, setWardrobeName] = useState("");
   if (!visible) return <button className="pet-summon" type="button" onClick={onShow}><span aria-hidden="true">◉ᴗ◉</span> 唤回{profile.name}</button>;
   const progress = total ? Math.min(100, Math.round(completed / total * 100)) : 0;
   const levelStart = profile.current_level_xp ?? petLevelStartXp(profile.level);
@@ -2174,7 +2260,7 @@ function CompanionPet({ visible, message, mood, completed, total, pulse, hasNext
           </aside>
           <div className="pet-studio-editor">
             <nav className="pet-studio-tabs" aria-label="宠物工作室分类">
-              {[["evolution", "进化抽奖"], ["equipment", `装备 ${profile.inventory.length}/${profile.equipment_catalog_size}`], ["skills", `技能 ${profile.skills.filter((item) => item.level > 0).length}/8`], ["appearance", "外观与等级"]].map(([id, label]) => <button type="button" className={studioSection === id ? "active" : ""} onClick={() => setStudioSection(id as typeof studioSection)} key={id}>{label}</button>)}
+              {[["evolution", "进化抽奖"], ["equipment", `装备 ${profile.inventory.length}/${profile.equipment_catalog_size}`], ["wardrobe", `衣柜 ${profile.wardrobe_presets.length}/8`], ["skills", `技能 ${profile.skills.filter((item) => item.level > 0).length}/8`], ["appearance", "外观与等级"]].map(([id, label]) => <button type="button" className={studioSection === id ? "active" : ""} onClick={() => setStudioSection(id as typeof studioSection)} key={id}>{label}</button>)}
             </nav>
             {studioSection === "evolution" ? <section className={`pet-evolution-lab pet-evolution-v2 ${profile.evolution_path ? `path-${profile.evolution_path}` : ""}`}>
               <header><div><span>EVOLUTION LOTTERY</span><strong>{profile.evolution_stage ? `${profile.evolution_name} · 第 ${profile.evolution_stage} 次进化` : "等待第一次随机进化"}</strong></div><b>{profile.evolution_chances} 张进化券</b></header>
@@ -2195,6 +2281,7 @@ function CompanionPet({ visible, message, mood, completed, total, pulse, hasNext
               <header><div><span>EQUIPMENT CODEX</span><h3>装备仓库与套装图鉴</h3></div><div className="pet-equipment-head-actions"><b>{profile.inventory.length} / {profile.equipment_catalog_size}</b><button type="button" onClick={onOpenEquipmentGuide}>查看攻略 ↗</button></div></header>
               <div className="pet-drop-rate-strip"><span><b>5%</b> 摸摸</span><span><b>18%</b> 提交标注</span><span><b>20%</b> Badcase 额外判定</span><small>均为基础概率，装备与技能加成另计</small></div>
               <div className="pet-equipment-rules"><article><b>01</b><div><strong>掉落三选一</strong><span>先看库存、套装与部位，随机词条领取后揭晓</span></div></article><article><b>02</b><div><strong>三件同名强化</strong><span>保留主装备、消耗 2 件材料，按成功率升 1 级</span></div></article><article><b>03</b><div><strong>分解与随机熔铸</strong><span>分解 2 件换 2 枚零件，再随机铸成 1 件装备</span></div></article><article><b>04</b><div><strong>词条洗练</strong><span>消耗 1 件同名材料，等级和强化保底保持不变</span></div></article></div>
+              <section className="pet-auto-loadout"><header><div><span>AUTO LOADOUT</span><strong>按场景自动配装</strong><small>会同时比较单件效果、随机词条与套装 2 / 3 / 5 件共鸣；可先在衣柜保存当前搭配。</small></div><b>{Object.keys(profile.equipped).length} / 5 已穿戴</b></header><div>{PET_AUTO_EQUIP_MODES.map((mode) => <button type="button" disabled={busy || !profile.inventory.length} onClick={() => onAutoEquip(mode.id)} key={mode.id}><i>{mode.icon}</i><span><strong>{mode.label}</strong><small>{mode.description}</small></span><em>一键换装</em></button>)}</div></section>
               <section className="pet-forge-workbench"><div><span>RANDOM FORGE</span><strong>随机装备熔炉</strong><p>每分解 1 件装备获得 1 枚零件。消耗 2 枚随机获得 1 件装备并鉴定词条，另有 <b>1%</b> 概率让结果装备额外升 1 级。</p></div><div className="pet-forge-parts"><i>⌘</i><span><small>熔铸零件</small><strong>{profile.equipment_parts}</strong></span><button type="button" disabled={busy || profile.equipment_parts < 2} onClick={onRandomForge}>{busy ? "熔铸中…" : profile.equipment_parts < 2 ? `还差 ${2 - profile.equipment_parts} 枚` : "消耗 2 枚随机熔铸"}</button></div></section>
               <div className="pet-equipment-summary">
                 <div><span>当前战力</span><strong>{profile.equipment_stats.total_power}</strong><small>稀有度与等级共同决定</small></div>
@@ -2212,11 +2299,16 @@ function CompanionPet({ visible, message, mood, completed, total, pulse, hasNext
                 <div className="pet-equipment-actions"><button type="button" disabled={busy || item.count < 3 || item.level >= PET_EQUIPMENT_MAX_LEVEL} onClick={() => onSynthesize(item.id)}><strong>{item.level >= PET_EQUIPMENT_MAX_LEVEL ? "已满级" : `强化至 Lv.${item.level + 1}`}</strong><small>{item.level >= PET_EQUIPMENT_MAX_LEVEL ? "无需继续强化" : `消耗 2 件同名 · ${item.synthesis_success_rate}%${item.synthesis_failures ? `（保底 +${Math.min(30, item.synthesis_failures * 5)}%）` : ""}`}</small></button><button type="button" disabled={busy || item.count < 2} onClick={() => onReforge(item.id)}><strong>洗词条</strong><small>消耗 1 件同名 · 等级保留</small></button><button className="dismantle" type="button" disabled={busy || (profile.equipped[item.slot] === item.id && item.count === 1)} onClick={() => onDismantle(item.id)}><strong>分解 1 件</strong><small>{profile.equipped[item.slot] === item.id && item.count === 1 ? "请先卸下" : "获得 1 枚熔铸零件"}</small></button></div>
               </article>)}</div> : <div className="pet-empty-collection compact"><b>⌕</b><strong>当前组合筛选没有装备</strong><span>切换部位、套装或操作状态，也可以一键清除全部筛选。</span><button type="button" onClick={resetEquipmentFilters}>清除筛选</button></div>}</> : <div className="pet-empty-collection"><b>◇</b><strong>第一件装备正在路上</strong><span>继续摸摸或提交标注，就有机会随机掉落。</span><button type="button" onClick={onOpenEquipmentGuide}>先看看装备攻略</button></div>}
             </section> : null}
+            {studioSection === "wardrobe" ? <section className="pet-wardrobe-panel">
+              <header><div><span>WARDROBE ARCHIVE</span><h3>衣柜 · 整套搭配</h3><p>保存毛色、基础配饰与五个装备部位。之后可以一键切换，不会改变进化路线、技能或装备等级。</p></div><b>{profile.wardrobe_presets.length} / 8</b></header>
+              <div className="pet-wardrobe-current"><div className="pet-wardrobe-preview"><i className="pet-wardrobe-halo" /><PetCreatureVisual profile={profile} accessory={accessory} /><span>当前穿搭</span></div><div><span>CURRENT LOOK</span><strong>{PET_COLORS.find((item) => item.id === profile.color)?.label} · {PET_ACCESSORIES.find((item) => item.id === profile.accessory)?.label}</strong><div>{slotEntries.map(([slot, info]) => { const item = profile.inventory.find((owned) => owned.id === profile.equipped[slot]); return <i className={item ? `rarity-${item.rarity}` : "empty"} title={item?.name ?? `${info.label}未装备`} key={slot}>{item?.symbol ?? info.symbol}<small>{item ? `Lv.${item.level}` : "空"}</small></i>; })}</div><form onSubmit={(event) => { event.preventDefault(); void onSaveWardrobe(wardrobeName).then(() => setWardrobeName("")); }}><input value={wardrobeName} onChange={(event) => setWardrobeName(event.target.value)} maxLength={30} placeholder={`例如：${profile.equipment_sets[0]?.name ?? "战斗搭配"}`} /><button type="submit" disabled={busy || profile.wardrobe_presets.length >= 8}>{profile.wardrobe_presets.length >= 8 ? "衣柜已满" : "保存当前搭配"}</button></form></div></div>
+              {profile.wardrobe_presets.length ? <div className="pet-wardrobe-grid">{profile.wardrobe_presets.map((preset, index) => { const color = PET_COLORS.find((item) => item.id === preset.color); const presetAccessory = PET_ACCESSORIES.find((item) => item.id === preset.accessory); const presetItems = Object.entries(preset.equipped).flatMap(([slot, itemId]) => { const item = profile.inventory.find((owned) => owned.id === itemId); return item ? [item] : [{ id: itemId, slot: slot as PetEquipmentSlot }]; }); return <article key={preset.id}><header><span>LOOK {String(index + 1).padStart(2, "0")}</span><button type="button" disabled={busy} onClick={() => onDeleteWardrobe(preset.id)} aria-label={`删除${preset.name}`}>×</button></header><div className="pet-wardrobe-swatch" style={{ "--wardrobe-color": color?.value ?? PET_COLORS[0].value } as CSSProperties}><i>{presetAccessory?.symbol || "·"}</i><span>{color?.label} · {presetAccessory?.label}</span></div><h4>{preset.name}</h4><div className="pet-wardrobe-items">{slotEntries.map(([slot, info]) => { const itemId = preset.equipped[slot]; const item = profile.inventory.find((owned) => owned.id === itemId); return <i className={item ? `rarity-${item.rarity}` : itemId ? "missing" : "empty"} title={item?.name ?? (itemId ? "装备已不在仓库" : `${info.label}未装备`)} key={slot}>{item?.symbol ?? info.symbol}</i>; })}</div><small>{presetItems.filter((item) => "name" in item).length} / 5 件仍在仓库 · {new Date(preset.created_at).toLocaleDateString("zh-CN")}</small><button className="pet-wardrobe-apply" type="button" disabled={busy} onClick={() => onApplyWardrobe(preset.id)}>套用整套搭配</button></article>; })}</div> : <div className="pet-wardrobe-empty"><b>◇</b><strong>衣柜还是空的</strong><span>先搭配好外观和装备，再把当前造型保存为第一套衣柜方案。</span></div>}
+            </section> : null}
             {studioSection === "skills" ? <section className="pet-skills-panel"><header><div><span>SKILL CONSTELLATION</span><h3>技能星盘</h3></div><b>{profile.active_skills.length} / 3 已启用</b></header><p>每次进化成功会随机觉醒一个技能；再次抽到同一技能会升级，最高 Lv.5。最多同时启用 3 个。</p><div>{profile.skills.map((skill) => <button type="button" className={`${skill.active ? "active" : ""} ${skill.level ? "unlocked" : "locked"}`} disabled={!skill.level || (!skill.active && profile.active_skills.length >= 3) || busy} onClick={() => onToggleSkill(skill.id)} key={skill.id}><b>{skill.icon}</b><span><strong>{skill.name} {skill.level ? `Lv.${skill.level}` : "未觉醒"}</strong><small>{skill.description}</small></span><em>{skill.active ? "启用中" : skill.level ? "启用" : "进化解锁"}</em></button>)}</div></section> : null}
             {studioSection === "appearance" ? <section className="pet-appearance-panel"><label className="pet-name-field"><span>搭子名字</span><input value={draftName} maxLength={20} onChange={(event) => onDraftName(event.target.value)} aria-label="宠物名字" /><small>{draftName.length}/20</small></label><div className="pet-option-group pet-color-options"><div className="pet-option-title"><span>毛色</span><small>{PET_COLORS.filter((item) => item.level <= profile.level).length} / {PET_COLORS.length} 已解锁</small></div><div>{PET_COLORS.map((item) => <button type="button" key={item.id} className={profile.color === item.id ? "active" : ""} disabled={profile.level < item.level} onClick={() => onSelectColor(item.id)} style={{ "--swatch": item.value } as CSSProperties}><i />{item.label}{profile.level < item.level ? <small>Lv.{item.level}</small> : <small>✓</small>}</button>)}</div></div><div className="pet-option-group pet-accessory-options"><div className="pet-option-title"><span>基础配饰</span><small>{PET_ACCESSORIES.filter((item) => item.level <= profile.level).length} / {PET_ACCESSORIES.length} 已解锁</small></div><div>{PET_ACCESSORIES.map((item) => <button type="button" key={item.id} className={profile.accessory === item.id ? "active" : ""} disabled={profile.level < item.level} onClick={() => onSelectAccessory(item.id)}><b>{item.symbol || "—"}</b><span>{item.label}</span>{profile.level < item.level ? <small>Lv.{item.level}</small> : <small>✓</small>}</button>)}</div></div><div className="pet-level-roadmap"><div className="pet-option-title"><span>称号里程碑 · 上限 50</span><small>外观按上方卡片标注等级解锁 · Lv.5 后每级 {PET_STEADY_LEVEL_COST} EXP</small></div><div>{PET_LEVELS.map((item) => <article key={item.level} className={profile.level >= item.level ? "unlocked" : profile.level < item.level && !PET_LEVELS.some((other) => other.level > profile.level && other.level < item.level) ? "next" : ""}><b>Lv.{item.level}</b><div><strong>{item.title}</strong><small>{item.unlock}</small></div><span>{profile.level >= item.level ? "已解锁" : `${petLevelStartXp(item.level)} EXP`}</span></article>)}</div></div></section> : null}
           </div>
         </div>
-        <footer><span>装扮会保存在{persistenceLabel}中</span><div><button type="button" onClick={onToggleSettings}>稍后再说</button><button className="pet-save" type="button" onClick={onSaveProfile} disabled={busy || !draftName.trim()}>{busy ? "保存中…" : "保存装扮"}</button></div></footer>
+        <footer><span>{studioSection === "appearance" ? `装扮会保存在${persistenceLabel}中` : studioSection === "wardrobe" ? `衣柜方案保存在${persistenceLabel}中，套用与删除会即时生效` : "装备、进化与技能操作会即时保存"}</span><div><button type="button" onClick={onToggleSettings}>{studioSection === "appearance" ? "稍后再说" : "关闭"}</button>{studioSection === "appearance" ? <button className="pet-save" type="button" onClick={onSaveProfile} disabled={busy || !draftName.trim()}>{busy ? "保存中…" : "保存装扮"}</button> : null}</div></footer>
       </section>
     </div> : null}</>
   );
@@ -2827,6 +2919,27 @@ function JudgeCandidatePanel({ result }: { result?: JudgeCandidateResult }) {
   );
 }
 
+function CandidateAutoScore({ metadata }: { metadata?: JsonObject }) {
+  if (!metadata) return null;
+  const rawScore = Number(metadata.auto_score);
+  const score = Number.isFinite(rawScore) ? rawScore : null;
+  const tier = typeof metadata.auto_tier === "string" ? metadata.auto_tier : "";
+  const rationale = typeof metadata.auto_score_rationale === "string" ? metadata.auto_score_rationale : "";
+  const completion = typeof metadata.auto_completion_rate === "string" ? metadata.auto_completion_rate : "";
+  const completionSummary = typeof metadata.auto_completion_summary === "string" ? metadata.auto_completion_summary : "";
+  const warning = typeof metadata["⚠️_reliability_warning"] === "string" ? String(metadata["⚠️_reliability_warning"]) : "";
+  const reasons = Array.isArray(metadata.reliability_reasons) ? metadata.reliability_reasons.filter((item): item is string => typeof item === "string") : [];
+  const subtasks = Array.isArray(metadata.auto_subtasks) ? metadata.auto_subtasks.filter((item): item is string => typeof item === "string") : [];
+  if (score === null && !tier && !rationale && !completion && !warning) return null;
+  const scoreTone = score === null ? "neutral" : score >= 8 ? "high" : score >= 4 ? "medium" : "low";
+  return <section className={`candidate-auto-score score-${scoreTone} ${warning || metadata.high_variance === true ? "unreliable" : ""}`}>
+    <header><div><span>AUTO SCORE</span><strong>{score === null ? "—" : score}<small>/ 10</small></strong></div><div>{tier ? <b>{tier}</b> : null}{completion ? <i>完成率 {completion}</i> : null}{warning ? <em>⚠ 可靠性提醒</em> : null}</div></header>
+    {rationale ? <p>{rationale}</p> : null}
+    {completionSummary || subtasks.length ? <div className="candidate-auto-delivery">{completionSummary ? <strong>{completionSummary}</strong> : null}{subtasks.slice(0, 4).map((item) => <span key={item}>{item}</span>)}</div> : null}
+    {warning ? <details><summary>{warning}{typeof metadata.tier_votes === "string" ? ` · ${metadata.tier_votes}` : ""}{typeof metadata.score_gap === "string" ? ` · 分差 ${metadata.score_gap}` : ""}</summary>{reasons.length ? <ul>{reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul> : <p>建议结合模型回复独立判断。</p>}</details> : null}
+  </section>;
+}
+
 function CandidateAnnotationCard({ candidate, referInfo, dimensions, badcaseTags, existing, historyCount, disabled, locked, onSave }: {
   candidate: CandidateOutput;
   referInfo?: JsonObject;
@@ -2901,6 +3014,7 @@ function CandidateAnnotationCard({ candidate, referInfo, dimensions, badcaseTags
         <div className="candidate-badges">{historyCount ? <span>{historyCount} 人已提交</span> : null}{existing?.sync_state ? <span className="sync-error">{existing.sync_state === "pending" ? "待同步" : "同步失败"}</span> : null}<span className={existing?.status ?? "unlabeled"}>{existing?.status === "submitted" ? "已提交" : existing ? "草稿" : "未标注"}</span></div>
       </header>
       <section className="candidate-output">
+        <CandidateAutoScore metadata={candidate.metadata} />
         {candidate.reasoning !== undefined ? <details className="candidate-reasoning"><summary>Reasoning / 思考过程</summary><pre>{tryPrettyJson(candidate.reasoning)}</pre></details> : <p className="candidate-empty">没有提供 reasoning</p>}
         <div className="candidate-response"><span>FINAL RESPONSE</span><pre>{tryPrettyJson(candidate.response ?? "") || "[空回复]"}</pre></div>
         {candidate.metadata ? <details className="candidate-metadata"><summary>模型元数据</summary><JsonCode value={candidate.metadata} compact /></details> : null}
@@ -4783,6 +4897,105 @@ export default function Home() {
     }
   };
 
+  const autoEquipPet = async (mode: PetAutoEquipMode) => {
+    if (petBusy || !petProfileRef.current.inventory.length) return;
+    setPetBusy(true);
+    try {
+      const modeLabel = PET_AUTO_EQUIP_MODES.find((item) => item.id === mode)?.label ?? "当前场景";
+      if (serverUser) {
+        const result = await apiRequest<{ profile: PetProfile; score_before: number; score_after: number }>("/api/pet/equipment/auto", { method: "POST", body: JSON.stringify({ mode }) });
+        applyPetProfile(result.profile);
+        wakePet(`${modeLabel}配装完成：核心指标 ${result.score_before} → ${result.score_after}。`, result.score_after > result.score_before ? "proud" : "happy");
+      } else {
+        const current = petProfileRef.current;
+        const beforeState = petEquipmentState(current.inventory, current.equipped);
+        const before = mode === "combat" ? beforeState.stats.total_power * 6 + beforeState.sets.reduce((sum, set) => sum + set.bonuses.length, 0) * 15
+          : mode === "evolution" ? beforeState.stats.evolution_bonus
+            : mode === "annotation" ? beforeState.stats.all_drop_bonus + beforeState.stats.annotation_drop_bonus
+              : mode === "pet" ? beforeState.stats.all_drop_bonus + beforeState.stats.pet_drop_bonus
+                : mode === "badcase" ? beforeState.stats.all_drop_bonus + beforeState.stats.badcase_drop_bonus
+                  : beforeState.stats.rarity_boost;
+        const result = petAutoLoadout(current, mode);
+        applyPetProfile({ ...current, equipped: result.equipped });
+        wakePet(`${modeLabel}配装完成：核心指标 ${before} → ${result.score[0]}。`, result.score[0] > before ? "proud" : "happy");
+      }
+    } catch (error) {
+      wakePet(error instanceof Error ? error.message : "自动配装失败", "worried");
+    } finally {
+      setPetBusy(false);
+    }
+  };
+
+  const savePetWardrobe = async (name: string) => {
+    if (petBusy || petProfileRef.current.wardrobe_presets.length >= 8) return;
+    setPetBusy(true);
+    try {
+      const current = petProfileRef.current;
+      if (serverUser) {
+        await apiRequest<PetProfile>("/api/pet", { method: "PUT", body: JSON.stringify({ name: petDraftName.trim() || current.name, color: current.color, accessory: current.accessory }) });
+        const result = await apiRequest<{ profile: PetProfile }>("/api/pet/wardrobe", { method: "POST", body: JSON.stringify({ action: "save", name: name.trim() }) });
+        const saved = applyPetProfile(result.profile);
+        petCustomizationSnapshot.current = { name: saved.name, color: saved.color, accessory: saved.accessory };
+      } else {
+        const preset: PetWardrobePreset = { id: `look-${petRandomInt(1_000_000_000)}-${petRandomInt(1_000_000_000)}`, name: name.trim() || `搭配 ${current.wardrobe_presets.length + 1}`, color: current.color, accessory: current.accessory, equipped: { ...current.equipped }, created_at: new Date().toISOString() };
+        const saved = applyPetProfile({ ...current, name: petDraftName.trim() || current.name, wardrobe_presets: [preset, ...current.wardrobe_presets] });
+        petCustomizationSnapshot.current = { name: saved.name, color: saved.color, accessory: saved.accessory };
+      }
+      wakePet("当前外观与装备已经收进衣柜。", "proud");
+    } catch (error) {
+      wakePet(error instanceof Error ? error.message : "衣柜保存失败", "worried");
+      throw error;
+    } finally {
+      setPetBusy(false);
+    }
+  };
+
+  const applyPetWardrobe = async (presetId: string) => {
+    if (petBusy) return;
+    setPetBusy(true);
+    try {
+      let next: PetProfile;
+      if (serverUser) {
+        const result = await apiRequest<{ profile: PetProfile }>("/api/pet/wardrobe", { method: "POST", body: JSON.stringify({ action: "apply", preset_id: presetId }) });
+        next = applyPetProfile(result.profile);
+      } else {
+        const current = petProfileRef.current;
+        const preset = current.wardrobe_presets.find((item) => item.id === presetId);
+        if (!preset) throw new Error("衣柜搭配不存在");
+        const equipped = Object.fromEntries(Object.entries(preset.equipped).filter(([slot, itemId]) => current.inventory.some((item) => item.id === itemId && item.slot === slot))) as Partial<Record<PetEquipmentSlot, string>>;
+        const color = PET_COLORS.some((item) => item.id === preset.color && item.level <= current.level) ? preset.color : current.color;
+        const accessory = PET_ACCESSORIES.some((item) => item.id === preset.accessory && item.level <= current.level) ? preset.accessory : current.accessory;
+        next = applyPetProfile({ ...current, color, accessory, equipped });
+      }
+      petCustomizationSnapshot.current = { name: next.name, color: next.color, accessory: next.accessory };
+      wakePet("衣柜搭配已套用，缺失装备已自动跳过。", "happy");
+    } catch (error) {
+      wakePet(error instanceof Error ? error.message : "套用衣柜失败", "worried");
+    } finally {
+      setPetBusy(false);
+    }
+  };
+
+  const deletePetWardrobe = async (presetId: string) => {
+    const preset = petProfileRef.current.wardrobe_presets.find((item) => item.id === presetId);
+    if (petBusy || !preset || !window.confirm(`确定删除衣柜搭配「${preset.name}」吗？不会删除其中的装备。`)) return;
+    setPetBusy(true);
+    try {
+      if (serverUser) {
+        const result = await apiRequest<{ profile: PetProfile }>("/api/pet/wardrobe", { method: "POST", body: JSON.stringify({ action: "delete", preset_id: presetId }) });
+        applyPetProfile(result.profile);
+      } else {
+        const current = petProfileRef.current;
+        applyPetProfile({ ...current, wardrobe_presets: current.wardrobe_presets.filter((item) => item.id !== presetId) });
+      }
+      wakePet("衣柜搭配已删除，装备仍在仓库。", "curious");
+    } catch (error) {
+      wakePet(error instanceof Error ? error.message : "删除衣柜搭配失败", "worried");
+    } finally {
+      setPetBusy(false);
+    }
+  };
+
   const synthesizePetItem = async (itemId: string) => {
     const item = petProfileRef.current.inventory.find((owned) => owned.id === itemId);
     if (petBusy || !item || item.count < 3 || item.level >= PET_EQUIPMENT_MAX_LEVEL) return;
@@ -5600,7 +5813,7 @@ export default function Home() {
               <div className="annotator-fields"><input value={annotatorId} disabled={Boolean(serverUser)} onChange={(event) => setAnnotatorId(event.target.value)} placeholder="用户 ID，如 jiangqy" aria-label="标注员 ID" /><input value={annotatorName} disabled={Boolean(serverUser)} onChange={(event) => setAnnotatorName(event.target.value)} placeholder="显示姓名" aria-label="标注员姓名" /></div>
               <div className="annotator-actions"><button onClick={downloadAnnotationTemplate}>下载输入模板</button><button onClick={exportAnnotationRows}>仅导出标注记录</button></div>
             </div>
-            <CompanionPet visible={petVisible} message={petMessage || defaultPetMessage} mood={petMessage ? petMood : defaultPetMood} completed={Math.min(submittedCases, annotatableCases)} total={annotatableCases} pulse={petPulse} hasNext={pendingCases > 0} profile={petProfile} settingsOpen={petSettingsOpen} draftName={petDraftName} busy={petBusy} persistenceLabel={serverUser ? "团队账号" : "当前浏览器"} isAdmin={serverUser?.role === "admin"} currentUserId={serverUser?.id} adminUsers={serverUsers} onPet={() => void petTheCompanion()} onEvolve={(spend) => void evolveCompanion(spend)} onEquip={(slot, itemId) => void equipPetItem(slot, itemId)} onSynthesize={(itemId) => void synthesizePetItem(itemId)} onReforge={(itemId) => void reforgePetItem(itemId)} onDismantle={(itemId) => void dismantlePetItem(itemId)} onRandomForge={() => void randomForgePetItem()} onOpenEquipmentGuide={openPetEquipmentGuide} onToggleSkill={(skillId) => void togglePetSkill(skillId)} onGiftTickets={giftPetTickets} onNext={goToNextPendingCase} onHide={() => setPetVisible(false)} onShow={() => { setPetVisible(true); wakePet("我回来啦，继续一起标！", "happy"); }} onToggleSettings={togglePetStudio} onDraftName={setPetDraftName} onSelectColor={(color) => previewPetStyle({ color })} onSelectAccessory={(accessory) => previewPetStyle({ accessory })} onSaveProfile={() => void savePetCustomization()} />
+            <CompanionPet visible={petVisible} message={petMessage || defaultPetMessage} mood={petMessage ? petMood : defaultPetMood} completed={Math.min(submittedCases, annotatableCases)} total={annotatableCases} pulse={petPulse} hasNext={pendingCases > 0} profile={petProfile} settingsOpen={petSettingsOpen} draftName={petDraftName} busy={petBusy} persistenceLabel={serverUser ? "团队账号" : "当前浏览器"} isAdmin={serverUser?.role === "admin"} currentUserId={serverUser?.id} adminUsers={serverUsers} onPet={() => void petTheCompanion()} onEvolve={(spend) => void evolveCompanion(spend)} onEquip={(slot, itemId) => void equipPetItem(slot, itemId)} onAutoEquip={(mode) => void autoEquipPet(mode)} onSynthesize={(itemId) => void synthesizePetItem(itemId)} onReforge={(itemId) => void reforgePetItem(itemId)} onDismantle={(itemId) => void dismantlePetItem(itemId)} onRandomForge={() => void randomForgePetItem()} onOpenEquipmentGuide={openPetEquipmentGuide} onSaveWardrobe={savePetWardrobe} onApplyWardrobe={(presetId) => void applyPetWardrobe(presetId)} onDeleteWardrobe={(presetId) => void deletePetWardrobe(presetId)} onToggleSkill={(skillId) => void togglePetSkill(skillId)} onGiftTickets={giftPetTickets} onNext={goToNextPendingCase} onHide={() => setPetVisible(false)} onShow={() => { setPetVisible(true); wakePet("我回来啦，继续一起标！", "happy"); }} onToggleSettings={togglePetStudio} onDraftName={setPetDraftName} onSelectColor={(color) => previewPetStyle({ color })} onSelectAccessory={(accessory) => previewPetStyle({ accessory })} onSaveProfile={() => void savePetCustomization()} />
             <label className="search-box"><Icon>⌕</Icon><input ref={searchInput} value={query} onChange={(event) => { setQuery(event.target.value); setVisibleLimit(400); }} placeholder="搜索 ID、模型或消息…" /><kbd>⌘K</kbd></label>
             <div className="filters">
               <select value={protocolFilter} onChange={(event) => { setProtocolFilter(event.target.value as "all" | Protocol); setVisibleLimit(400); }} aria-label="协议筛选">
