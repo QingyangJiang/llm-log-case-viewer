@@ -641,7 +641,8 @@ class PetProfileUpdate(BaseModel):
 
 
 class PetEvolutionBody(BaseModel):
-    spend: int = Field(ge=1, le=5)
+    spend: int = Field(ge=1, le=10)
+    target_path: str | None = Field(default=None, max_length=30)
 
 
 class PetEquipmentBody(BaseModel):
@@ -710,7 +711,11 @@ def project_config(project: Project) -> dict[str, Any]:
     return {"blind_mode": True, "lock_submitted": False, "archived": False, **(project.annotation_config or {})}
 
 
-PET_COLORS = {"lime": 1, "aqua": 2, "peach": 3, "lavender": 4, "sky": 5, "coral": 6, "gold": 8, "midnight": 10}
+PET_COLORS = {
+    "lime": 1, "aqua": 2, "peach": 3, "lavender": 4, "sky": 5, "coral": 6, "gold": 8, "midnight": 10,
+    "rose": 12, "jade": 15, "violet": 18, "sunset": 20, "ice": 24, "fuchsia": 28,
+    "emerald": 32, "azure": 36, "ruby": 40, "pearl": 45, "aurora": 48, "cosmos": 50,
+}
 PET_ACCESSORIES = {"none": 1, "leaf": 2, "bow": 3, "glasses": 4, "star": 5, "headphones": 6, "cap": 7, "crown": 8, "halo": 10, "medal": 12}
 # One unit is 0.2 EXP, which keeps fractional petting rewards exact in the database.
 PET_XP_UNITS = {"pet": 1, "annotation": 30, "badcase": 20}
@@ -747,6 +752,7 @@ PET_BATTLE_STATE_KEY = "__homestead_battle__"
 PET_EQUIPMENT_PARTS_KEY = "__equipment_parts__"
 PET_WARDROBE_KEY = "__wardrobe_presets__"
 PET_WHEEL_STATE_KEY = "__prize_wheel__"
+PET_TARGETED_EVOLUTION_KEY = "__targeted_evolution__"
 PET_MAX_PENDING_DROPS = 10
 PET_MAX_WARDROBE_PRESETS = 8
 PET_WHEEL_HISTORY_LIMIT = 30
@@ -777,15 +783,14 @@ PET_EQUIPMENT_SET_EFFECTS: dict[str, dict[str, Any]] = {
 }
 PET_DROP_BASE_CHANCES = {"pet": 500, "annotation": 1800, "badcase": 2000}
 PET_WHEEL_REWARDS: list[dict[str, Any]] = [
-    {"id": "ticket_1", "label": "进化券 ×1", "short_label": "1张进化券", "icon": "↟", "weight": 2200, "kind": "ticket", "amount": 1, "tone": "lime"},
-    {"id": "parts_2", "label": "熔铸零件 ×2", "short_label": "2枚零件", "icon": "⌘", "weight": 2000, "kind": "parts", "amount": 2, "tone": "aqua"},
-    {"id": "xp_10", "label": "宠物经验 +10", "short_label": "10 EXP", "icon": "★", "weight": 2000, "kind": "xp", "amount": 10, "tone": "sky"},
-    {"id": "equipment", "label": "装备三选一", "short_label": "装备三选一", "icon": "◇", "weight": 1200, "kind": "equipment", "amount": 1, "tone": "lavender"},
-    {"id": "ticket_3", "label": "进化券 ×3", "short_label": "3张进化券", "icon": "↟", "weight": 800, "kind": "ticket", "amount": 3, "tone": "gold"},
-    {"id": "parts_5", "label": "熔铸零件 ×5", "short_label": "5枚零件", "icon": "⌘", "weight": 800, "kind": "parts", "amount": 5, "tone": "peach"},
-    {"id": "xp_30", "label": "宠物经验 +30", "short_label": "30 EXP", "icon": "★", "weight": 800, "kind": "xp", "amount": 30, "tone": "coral"},
-    {"id": "jackpot", "label": "幸运大奖", "short_label": "5券 + 5零件", "icon": "♛", "weight": 200, "kind": "jackpot", "amount": 5, "tone": "midnight"},
+    {"id": "ticket_1", "label": "进化券 ×1", "short_label": "1张进化券", "icon": "↟", "weight": 7000, "kind": "ticket", "amount": 1, "tone": "lime"},
+    {"id": "ticket_2", "label": "进化券 ×2", "short_label": "2张进化券", "icon": "↟", "weight": 1000, "kind": "ticket", "amount": 2, "tone": "aqua"},
+    {"id": "route_focus", "label": "定向祝福 +1层", "short_label": "定向祝福", "icon": "◎", "weight": 1800, "kind": "route_focus", "amount": 1, "tone": "lavender"},
+    {"id": "ticket_5", "label": "幸运大奖 · 进化券 ×5", "short_label": "5张进化券", "icon": "♛", "weight": 200, "kind": "ticket", "amount": 5, "tone": "gold"},
 ]
+PET_TARGETED_EVOLUTION_BASE_RATE = 70
+PET_TARGETED_EVOLUTION_FAILURE_BONUS = 10
+PET_TARGETED_EVOLUTION_BLESSING_BONUS = 5
 PET_SKILLS: dict[str, dict[str, Any]] = {
     "lucky_nose": {"name": "幸运鼻尖", "icon": "✦", "description": "所有装备掉率 +1%/级"},
     "treasure_paws": {"name": "寻宝肉垫", "icon": "◇", "description": "摸摸装备掉率 +2%/级"},
@@ -1220,6 +1225,36 @@ def set_pet_wheel_state(collection: PetCollection, state: dict[str, Any]) -> Non
     collection.updated_at = utcnow()
 
 
+def pet_targeted_evolution_state(collection: PetCollection) -> dict[str, Any]:
+    raw = (collection.inventory or {}).get(PET_TARGETED_EVOLUTION_KEY, {})
+    if not isinstance(raw, dict):
+        raw = {}
+    target = str(raw.get("target") or "")
+    return {
+        "target": target if target in PET_EVOLUTION_PATHS else "",
+        "failures": max(0, min(3, int(raw.get("failures", 0) or 0))),
+        "blessings": max(0, min(20, int(raw.get("blessings", 0) or 0))),
+    }
+
+
+def set_pet_targeted_evolution_state(collection: PetCollection, state: dict[str, Any]) -> None:
+    inventory = dict(collection.inventory or {})
+    target = str(state.get("target") or "")
+    inventory[PET_TARGETED_EVOLUTION_KEY] = {
+        "target": target if target in PET_EVOLUTION_PATHS else "",
+        "failures": max(0, min(3, int(state.get("failures", 0) or 0))),
+        "blessings": max(0, min(20, int(state.get("blessings", 0) or 0))),
+    }
+    collection.inventory = inventory
+    collection.updated_at = utcnow()
+
+
+def pet_targeted_evolution_rate(collection: PetCollection, target_path: str = "") -> int:
+    state = pet_targeted_evolution_state(collection)
+    failures = state["failures"] if target_path and state["target"] == target_path else 0
+    return min(100, PET_TARGETED_EVOLUTION_BASE_RATE + failures * PET_TARGETED_EVOLUTION_FAILURE_BONUS + state["blessings"] * PET_TARGETED_EVOLUTION_BLESSING_BONUS)
+
+
 def pet_collection_payload(collection: PetCollection) -> dict[str, Any]:
     inventory = collection.inventory or {}
     inventory_items = [
@@ -1235,6 +1270,7 @@ def pet_collection_payload(collection: PetCollection) -> dict[str, Any]:
     ]
     equipment_stats, equipment_sets = pet_equipment_state(collection)
     wheel = pet_wheel_state(collection)
+    targeted = pet_targeted_evolution_state(collection)
     return {
         "equipment_catalog_size": len(PET_EQUIPMENT_CATALOG),
         "equipment_parts": pet_equipment_parts(collection),
@@ -1254,6 +1290,10 @@ def pet_collection_payload(collection: PetCollection) -> dict[str, Any]:
             | {"probability": reward["weight"] / 100}
             for reward in PET_WHEEL_REWARDS
         ],
+        "targeted_evolution_target": targeted["target"],
+        "targeted_evolution_failures": targeted["failures"],
+        "targeted_evolution_blessings": targeted["blessings"],
+        "targeted_evolution_success_rate": pet_targeted_evolution_rate(collection, targeted["target"]),
         "total_drops": collection.total_drops,
         "evolution_pity": collection.pity,
         "evolution_success_rate": pet_evolution_success_rate(collection),
@@ -1485,8 +1525,6 @@ def choose_pet_wheel_reward() -> tuple[int, dict[str, Any]]:
 
 
 def apply_pet_wheel_reward(
-    profile: PetProfile,
-    progress: PetProgressV2,
     evolution: PetEvolution,
     collection: PetCollection,
     reward: dict[str, Any],
@@ -1496,34 +1534,12 @@ def apply_pet_wheel_reward(
     amount = max(0, int(reward["amount"]))
     pending_drop: dict[str, Any] | None = None
     detail = str(reward["label"])
-    inventory = dict(collection.inventory or {})
     if kind == "ticket":
         evolution.available_chances += amount
         evolution.updated_at = utcnow()
-    elif kind == "parts":
-        inventory[PET_EQUIPMENT_PARTS_KEY] = max(0, int(inventory.get(PET_EQUIPMENT_PARTS_KEY, 0) or 0)) + amount
-        collection.inventory = inventory
-    elif kind == "xp":
-        progress.xp_units += amount * 5
-        progress.updated_at = utcnow()
-        profile.updated_at = utcnow()
-        next_level = pet_level(progress.xp_units / 5)
-        if next_level > evolution.credited_level:
-            evolution.available_chances += next_level - evolution.credited_level
-            evolution.credited_level = next_level
-            evolution.updated_at = utcnow()
-    elif kind == "equipment":
-        pending_drop = queue_pet_equipment_drop(collection, "wheel", prepend=True)
-        if pending_drop is None:
-            inventory = dict(collection.inventory or {})
-            inventory[PET_EQUIPMENT_PARTS_KEY] = max(0, int(inventory.get(PET_EQUIPMENT_PARTS_KEY, 0) or 0)) + 5
-            collection.inventory = inventory
-            detail = "装备待选队列已满，补偿熔铸零件 ×5"
-    elif kind == "jackpot":
-        evolution.available_chances += amount
-        evolution.updated_at = utcnow()
-        inventory[PET_EQUIPMENT_PARTS_KEY] = max(0, int(inventory.get(PET_EQUIPMENT_PARTS_KEY, 0) or 0)) + amount
-        collection.inventory = inventory
+    elif kind == "route_focus":
+        targeted = pet_targeted_evolution_state(collection)
+        set_pet_targeted_evolution_state(collection, {**targeted, "blessings": targeted["blessings"] + amount})
     collection.updated_at = utcnow()
     return detail, pending_drop
 
@@ -2994,12 +3010,18 @@ def update_pet(body: PetProfileUpdate, user: CurrentUser, db: DB) -> dict[str, A
 
 @app.post("/api/pet/evolve")
 def evolve_pet(body: PetEvolutionBody, user: CurrentUser, db: DB) -> dict[str, Any]:
-    if body.spend not in {1, 5}:
-        raise HTTPException(422, "进化只能使用 1 张或 5 张进化券")
+    if body.spend not in {1, 5, 10}:
+        raise HTTPException(422, "进化只能使用 1 张、5 张或 10 张进化券")
     profile, progress, evolution, collection = get_or_create_pet(db, user.id)
     if evolution.available_chances < body.spend:
         raise HTTPException(422, "可用进化券不足")
     db.flush()
+    collection = db.scalar(
+        select(PetCollection)
+        .where(PetCollection.user_id == user.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ) or collection
     evolution = db.scalar(
         select(PetEvolution)
         .where(PetEvolution.user_id == user.id)
@@ -3008,21 +3030,41 @@ def evolve_pet(body: PetEvolutionBody, user: CurrentUser, db: DB) -> dict[str, A
     ) or evolution
     if evolution.available_chances < body.spend:
         raise HTTPException(409, "进化券刚刚发生变化，请刷新后重试")
+    target_path = str(body.target_path or "")
+    targeted_attempt = body.spend == 10
+    if targeted_attempt:
+        if evolution.stage < 1 or evolution.path not in PET_EVOLUTION_PATHS:
+            raise HTTPException(422, "完成首次进化后才能定向更换路线")
+        if target_path not in PET_EVOLUTION_PATHS:
+            raise HTTPException(422, "请选择有效的目标路线")
+        if target_path == evolution.path:
+            raise HTTPException(422, "目标路线不能与当前路线相同")
     evolution.available_chances -= body.spend
     guaranteed = body.spend == 5
-    route_reset = guaranteed and evolution.stage > 0 and evolution.path in PET_EVOLUTION_PATHS
+    route_reset = (guaranteed and evolution.stage > 0 and evolution.path in PET_EVOLUTION_PATHS) or targeted_attempt
     previous_path = evolution.path if route_reset else ""
-    success_rate = pet_evolution_success_rate(collection)
+    previous_stage = evolution.stage if route_reset else 0
+    success_rate = pet_targeted_evolution_rate(collection, target_path) if targeted_attempt else pet_evolution_success_rate(collection)
     success = guaranteed or secrets.randbelow(100) < success_rate
     traits: list[str] = []
     critical = False
     awakened_skill: dict[str, Any] | None = None
+    wheel_compensation = 0
     if success:
         if route_reset:
-            reroll_pool = [candidate for candidate in PET_EVOLUTION_PATH_LOTTERY if candidate != previous_path]
-            evolution.path = secrets.choice(reroll_pool)
+            if targeted_attempt:
+                evolution.path = target_path
+            else:
+                reroll_pool = [candidate for candidate in PET_EVOLUTION_PATH_LOTTERY if candidate != previous_path]
+                evolution.path = secrets.choice(reroll_pool)
             evolution.stage = 0
             evolution.traits = []
+            targeted_state = pet_targeted_evolution_state(collection)
+            set_pet_targeted_evolution_state(collection, {
+                "target": "",
+                "failures": 0,
+                "blessings": 0 if targeted_attempt else targeted_state["blessings"],
+            })
         elif evolution.stage == 0 or evolution.path not in PET_EVOLUTION_PATHS:
             evolution.path = secrets.choice(PET_EVOLUTION_PATH_LOTTERY)
         path = PET_EVOLUTION_PATHS[evolution.path]
@@ -3042,15 +3084,25 @@ def evolve_pet(body: PetEvolutionBody, user: CurrentUser, db: DB) -> dict[str, A
         evolution.variant_seed = secrets.randbelow(8)
         collection.pity = 0
         awakened_skill = awaken_pet_skill(collection)
+        if route_reset and previous_stage:
+            wheel_compensation = previous_stage * 2
+            wheel_state = pet_wheel_state(collection)
+            set_pet_wheel_state(collection, {**wheel_state, "chances": wheel_state["chances"] + wheel_compensation})
     else:
-        collection.pity = min(20, collection.pity + 1)
+        if targeted_attempt:
+            targeted_state = pet_targeted_evolution_state(collection)
+            failures = targeted_state["failures"] if targeted_state["target"] == target_path else 0
+            set_pet_targeted_evolution_state(collection, {**targeted_state, "target": target_path, "failures": failures + 1})
+        else:
+            collection.pity = min(20, collection.pity + 1)
         collection.updated_at = utcnow()
-    event_trait = f"换路线 · {' / '.join(traits)}" if route_reset and success else " / ".join(traits)
+    event_trait = f"{'定向' if targeted_attempt else ''}换路线 · {' / '.join(traits)}" if route_reset and success else " / ".join(traits)
     event = {
         "at": utcnow().isoformat(),
-        **({"type": "reroute", "previous_path": previous_path, "route_reset": True} if route_reset else {}),
+        **({"type": "targeted_reroute" if targeted_attempt else "reroute", "previous_path": previous_path, "route_reset": success} if route_reset else {}),
         "spent": body.spend,
         "guaranteed": guaranteed,
+        "target_path": target_path if targeted_attempt else "",
         "success": success,
         "stage": evolution.stage,
         "path": evolution.path,
@@ -3059,6 +3111,7 @@ def evolve_pet(body: PetEvolutionBody, user: CurrentUser, db: DB) -> dict[str, A
         "critical": critical,
         "success_rate": 100 if guaranteed else success_rate,
         "pity_after": collection.pity,
+        "wheel_compensation": wheel_compensation,
         "skill": awakened_skill,
     }
     evolution.history = [event, *(evolution.history or [])][:50]
@@ -3070,6 +3123,10 @@ def evolve_pet(body: PetEvolutionBody, user: CurrentUser, db: DB) -> dict[str, A
         "spent": body.spend,
         "guaranteed": guaranteed,
         "route_reset": route_reset and success,
+        "targeted": targeted_attempt,
+        "target_path": target_path if targeted_attempt else "",
+        "success_rate": success_rate,
+        "wheel_compensation": wheel_compensation,
         "previous_path": previous_path,
         "trait": " / ".join(traits),
         "traits": traits,
@@ -3275,7 +3332,7 @@ def spin_pet_wheel(user: CurrentUser, db: DB) -> dict[str, Any]:
         raise HTTPException(409, "大转盘抽奖次数不足，请联系管理员发放")
 
     reward_index, reward = choose_pet_wheel_reward()
-    detail, pending_drop = apply_pet_wheel_reward(profile, progress, evolution, collection, reward)
+    detail, pending_drop = apply_pet_wheel_reward(evolution, collection, reward)
     now = utcnow()
     event = {
         "id": secrets.token_hex(8),

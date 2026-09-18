@@ -51,6 +51,17 @@ class PetEvolutionTest(unittest.TestCase):
         self.assertEqual(api.pet_level(460), 6)
         self.assertEqual(api.pet_level(100000), 50)
 
+    def test_expanded_pet_colors_unlock_by_level(self) -> None:
+        self.assertEqual(len(api.PET_COLORS), 20)
+        with self.assertRaises(api.HTTPException) as raised:
+            api.update_pet(api.PetProfileUpdate(name="小镜", color="cosmos", accessory="none"), self.user, self.db)
+        self.assertEqual(raised.exception.status_code, 422)
+        progress = self.db.scalar(api.select(api.PetProgressV2).where(api.PetProgressV2.user_id == self.user.id))
+        progress.xp_units = api.pet_level_start_xp(50) * 5
+        self.db.commit()
+        profile = api.update_pet(api.PetProfileUpdate(name="小镜", color="cosmos", accessory="none"), self.user, self.db)
+        self.assertEqual(profile["color"], "cosmos")
+
     def test_single_attempt_is_consumed_and_can_fail(self) -> None:
         api.get_or_create_pet(self.db, self.user.id)
         self.db.commit()
@@ -80,6 +91,37 @@ class PetEvolutionTest(unittest.TestCase):
         self.assertEqual(second["profile"]["evolution_path"], "forest")
         self.assertEqual(second["profile"]["evolution_stage"], 1)
         self.assertEqual(second["profile"]["evolution_traits"], ["新芽鹿角"])
+        self.assertEqual(second["wheel_compensation"], 2)
+        self.assertEqual(second["profile"]["wheel_chances"], 2)
+
+    def test_ten_ticket_targeted_reroute_stacks_failures_and_compensates_old_stage(self) -> None:
+        _, _, evolution, _ = api.get_or_create_pet(self.db, self.user.id)
+        evolution.available_chances = 30
+        evolution.stage = 4
+        evolution.path = "forest"
+        evolution.traits = ["旧特征"]
+        self.db.commit()
+
+        with patch.object(api.secrets, "randbelow", return_value=99):
+            failed = api.evolve_pet(api.PetEvolutionBody(spend=10, target_path="storm"), self.user, self.db)
+        self.assertFalse(failed["success"])
+        self.assertTrue(failed["targeted"])
+        self.assertEqual(failed["profile"]["evolution_path"], "forest")
+        self.assertEqual(failed["profile"]["evolution_stage"], 4)
+        self.assertEqual(failed["profile"]["targeted_evolution_target"], "storm")
+        self.assertEqual(failed["profile"]["targeted_evolution_failures"], 1)
+        self.assertEqual(failed["profile"]["targeted_evolution_success_rate"], 80)
+
+        with patch.object(api.secrets, "randbelow", side_effect=[79, 3]), patch.object(api.secrets, "choice", side_effect=["闪电耳羽", "lucky_nose"]):
+            succeeded = api.evolve_pet(api.PetEvolutionBody(spend=10, target_path="storm"), self.user, self.db)
+        self.assertTrue(succeeded["success"])
+        self.assertTrue(succeeded["route_reset"])
+        self.assertEqual(succeeded["success_rate"], 80)
+        self.assertEqual(succeeded["wheel_compensation"], 8)
+        self.assertEqual(succeeded["profile"]["wheel_chances"], 8)
+        self.assertEqual(succeeded["profile"]["evolution_path"], "storm")
+        self.assertEqual(succeeded["profile"]["evolution_stage"], 1)
+        self.assertEqual(succeeded["profile"]["targeted_evolution_failures"], 0)
 
     def test_evolution_has_no_three_stage_cap_and_builds_on_same_path(self) -> None:
         _, _, evolution, _ = api.get_or_create_pet(self.db, self.user.id)
@@ -410,7 +452,21 @@ class PetEvolutionTest(unittest.TestCase):
         self.assertEqual(result["profile"]["wheel_chances"], 2)
         self.assertEqual(result["profile"]["evolution_chances"], chances_before + 1)
         self.assertEqual(result["profile"]["wheel_history"][0]["id"], "wheel-event")
-        self.assertEqual(sum(reward["weight"] for reward in api.PET_WHEEL_REWARDS), 10_000)
+        total_weight = sum(reward["weight"] for reward in api.PET_WHEEL_REWARDS)
+        expected_ticket_numerator = sum(reward["weight"] * reward["amount"] for reward in api.PET_WHEEL_REWARDS if reward["kind"] == "ticket")
+        self.assertEqual(total_weight, 10_000)
+        self.assertEqual(expected_ticket_numerator, total_weight)
+        self.assertEqual({reward["kind"] for reward in api.PET_WHEEL_REWARDS}, {"ticket", "route_focus"})
+
+    def test_wheel_route_focus_improves_targeted_reroute_rate(self) -> None:
+        _, _, _, collection = api.get_or_create_pet(self.db, self.user.id)
+        api.set_pet_wheel_state(collection, {"chances": 1, "history": []})
+        self.db.commit()
+        with patch.object(api.secrets, "randbelow", return_value=8000), patch.object(api.secrets, "token_hex", return_value="focus-event"):
+            result = api.spin_pet_wheel(self.user, self.db)
+        self.assertEqual(result["reward"]["reward_id"], "route_focus")
+        self.assertEqual(result["profile"]["targeted_evolution_blessings"], 1)
+        self.assertEqual(result["profile"]["targeted_evolution_success_rate"], 75)
 
     def test_wheel_rejects_spin_without_available_chance(self) -> None:
         api.get_or_create_pet(self.db, self.user.id)

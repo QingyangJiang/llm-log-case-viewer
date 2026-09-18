@@ -58,7 +58,7 @@ type AiTarget =
   | { kind: "message-tool"; messageIndex: number; itemIndex: number; source: "content" | "tool_call" };
 type ProviderMode = "local" | "external";
 type PetMood = "idle" | "happy" | "proud" | "curious" | "worried";
-type PetColor = "lime" | "aqua" | "peach" | "lavender" | "sky" | "coral" | "gold" | "midnight";
+type PetColor = "lime" | "aqua" | "peach" | "lavender" | "sky" | "coral" | "gold" | "midnight" | "rose" | "jade" | "violet" | "sunset" | "ice" | "fuchsia" | "emerald" | "azure" | "ruby" | "pearl" | "aurora" | "cosmos";
 type PetAccessory = "none" | "leaf" | "bow" | "glasses" | "star" | "headphones" | "cap" | "crown" | "halo" | "medal";
 type PetEvolutionPath = "" | "starlight" | "guardian" | "forest" | "storm" | "ocean" | "ember" | "cloud" | "pixel" | "wonky";
 type PetRarity = "common" | "uncommon" | "rare" | "epic" | "legendary";
@@ -78,7 +78,7 @@ type PetDropEvent = PetEquipment & { reason: PetDropReason; duplicate: boolean; 
 type PetDropChoice = Pick<PetEquipment, "id" | "name" | "slot" | "slot_name" | "symbol" | "rarity" | "theme" | "effect_label" | "effect_value"> & { is_new: boolean; owned_count: number; owned_level?: number | null; owned_affix_count: number; count_after_claim: number; materials_to_synthesize: number; theme_owned_count: number; theme_equipped_count: number; theme_pieces_if_equipped: number; next_set_target?: number | null; next_set_bonus?: string | null; equipped_same_slot?: { id: string; name: string; rarity: PetRarity; level: number; power: number } | null; hidden_affix?: PetEquipmentAffix };
 type PetPendingDrop = { token: string; reason: PetDropReason; at: string; choices: PetDropChoice[] };
 type PetDropReveal = { drop: PetDropEvent; identified_affix: PetEquipmentAffix; affix_added: boolean };
-type PetEvolutionEvent = { at: string; type?: "gift" | "reroute"; spent: number; guaranteed?: boolean; success: boolean; stage: number; path: PetEvolutionPath; trait: string; traits?: string[]; critical?: boolean; success_rate?: number; pity_after?: number; amount?: number; sender?: string; previous_path?: PetEvolutionPath; route_reset?: boolean; skill?: PetSkill | null };
+type PetEvolutionEvent = { at: string; type?: "gift" | "reroute" | "targeted_reroute"; spent: number; guaranteed?: boolean; success: boolean; stage: number; path: PetEvolutionPath; trait: string; traits?: string[]; critical?: boolean; success_rate?: number; pity_after?: number; amount?: number; sender?: string; previous_path?: PetEvolutionPath; target_path?: PetEvolutionPath; route_reset?: boolean; wheel_compensation?: number; skill?: PetSkill | null };
 type PetWheelReward = { id: string; label: string; short_label: string; icon: string; probability: number; tone: string };
 type PetWheelEvent = { reward_id: string; label: string; short_label: string; icon: string; tone: string; detail: string; at: string };
 type PetWheelSpinResult = { profile: PetProfile; reward: PetWheelEvent; reward_index: number; pending_drop?: PetPendingDrop | null };
@@ -115,6 +115,10 @@ type PetProfile = {
   wheel_chances: number;
   wheel_history: PetWheelEvent[];
   wheel_rewards: PetWheelReward[];
+  targeted_evolution_target: PetEvolutionPath;
+  targeted_evolution_failures: number;
+  targeted_evolution_blessings: number;
+  targeted_evolution_success_rate: number;
   total_drops: number;
   evolution_pity: number;
   evolution_success_rate: number;
@@ -309,16 +313,12 @@ const EMPTY_JUDGE_CONFIG: JudgeConfig = {
 };
 const DEFAULT_EQUIPMENT_STATS: PetEquipmentStats = { total_power: 0, all_drop_bonus: 0, pet_drop_bonus: 0, annotation_drop_bonus: 0, badcase_drop_bonus: 0, evolution_bonus: 0, rarity_boost: 0 };
 const PET_WHEEL_REWARDS: PetWheelReward[] = [
-  { id: "ticket_1", label: "进化券 ×1", short_label: "1张进化券", icon: "↟", probability: 22, tone: "lime" },
-  { id: "parts_2", label: "熔铸零件 ×2", short_label: "2枚零件", icon: "⌘", probability: 20, tone: "aqua" },
-  { id: "xp_10", label: "宠物经验 +10", short_label: "10 EXP", icon: "★", probability: 20, tone: "sky" },
-  { id: "equipment", label: "装备三选一", short_label: "装备三选一", icon: "◇", probability: 12, tone: "lavender" },
-  { id: "ticket_3", label: "进化券 ×3", short_label: "3张进化券", icon: "↟", probability: 8, tone: "gold" },
-  { id: "parts_5", label: "熔铸零件 ×5", short_label: "5枚零件", icon: "⌘", probability: 8, tone: "peach" },
-  { id: "xp_30", label: "宠物经验 +30", short_label: "30 EXP", icon: "★", probability: 8, tone: "coral" },
-  { id: "jackpot", label: "幸运大奖", short_label: "5券 + 5零件", icon: "♛", probability: 2, tone: "midnight" },
+  { id: "ticket_1", label: "进化券 ×1", short_label: "1张进化券", icon: "↟", probability: 70, tone: "lime" },
+  { id: "ticket_2", label: "进化券 ×2", short_label: "2张进化券", icon: "↟", probability: 10, tone: "aqua" },
+  { id: "route_focus", label: "定向祝福 +1层", short_label: "定向祝福", icon: "◎", probability: 18, tone: "lavender" },
+  { id: "ticket_5", label: "幸运大奖 · 进化券 ×5", short_label: "5张进化券", icon: "♛", probability: 2, tone: "gold" },
 ];
-const DEFAULT_PET: PetProfile = { name: "小镜", color: "lime", accessory: "none", xp: 0, level: 1, current_level_xp: 0, next_level_xp: 20, earned_event_keys: [], evolution_chances: 0, evolution_credited_level: 1, evolution_stage: 0, evolution_path: "", evolution_variant: 0, evolution_traits: [], evolution_history: [], equipment_catalog_size: 300, equipment_parts: 0, inventory: [], equipped: {}, equipment_stats: DEFAULT_EQUIPMENT_STATS, equipment_sets: [], wardrobe_presets: [], skills: [], active_skills: [], drop_history: [], pending_drops: [], wheel_chances: 0, wheel_history: [], wheel_rewards: PET_WHEEL_REWARDS, total_drops: 0, evolution_pity: 0, evolution_success_rate: 10 };
+const DEFAULT_PET: PetProfile = { name: "小镜", color: "lime", accessory: "none", xp: 0, level: 1, current_level_xp: 0, next_level_xp: 20, earned_event_keys: [], evolution_chances: 0, evolution_credited_level: 1, evolution_stage: 0, evolution_path: "", evolution_variant: 0, evolution_traits: [], evolution_history: [], equipment_catalog_size: 300, equipment_parts: 0, inventory: [], equipped: {}, equipment_stats: DEFAULT_EQUIPMENT_STATS, equipment_sets: [], wardrobe_presets: [], skills: [], active_skills: [], drop_history: [], pending_drops: [], wheel_chances: 0, wheel_history: [], wheel_rewards: PET_WHEEL_REWARDS, targeted_evolution_target: "", targeted_evolution_failures: 0, targeted_evolution_blessings: 0, targeted_evolution_success_rate: 70, total_drops: 0, evolution_pity: 0, evolution_success_rate: 10 };
 const PET_COLORS: { id: PetColor; label: string; value: string; level: number }[] = [
   { id: "lime", label: "青柠", value: "#d9ff78", level: 1 },
   { id: "aqua", label: "薄荷", value: "#9de8dc", level: 2 },
@@ -328,6 +328,18 @@ const PET_COLORS: { id: PetColor; label: string; value: string; level: number }[
   { id: "coral", label: "珊瑚", value: "#ff9c91", level: 6 },
   { id: "gold", label: "鎏金", value: "#ffda68", level: 8 },
   { id: "midnight", label: "星夜", value: "#7e88b8", level: 10 },
+  { id: "rose", label: "玫瑰汽水", value: "#ff8fb8", level: 12 },
+  { id: "jade", label: "翡翠", value: "#63e6ad", level: 15 },
+  { id: "violet", label: "紫晶", value: "#9b7cff", level: 18 },
+  { id: "sunset", label: "落日橘", value: "#ff9a5c", level: 20 },
+  { id: "ice", label: "冰晶", value: "#d8f3ff", level: 24 },
+  { id: "fuchsia", label: "绮丽洋红", value: "#f16cff", level: 28 },
+  { id: "emerald", label: "极光绿", value: "#46d997", level: 32 },
+  { id: "azure", label: "电光蓝", value: "#4fb3ff", level: 36 },
+  { id: "ruby", label: "红宝石", value: "#ef476f", level: 40 },
+  { id: "pearl", label: "月白珍珠", value: "#f7efe5", level: 45 },
+  { id: "aurora", label: "极昼青", value: "#77f2c2", level: 48 },
+  { id: "cosmos", label: "宇宙蓝紫", value: "#5961d8", level: 50 },
 ];
 const PET_ACCESSORIES: { id: PetAccessory; label: string; symbol: string; level: number }[] = [
   { id: "none", label: "无", symbol: "", level: 1 },
@@ -348,11 +360,11 @@ const PET_LEVELS = [
   { level: 6, title: "质量守门员", unlock: "珊瑚色 · 耳机" },
   { level: 8, title: "评测专家", unlock: "鎏金色 · 王冠" },
   { level: 10, title: "首席标注官", unlock: "星夜色 · 光环" },
-  { level: 15, title: "资深裁决师", unlock: "长期成长里程碑" },
-  { level: 20, title: "传奇质检师", unlock: "传奇质检徽记" },
-  { level: 30, title: "评测领航员", unlock: "高阶成长里程碑" },
-  { level: 40, title: "质量宗师", unlock: "宗师成长里程碑" },
-  { level: 50, title: "Case Lens 守护者", unlock: "满级荣誉" },
+  { level: 15, title: "资深裁决师", unlock: "翡翠毛色" },
+  { level: 20, title: "传奇质检师", unlock: "落日橘毛色" },
+  { level: 30, title: "评测领航员", unlock: "绮丽洋红 · 极光绿" },
+  { level: 40, title: "质量宗师", unlock: "红宝石毛色" },
+  { level: 50, title: "Case Lens 守护者", unlock: "宇宙蓝紫 · 满级荣誉" },
 ];
 const PET_MAX_LEVEL = 50;
 const PET_STEADY_LEVEL_COST = 140;
@@ -658,6 +670,10 @@ function normalizedPetProfile(value: Partial<PetProfile> | null | undefined): Pe
     wheel_chances: Math.max(0, Math.floor(Number(value?.wheel_chances) || 0)),
     wheel_history: wheelHistory,
     wheel_rewards: wheelRewards.length ? wheelRewards : PET_WHEEL_REWARDS,
+    targeted_evolution_target: typeof value?.targeted_evolution_target === "string" && value.targeted_evolution_target in PET_EVOLUTION_PATHS ? value.targeted_evolution_target as PetEvolutionPath : "",
+    targeted_evolution_failures: Math.max(0, Math.min(3, Math.floor(Number(value?.targeted_evolution_failures) || 0))),
+    targeted_evolution_blessings: Math.max(0, Math.min(20, Math.floor(Number(value?.targeted_evolution_blessings) || 0))),
+    targeted_evolution_success_rate: Math.max(70, Math.min(100, Math.floor(Number(value?.targeted_evolution_success_rate) || 70))),
     total_drops: Math.max(0, Math.floor(Number(value?.total_drops) || inventory.reduce((sum, item) => sum + item.count, 0))),
     evolution_pity: evolutionPity,
     evolution_success_rate: evolutionSuccessRate,
@@ -673,14 +689,19 @@ function petRandomInt(max: number) {
   return Math.floor(Math.random() * max);
 }
 
-function evolveLocalPet(profile: PetProfile, spend: 1 | 5) {
+function evolveLocalPet(profile: PetProfile, spend: 1 | 5 | 10, targetPath: PetEvolutionPath = "") {
   const echo = profile.active_skills.includes("evolution_echo") ? profile.skills.find((item) => item.id === "evolution_echo")?.level ?? 0 : 0;
   const steady = profile.active_skills.includes("steady_heart") ? profile.skills.find((item) => item.id === "steady_heart")?.level ?? 0 : 0;
   const evolutionBonus = profile.equipment_stats.evolution_bonus;
-  const successRate = Math.min(55, 10 + echo + Math.min(30, profile.evolution_pity * (2 + steady)) + evolutionBonus);
+  const targeted = spend === 10;
+  const targetFailures = targeted && targetPath === profile.targeted_evolution_target ? profile.targeted_evolution_failures : 0;
+  const successRate = targeted
+    ? Math.min(100, 70 + targetFailures * 10 + profile.targeted_evolution_blessings * 5)
+    : Math.min(55, 10 + echo + Math.min(30, profile.evolution_pity * (2 + steady)) + evolutionBonus);
   const success = spend === 5 || petRandomInt(100) < successRate;
-  const routeReset = spend === 5 && Boolean(profile.evolution_path) && profile.evolution_stage > 0;
+  const routeReset = ((spend === 5 && Boolean(profile.evolution_path) && profile.evolution_stage > 0) || targeted) && Boolean(targetPath || profile.evolution_path);
   const previousPath = routeReset ? profile.evolution_path : "";
+  const previousStage = routeReset ? profile.evolution_stage : 0;
   let path = profile.evolution_path;
   let variant = profile.evolution_variant;
   let traits = [...profile.evolution_traits];
@@ -690,12 +711,23 @@ function evolveLocalPet(profile: PetProfile, spend: 1 | 5) {
   let skills = [...profile.skills];
   const activeSkills = [...profile.active_skills];
   let awakenedSkill: PetSkill | null = null;
+  let targetFailuresAfter = profile.targeted_evolution_failures;
+  let targetAfter = profile.targeted_evolution_target;
+  let blessingsAfter = profile.targeted_evolution_blessings;
+  let wheelCompensation = 0;
   if (success) {
     if (routeReset) {
-      const rerollPool = PET_EVOLUTION_PATH_LOTTERY.filter((candidate) => candidate !== previousPath);
-      path = rerollPool[petRandomInt(rerollPool.length)];
+      if (targeted && targetPath && targetPath !== previousPath) path = targetPath;
+      else {
+        const rerollPool = PET_EVOLUTION_PATH_LOTTERY.filter((candidate) => candidate !== previousPath);
+        path = rerollPool[petRandomInt(rerollPool.length)];
+      }
       stage = 0;
       traits = [];
+      targetAfter = "";
+      targetFailuresAfter = 0;
+      if (targeted) blessingsAfter = 0;
+      wheelCompensation = previousStage * 2;
     } else if (!path) {
       path = PET_EVOLUTION_PATH_LOTTERY[petRandomInt(PET_EVOLUTION_PATH_LOTTERY.length)];
     }
@@ -719,11 +751,14 @@ function evolveLocalPet(profile: PetProfile, spend: 1 | 5) {
     awakenedSkill = skills.find((item) => item.id === definition.id) ?? null;
     if (!activeSkills.includes(definition.id) && activeSkills.length < 3) activeSkills.push(definition.id);
     skills = skills.map((item) => ({ ...item, active: activeSkills.includes(item.id) }));
+  } else if (targeted) {
+    targetAfter = targetPath;
+    targetFailuresAfter = Math.min(3, targetFailures + 1);
   }
-  const historyTrait = routeReset && success ? `换路线 · ${wonTraits.join(" / ")}` : wonTraits.join(" / ");
+  const historyTrait = routeReset && success ? `${targeted ? "定向" : ""}换路线 · ${wonTraits.join(" / ")}` : wonTraits.join(" / ");
   const event: PetEvolutionEvent = {
     at: new Date().toISOString(),
-    ...(routeReset ? { type: "reroute" as const, previous_path: previousPath, route_reset: true } : {}),
+    ...(routeReset ? { type: targeted ? "targeted_reroute" as const : "reroute" as const, previous_path: previousPath, target_path: targeted ? targetPath : "", route_reset: success } : {}),
     spent: spend,
     guaranteed: spend === 5,
     success,
@@ -733,7 +768,8 @@ function evolveLocalPet(profile: PetProfile, spend: 1 | 5) {
     traits: wonTraits,
     critical,
     success_rate: spend === 5 ? 100 : successRate,
-    pity_after: success ? 0 : Math.min(20, profile.evolution_pity + 1),
+    pity_after: targeted ? profile.evolution_pity : success ? 0 : Math.min(20, profile.evolution_pity + 1),
+    wheel_compensation: wheelCompensation,
     skill: awakenedSkill,
   };
   return {
@@ -742,6 +778,10 @@ function evolveLocalPet(profile: PetProfile, spend: 1 | 5) {
     critical,
     skill: awakenedSkill,
     route_reset: routeReset && success,
+    targeted,
+    target_path: targetPath,
+    success_rate: successRate,
+    wheel_compensation: wheelCompensation,
     previous_path: previousPath,
     profile: normalizedPetProfile({
       ...profile,
@@ -751,8 +791,13 @@ function evolveLocalPet(profile: PetProfile, spend: 1 | 5) {
       evolution_variant: variant,
       evolution_traits: traits,
       evolution_history: [event, ...profile.evolution_history].slice(0, 50),
-      evolution_pity: success ? 0 : Math.min(20, profile.evolution_pity + 1),
-      evolution_success_rate: success ? Math.min(55, 10 + echo + evolutionBonus) : Math.min(55, 10 + (Math.min(20, profile.evolution_pity + 1) * (2 + steady)) + echo + evolutionBonus),
+      evolution_pity: targeted ? profile.evolution_pity : success ? 0 : Math.min(20, profile.evolution_pity + 1),
+      evolution_success_rate: targeted ? profile.evolution_success_rate : success ? Math.min(55, 10 + echo + evolutionBonus) : Math.min(55, 10 + (Math.min(20, profile.evolution_pity + 1) * (2 + steady)) + echo + evolutionBonus),
+      wheel_chances: profile.wheel_chances + wheelCompensation,
+      targeted_evolution_target: targetAfter,
+      targeted_evolution_failures: targetFailuresAfter,
+      targeted_evolution_blessings: blessingsAfter,
+      targeted_evolution_success_rate: Math.min(100, 70 + targetFailuresAfter * 10 + blessingsAfter * 5),
       skills,
       active_skills: activeSkills,
     }),
@@ -1938,6 +1983,7 @@ function PetCreatureVisual({ profile, accessory, showEquipment = true }: { profi
   const equippedItems = Object.values(profile.equipped).map((itemId) => profile.inventory.find((item) => item.id === itemId)).filter((item): item is PetEquipment => Boolean(item));
   return <span className={`pet-creature evolution-${path || "base"} evolution-stage-${profile.evolution_stage} evolution-variant-${profile.evolution_variant}`} aria-hidden="true">
     {profile.evolution_stage >= 3 ? <span className="pet-evolution-aura" /> : null}
+    {profile.evolution_stage >= 1 && pathInfo ? <><span className="pet-route-feature primary" /><span className="pet-route-feature secondary" /></> : null}
     {profile.evolution_stage >= 1 && pathInfo ? <span className="pet-evolution-mark">{pathInfo.motif}</span> : null}
     {profile.evolution_stage >= 2 ? <><span className="pet-evolution-wing left" /><span className="pet-evolution-wing right" /></> : null}
     {profile.evolution_stage >= 3 ? <span className="pet-evolution-crown" /> : null}
@@ -2190,7 +2236,7 @@ function CompanionPet({ visible, message, mood, completed, total, pulse, hasNext
   currentUserId?: string;
   adminUsers: ServerUser[];
   onPet: () => void;
-  onEvolve: (spend: 1 | 5) => void;
+  onEvolve: (spend: 1 | 5 | 10, targetPath?: PetEvolutionPath) => void;
   onEquip: (slot: PetEquipmentSlot, itemId: string | null) => void;
   onAutoEquip: (mode: PetAutoEquipMode) => void;
   onSynthesize: (itemId: string) => void;
@@ -2231,6 +2277,7 @@ function CompanionPet({ visible, message, mood, completed, total, pulse, hasNext
   const [wheelSpinning, setWheelSpinning] = useState(false);
   const [wheelResult, setWheelResult] = useState<PetWheelEvent | null>(null);
   const wheelTimer = useRef<number | null>(null);
+  const [targetEvolutionPath, setTargetEvolutionPath] = useState<PetEvolutionPath>("");
   const [wardrobeName, setWardrobeName] = useState("");
   useEffect(() => () => { if (wheelTimer.current !== null) window.clearTimeout(wheelTimer.current); }, []);
   if (!visible) return <button className="pet-summon" type="button" onClick={onShow}><span aria-hidden="true">◉ᴗ◉</span> 唤回{profile.name}</button>;
@@ -2276,6 +2323,7 @@ function CompanionPet({ visible, message, mood, completed, total, pulse, hasNext
   const resetEquipmentFilters = () => { setEquipmentFilter("all"); setEquipmentSlotFilter("all"); setEquipmentThemeFilter("all"); };
   const giftUsers = adminUsers.filter((item) => item.active);
   const annotatorGiftIds = giftUsers.filter((item) => item.role === "annotator").map((item) => item.id);
+  const targetedEvolutionRate = Math.min(100, 70 + (targetEvolutionPath && targetEvolutionPath === profile.targeted_evolution_target ? profile.targeted_evolution_failures * 10 : 0) + profile.targeted_evolution_blessings * 5);
   const toggleGiftUser = (userId: string) => setGiftUserIds((current) => current.includes(userId) ? current.filter((id) => id !== userId) : [...current, userId]);
   const toggleWheelUser = (userId: string) => setWheelUserIds((current) => current.includes(userId) ? current.filter((id) => id !== userId) : [...current, userId]);
   const spinWheel = async () => {
@@ -2334,9 +2382,10 @@ function CompanionPet({ visible, message, mood, completed, total, pulse, hasNext
               <div className="pet-lottery-hero"><div className="pet-lottery-orbit"><PetCreatureVisual profile={profile} accessory={accessory} /><i>{profile.evolution_stage || "?"}</i></div><div><strong>{profile.evolution_path ? `${PET_EVOLUTION_PATHS[profile.evolution_path].tone}路线持续强化` : "9 条路线随机诞生"}</strong><p>{profile.evolution_path ? "单抽继续强化当前路线；使用 5 张进化券可改抽另一条路线，原路线层级与路线特征会清空，新路线从第 1 次进化开始。装备和技能保留。" : "首次成功决定主路线；之后单抽持续强化。获得路线后，也可以用 5 张进化券更换路线并从第 1 次进化重新开始。"}</p><div className="pet-odds"><span>本次单抽成功率</span><b>{profile.evolution_success_rate}%</b><i><em style={{ width: `${profile.evolution_success_rate}%` }} /></i><small>连续失败会提高保底，成功后重置</small></div></div></div>
               <div className="pet-evolution-track">{[1, 3, 6, 9, 12, Math.max(15, Math.ceil((profile.evolution_stage + 1) / 3) * 3)].filter((stage, index, list) => list.indexOf(stage) === index).map((stage) => <i className={profile.evolution_stage >= stage ? "active" : stage === profile.evolution_stage + 1 ? "next" : ""} key={stage}><span>{stage}</span><small>{stage === 1 ? "路线诞生" : stage === 3 ? "展翼" : stage === 6 ? "领域" : stage === 9 ? "神话" : stage === 12 ? "星环" : "无限强化"}</small></i>)}</div>
               <div className="pet-path-pool">{Object.entries(PET_EVOLUTION_PATHS).map(([id, item]) => <span className={profile.evolution_path === id ? "active" : id === "wonky" ? "wonky" : ""} key={id}><b>{item.motif}</b>{item.name}</span>)}</div>
+              {profile.evolution_path ? <section className="pet-targeted-reroute"><header><div><span>TARGETED REROUTE</span><strong>十券定向换路线</strong><small>失败不改变当前路线；同一目标每次失败 +10%，定向祝福每层额外 +5%。成功后旧路线每级补偿 2 次大转盘。</small></div><b>{targetedEvolutionRate}%<small>当前成功率</small></b></header><div>{Object.entries(PET_EVOLUTION_PATHS).filter(([id]) => id !== profile.evolution_path).map(([id, item]) => <button type="button" className={`${targetEvolutionPath === id ? "active" : ""} ${profile.targeted_evolution_target === id && profile.targeted_evolution_failures ? "pity" : ""}`} onClick={() => setTargetEvolutionPath(id as PetEvolutionPath)} key={id}><i>{item.motif}</i><span>{item.name}<small>{profile.targeted_evolution_target === id && profile.targeted_evolution_failures ? `已失败 ${profile.targeted_evolution_failures} 次` : item.tone}</small></span></button>)}</div><footer><span><b>{profile.targeted_evolution_blessings}</b> 层定向祝福 · 成功补偿 <b>{profile.evolution_stage * 2}</b> 次大转盘</span><button type="button" disabled={busy || profile.evolution_chances < 10 || !targetEvolutionPath || targetEvolutionPath === profile.evolution_path} onClick={() => onEvolve(10, targetEvolutionPath)}>{profile.evolution_chances < 10 ? `还差 ${10 - profile.evolution_chances} 张券` : targetEvolutionPath ? `消耗 10 券 · ${targetedEvolutionRate}%` : "先选择目标路线"}</button></footer></section> : null}
               {profile.evolution_traits.length ? <div className="pet-evolution-traits">{profile.evolution_traits.slice(-12).map((trait, index) => <span key={`${trait}-${index}`}>{trait}</span>)}</div> : <p>结果包含星辉、机甲、森灵、风暴、潮汐、火焰、云梦、像素，以及外观不太妙的“歪歪异变体”。</p>}
-              <div className="pet-evolution-actions"><button type="button" disabled={busy || profile.evolution_chances < 1} onClick={() => onEvolve(1)}><strong>抽一次</strong><small>消耗 1 张 · 当前 {profile.evolution_success_rate}%</small></button><button className="guaranteed" type="button" disabled={busy || profile.evolution_chances < 5} onClick={() => onEvolve(5)}><strong>{profile.evolution_path ? "五券换路线" : "五券首进化"}</strong><small>{profile.evolution_path ? "消耗 5 张 · 新路线从第 1 次开始" : "消耗 5 张 · 100% 成功"}</small></button></div>
-              {profile.evolution_history.length ? <details className="pet-evolution-history"><summary>最近抽奖记录 · {profile.evolution_history.length}</summary>{profile.evolution_history.slice(0, 10).map((event, index) => <div key={`${event.at}-${index}`}><span>{event.type === "gift" ? event.trait : event.success ? `${event.critical ? "暴击 · " : "成功 · "}${event.trait || PET_EVOLUTION_PATHS[event.path as Exclude<PetEvolutionPath, "">]?.name || "新形态"}${event.skill ? ` · ${event.skill.name} Lv.${event.skill.level}` : ""}` : `失败 · 保底提升至 ${event.pity_after ?? 0}`}</span><small>{event.type === "gift" ? event.sender : event.type === "reroute" ? "五券换路线" : event.spent === 5 ? "五券首进化" : `单抽 ${event.success_rate ?? 10}%`} · {new Date(event.at).toLocaleString()}</small></div>)}</details> : null}
+              <div className="pet-evolution-actions"><button type="button" disabled={busy || profile.evolution_chances < 1} onClick={() => onEvolve(1)}><strong>抽一次</strong><small>消耗 1 张 · 当前 {profile.evolution_success_rate}%</small></button><button className="guaranteed" type="button" disabled={busy || profile.evolution_chances < 5} onClick={() => onEvolve(5)}><strong>{profile.evolution_path ? "五券随机换路线" : "五券首进化"}</strong><small>{profile.evolution_path ? `100% 换路线 · 补偿 ${profile.evolution_stage * 2} 次转盘` : "消耗 5 张 · 100% 成功"}</small></button></div>
+              {profile.evolution_history.length ? <details className="pet-evolution-history"><summary>最近抽奖记录 · {profile.evolution_history.length}</summary>{profile.evolution_history.slice(0, 10).map((event, index) => <div key={`${event.at}-${index}`}><span>{event.type === "gift" ? event.trait : event.success ? `${event.critical ? "暴击 · " : "成功 · "}${event.trait || PET_EVOLUTION_PATHS[event.path as Exclude<PetEvolutionPath, "">]?.name || "新形态"}${event.wheel_compensation ? ` · 补偿 ${event.wheel_compensation} 次转盘` : ""}${event.skill ? ` · ${event.skill.name} Lv.${event.skill.level}` : ""}` : event.type === "targeted_reroute" ? `定向失败 · 当前路线保留，下次同目标概率提升` : `失败 · 保底提升至 ${event.pity_after ?? 0}`}</span><small>{event.type === "gift" ? event.sender : event.type === "targeted_reroute" ? `十券定向 ${event.success_rate ?? 70}%` : event.type === "reroute" ? "五券随机换路线" : event.spent === 5 ? "五券首进化" : `单抽 ${event.success_rate ?? 10}%`} · {new Date(event.at).toLocaleString()}</small></div>)}</details> : null}
               {isAdmin ? <form className="pet-ticket-gift" onSubmit={(event) => { event.preventDefault(); void onGiftTickets(giftUserIds, giftAmount, giftNote).then(() => setGiftUserIds([])).catch(() => undefined); }}>
                 <header><div><span>管理员发放进化券</span><small>可发送给管理员或标注员；登录身份即为授权，无需再次输入密码</small></div><b>{giftUserIds.length} 人已选</b></header>
                 <div className="pet-ticket-recipient-actions"><button type="button" onClick={() => setGiftUserIds(annotatorGiftIds)}>一键全选标注员</button><button type="button" onClick={() => setGiftUserIds(giftUsers.map((item) => item.id))}>全选所有账号</button><button type="button" onClick={() => setGiftUserIds([])}>清空</button></div>
@@ -2345,18 +2394,18 @@ function CompanionPet({ visible, message, mood, completed, total, pulse, hasNext
               </form> : null}
             </section> : null}
             {studioSection === "wheel" ? <section className="pet-wheel-panel">
-              <header><div><span>LUCKY PRIZE WHEEL</span><h3>幸运大转盘</h3><p>管理员发放抽奖机会，由获赠者亲自转动。每次消耗 1 次，奖励由服务端即时结算。</p></div><b><small>可用次数</small>{profile.wheel_chances}</b></header>
+              <header><div><span>LUCKY PRIZE WHEEL</span><h3>进化券幸运大转盘</h3><p>主要用于获得进化券；单次进化券数学期望严格为 1。装备与熔铸零件继续通过摸摸、标注和宠物家园获得。</p></div><b><small>可用次数</small>{profile.wheel_chances}</b></header>
               <div className="pet-wheel-dashboard">
                 <div className="pet-wheel-stage">
                   <i className="pet-wheel-pointer" aria-hidden="true" />
-                  <div className={`pet-prize-wheel ${wheelSpinning ? "spinning" : ""}`} style={{ "--wheel-rotation": `${wheelRotation}deg` } as CSSProperties}>
+                  <div className={`pet-prize-wheel ${wheelSpinning ? "spinning" : ""}`} style={{ "--wheel-rotation": `${wheelRotation}deg`, "--wheel-background": "conic-gradient(#477b5d 0 25%,#2b6c70 25% 50%,#6d5c91 50% 75%,#987331 75% 100%)" } as CSSProperties}>
                     {profile.wheel_rewards.map((reward, index) => <span style={{ "--wheel-label-angle": `${index * (360 / profile.wheel_rewards.length)}deg`, "--wheel-label-counter": `${-index * (360 / profile.wheel_rewards.length)}deg` } as CSSProperties} key={reward.id}><b>{reward.icon}</b><small>{reward.short_label}</small></span>)}
                   </div>
                   <button className="pet-wheel-spin" type="button" disabled={busy || wheelSpinning || profile.wheel_chances < 1 || !currentUserId} onClick={() => void spinWheel()}><strong>{wheelSpinning ? "转动中" : "开始"}</strong><small>{currentUserId ? `${profile.wheel_chances} 次可用` : "团队模式开放"}</small></button>
                 </div>
                 <div className="pet-wheel-info">
                   <div className={`pet-wheel-result ${wheelResult ? "won" : ""}`}><span>{wheelResult ? "本次抽中" : "等待开奖"}</span><b>{wheelResult?.icon ?? "✦"}</b><strong>{wheelResult?.detail ?? (profile.wheel_chances ? "点击转盘中央开始抽奖" : "请联系管理员发放抽奖机会")}</strong><small>{wheelResult ? new Date(wheelResult.at).toLocaleString("zh-CN") : "奖励概率公开，结算记录永久保存在团队账号"}</small></div>
-                  <div className="pet-wheel-odds"><header><strong>奖池概率</strong><small>各次抽取相互独立</small></header><div>{profile.wheel_rewards.map((reward) => <span className={`tone-${reward.tone}`} key={reward.id}><i>{reward.icon}</i><b>{reward.label}</b><em>{reward.probability}%</em></span>)}</div></div>
+                  <div className="pet-wheel-odds"><header><strong>奖池概率 · 期望 1 券/次</strong><small>祝福用于十券定向换路线</small></header><div>{profile.wheel_rewards.map((reward) => <span className={`tone-${reward.tone}`} key={reward.id}><i>{reward.icon}</i><b>{reward.label}</b><em>{reward.probability}%</em></span>)}</div></div>
                 </div>
               </div>
               {profile.wheel_history.length ? <details className="pet-wheel-history"><summary>最近中奖记录 · {profile.wheel_history.length}</summary><div>{profile.wheel_history.slice(0, 10).map((event) => <article key={`${event.at}-${event.reward_id}`}><i>{event.icon}</i><span><strong>{event.detail}</strong><small>{new Date(event.at).toLocaleString("zh-CN")}</small></span></article>)}</div></details> : null}
@@ -4937,27 +4986,34 @@ export default function Home() {
     }
   };
 
-  const evolveCompanion = async (spend: 1 | 5) => {
+  const evolveCompanion = async (spend: 1 | 5 | 10, targetPath: PetEvolutionPath = "") => {
     const current = petProfileRef.current;
     if (petBusy || current.evolution_chances < spend) return;
+    if (spend === 10 && (!targetPath || targetPath === current.evolution_path || !current.evolution_path)) return;
     if (spend === 5) {
       const message = current.evolution_path && current.evolution_stage > 0
-        ? "将消耗 5 张进化券改抽另一条路线。当前路线的进化层级与路线特征会清空，新路线固定从第 1 次进化开始；装备和已觉醒技能保留。继续吗？"
+        ? `将消耗 5 张进化券随机更换路线。当前 ${current.evolution_stage} 级路线会清空，新路线从第 1 次进化开始，并补偿 ${current.evolution_stage * 2} 次大转盘；装备和技能保留。继续吗？`
         : "将消耗 5 张进化券完成首次必定成功的进化，路线仍然随机。继续吗？";
       if (!window.confirm(message)) return;
+    }
+    if (spend === 10) {
+      const targetName = PET_EVOLUTION_PATHS[targetPath as Exclude<PetEvolutionPath, "">]?.name;
+      const failures = current.targeted_evolution_target === targetPath ? current.targeted_evolution_failures : 0;
+      const rate = Math.min(100, 70 + failures * 10 + current.targeted_evolution_blessings * 5);
+      if (!window.confirm(`将消耗 10 张进化券，尝试定向更换为「${targetName}」，成功率 ${rate}%。失败时保留当前路线并为同一目标叠加 10% 成功率；成功后补偿 ${current.evolution_stage * 2} 次大转盘。继续吗？`)) return;
     }
     setPetBusy(true);
     try {
       if (serverUser) {
-        const result = await apiRequest<{ profile: PetProfile; success: boolean; spent: number; guaranteed: boolean; trait: string; critical?: boolean; route_reset?: boolean; previous_path?: PetEvolutionPath; skill?: PetSkill | null }>("/api/pet/evolve", { method: "POST", body: JSON.stringify({ spend }) });
+        const result = await apiRequest<{ profile: PetProfile; success: boolean; spent: number; guaranteed: boolean; trait: string; critical?: boolean; route_reset?: boolean; targeted?: boolean; target_path?: PetEvolutionPath; success_rate?: number; wheel_compensation?: number; previous_path?: PetEvolutionPath; skill?: PetSkill | null }>("/api/pet/evolve", { method: "POST", body: JSON.stringify({ spend, target_path: spend === 10 ? targetPath : null }) });
         const next = applyPetProfile(result.profile);
-        if (result.success) wakePet(`${result.route_reset ? "换路线成功！从第 1 次进化重新开始。" : result.critical ? "暴击进化！" : "进化成功！"}获得「${result.trait}」${result.skill ? `，${result.skill.name} Lv.${result.skill.level}` : ""}`, next.evolution_path === "wonky" ? "worried" : "proud");
-        else wakePet(`这次化成星尘，单抽保底升至 ${next.evolution_success_rate}%`, "worried");
+        if (result.success) wakePet(`${result.route_reset ? `${result.targeted ? "定向" : "随机"}换路线成功！补偿 ${result.wheel_compensation ?? 0} 次大转盘。` : result.critical ? "暴击进化！" : "进化成功！"}获得「${result.trait}」${result.skill ? `，${result.skill.name} Lv.${result.skill.level}` : ""}`, next.evolution_path === "wonky" ? "worried" : "proud");
+        else wakePet(result.targeted ? `定向换路线失败，当前路线保留；同一目标下次成功率已提升至 ${next.targeted_evolution_success_rate}%` : `这次化成星尘，单抽保底升至 ${next.evolution_success_rate}%`, "worried");
       } else {
-        const result = evolveLocalPet(current, spend);
+        const result = evolveLocalPet(current, spend, targetPath);
         const next = applyPetProfile(result.profile);
-        if (result.success) wakePet(`${result.route_reset ? "换路线成功！从第 1 次进化重新开始。" : result.critical ? "暴击进化！" : "进化成功！"}获得「${result.trait}」${result.skill ? `，${result.skill.name} Lv.${result.skill.level}` : ""}`, next.evolution_path === "wonky" ? "worried" : "proud");
-        else wakePet(`这次化成星尘，单抽保底升至 ${next.evolution_success_rate}%`, "worried");
+        if (result.success) wakePet(`${result.route_reset ? `${result.targeted ? "定向" : "随机"}换路线成功！补偿 ${result.wheel_compensation} 次大转盘。` : result.critical ? "暴击进化！" : "进化成功！"}获得「${result.trait}」${result.skill ? `，${result.skill.name} Lv.${result.skill.level}` : ""}`, next.evolution_path === "wonky" ? "worried" : "proud");
+        else wakePet(result.targeted ? `定向换路线失败，当前路线保留；同一目标下次成功率已提升至 ${next.targeted_evolution_success_rate}%` : `这次化成星尘，单抽保底升至 ${next.evolution_success_rate}%`, "worried");
       }
     } catch (error) {
       wakePet(error instanceof Error ? error.message : "变身失败，请稍后再试", "worried");
@@ -5234,7 +5290,7 @@ export default function Home() {
 
   const completePetWheelSpin = (result: PetWheelSpinResult) => {
     applyPetProfile(result.profile);
-    wakePet(`幸运转盘抽中「${result.reward.detail}」！`, result.reward.reward_id === "jackpot" ? "proud" : "happy");
+    wakePet(`幸运转盘抽中「${result.reward.detail}」！`, result.reward.reward_id === "ticket_5" ? "proud" : "happy");
   };
 
   const giftPetWheelChances = async (userIds: string[], amount: number, note: string) => {
@@ -5937,7 +5993,7 @@ export default function Home() {
               <div className="annotator-fields"><input value={annotatorId} disabled={Boolean(serverUser)} onChange={(event) => setAnnotatorId(event.target.value)} placeholder="用户 ID，如 jiangqy" aria-label="标注员 ID" /><input value={annotatorName} disabled={Boolean(serverUser)} onChange={(event) => setAnnotatorName(event.target.value)} placeholder="显示姓名" aria-label="标注员姓名" /></div>
               <div className="annotator-actions"><button onClick={downloadAnnotationTemplate}>下载输入模板</button><button onClick={exportAnnotationRows}>仅导出标注记录</button></div>
             </div>
-            <CompanionPet visible={petVisible} message={petMessage || defaultPetMessage} mood={petMessage ? petMood : defaultPetMood} completed={Math.min(submittedCases, annotatableCases)} total={annotatableCases} pulse={petPulse} hasNext={pendingCases > 0} profile={petProfile} settingsOpen={petSettingsOpen} draftName={petDraftName} busy={petBusy} persistenceLabel={serverUser ? "团队账号" : "当前浏览器"} isAdmin={serverUser?.role === "admin"} currentUserId={serverUser?.id} adminUsers={serverUsers} onPet={() => void petTheCompanion()} onEvolve={(spend) => void evolveCompanion(spend)} onEquip={(slot, itemId) => void equipPetItem(slot, itemId)} onAutoEquip={(mode) => void autoEquipPet(mode)} onSynthesize={(itemId) => void synthesizePetItem(itemId)} onReforge={(itemId) => void reforgePetItem(itemId)} onDismantle={(itemId) => void dismantlePetItem(itemId)} onRandomForge={() => void randomForgePetItem()} onOpenEquipmentGuide={openPetEquipmentGuide} onSaveWardrobe={savePetWardrobe} onApplyWardrobe={(presetId) => void applyPetWardrobe(presetId)} onDeleteWardrobe={(presetId) => void deletePetWardrobe(presetId)} onToggleSkill={(skillId) => void togglePetSkill(skillId)} onGiftTickets={giftPetTickets} onSpinWheel={requestPetWheelSpin} onCompleteWheelSpin={completePetWheelSpin} onGiftWheelChances={giftPetWheelChances} onNext={goToNextPendingCase} onHide={() => setPetVisible(false)} onShow={() => { setPetVisible(true); wakePet("我回来啦，继续一起标！", "happy"); }} onToggleSettings={togglePetStudio} onDraftName={setPetDraftName} onSelectColor={(color) => previewPetStyle({ color })} onSelectAccessory={(accessory) => previewPetStyle({ accessory })} onSaveProfile={() => void savePetCustomization()} />
+            <CompanionPet visible={petVisible} message={petMessage || defaultPetMessage} mood={petMessage ? petMood : defaultPetMood} completed={Math.min(submittedCases, annotatableCases)} total={annotatableCases} pulse={petPulse} hasNext={pendingCases > 0} profile={petProfile} settingsOpen={petSettingsOpen} draftName={petDraftName} busy={petBusy} persistenceLabel={serverUser ? "团队账号" : "当前浏览器"} isAdmin={serverUser?.role === "admin"} currentUserId={serverUser?.id} adminUsers={serverUsers} onPet={() => void petTheCompanion()} onEvolve={(spend, targetPath) => void evolveCompanion(spend, targetPath)} onEquip={(slot, itemId) => void equipPetItem(slot, itemId)} onAutoEquip={(mode) => void autoEquipPet(mode)} onSynthesize={(itemId) => void synthesizePetItem(itemId)} onReforge={(itemId) => void reforgePetItem(itemId)} onDismantle={(itemId) => void dismantlePetItem(itemId)} onRandomForge={() => void randomForgePetItem()} onOpenEquipmentGuide={openPetEquipmentGuide} onSaveWardrobe={savePetWardrobe} onApplyWardrobe={(presetId) => void applyPetWardrobe(presetId)} onDeleteWardrobe={(presetId) => void deletePetWardrobe(presetId)} onToggleSkill={(skillId) => void togglePetSkill(skillId)} onGiftTickets={giftPetTickets} onSpinWheel={requestPetWheelSpin} onCompleteWheelSpin={completePetWheelSpin} onGiftWheelChances={giftPetWheelChances} onNext={goToNextPendingCase} onHide={() => setPetVisible(false)} onShow={() => { setPetVisible(true); wakePet("我回来啦，继续一起标！", "happy"); }} onToggleSettings={togglePetStudio} onDraftName={setPetDraftName} onSelectColor={(color) => previewPetStyle({ color })} onSelectAccessory={(accessory) => previewPetStyle({ accessory })} onSaveProfile={() => void savePetCustomization()} />
             <label className="search-box"><Icon>⌕</Icon><input ref={searchInput} value={query} onChange={(event) => { setQuery(event.target.value); setVisibleLimit(400); }} placeholder="搜索 ID、模型或消息…" /><kbd>⌘K</kbd></label>
             <div className="filters">
               <select value={protocolFilter} onChange={(event) => { setProtocolFilter(event.target.value as "all" | Protocol); setVisibleLimit(400); }} aria-label="协议筛选">
