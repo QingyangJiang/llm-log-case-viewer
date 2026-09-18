@@ -290,4 +290,241 @@ class PetEvolutionTest(unittest.TestCase):
     def test_reforge_keeps_level_and_can_add_many_random_affixes(self) -> None:
         item = api.PET_EQUIPMENT_CATALOG["gear-01-1-1"]
         raw_entry = {"count": 4, "level": 6, "affixes": [{"id": "old", "key": "pet_drop_bonus", "value": 1}], "synthesis_failures": 2}
-        with patch.object(api.secrets, "randbelow", retur
+        with patch.object(api.secrets, "randbelow", return_value=0), patch.object(api, "pet_random_affix", side_effect=lambda _item, _level, index: {"id": f"new-{index}", "key": "rarity_boost", "label": "稀有装备权重", "value": index + 1, "critical": False}):
+            entry, affixes = api.reforge_pet_equipment_entry(item, raw_entry)
+        self.assertEqual(entry["count"], 3)
+        self.assertEqual(entry["level"], 6)
+        self.assertEqual(entry["synthesis_failures"], 2)
+        self.assertEqual(len(affixes), 2)
+
+    def test_dismantle_two_items_then_random_forge_can_level_up(self) -> None:
+        _, _, _, collection = api.get_or_create_pet(self.db, self.user.id)
+        source_id = "gear-01-1-1"
+        collection.inventory = {source_id: {"count": 2, "level": 4, "affixes": [], "synthesis_failures": 0}}
+
+        _, parts = api.dismantle_pet_equipment(collection, source_id)
+        self.assertEqual(parts, 1)
+        _, parts = api.dismantle_pet_equipment(collection, source_id)
+        self.assertEqual(parts, 2)
+        self.assertNotIn(source_id, collection.inventory)
+
+        generated = {"id": "forge-affix", "key": "all_drop_bonus", "label": "所有装备掉率", "value": 2, "critical": True}
+        with patch.object(api, "pet_choose_rarity", return_value="common"), patch.object(api.secrets, "choice", side_effect=lambda choices: choices[0]), patch.object(api.secrets, "randbelow", return_value=0), patch.object(api, "pet_random_affix", return_value=generated):
+            item, level_up, affix, affix_added = api.forge_random_pet_equipment(collection)
+
+        self.assertTrue(level_up)
+        self.assertTrue(affix_added)
+        self.assertEqual(affix, generated)
+        self.assertEqual(item["level"], 2)
+        self.assertEqual(item["count"], 1)
+        self.assertEqual(item["affixes"], [generated])
+        self.assertEqual(api.pet_equipment_parts(collection), 0)
+
+    def test_annotation_drop_base_chance_is_eighteen_percent(self) -> None:
+        _, _, _, collection = api.get_or_create_pet(self.db, self.user.id)
+        self.assertEqual(api.PET_DROP_BASE_CHANCES["pet"], 500)
+        self.assertEqual(api.PET_DROP_BASE_CHANCES["annotation"], 1800)
+        self.assertEqual(api.PET_DROP_BASE_CHANCES["badcase"], 2000)
+        with patch.object(api.secrets, "randbelow", return_value=1800):
+            self.assertIsNone(api.maybe_drop_pet_equipment(collection, "annotation"))
+
+    def test_drop_creates_three_hidden_choices_and_claims_only_one(self) -> None:
+        _, _, _, collection = api.get_or_create_pet(self.db, self.user.id)
+        hidden_affixes = [
+            {"id": f"hidden-{index}", "key": "all_drop_bonus", "label": "所有装备掉率", "value": index + 1, "critical": index == 2}
+            for index in range(3)
+        ]
+        with patch.object(api, "pet_choose_rarity", return_value="common"), patch.object(api.secrets, "randbelow", return_value=0), patch.object(api.secrets, "choice", side_effect=lambda choices: choices[0]), patch.object(api.secrets, "token_hex", return_value="drop-token"), patch.object(api, "pet_random_affix", side_effect=hidden_affixes):
+            self.assertIsNone(api.maybe_drop_pet_equipment(collection, "annotation"))
+
+        pending = api.pet_pending_drops(collection)
+        public = api.pet_pending_drop_payload(collection)
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(len(public[0]["choices"]), 3)
+        self.assertEqual(len({choice["id"] for choice in public[0]["choices"]}), 3)
+        self.assertNotIn("hidden_affix", public[0]["choices"][0])
+        self.assertEqual(collection.total_drops, 0)
+
+        selected_id = public[0]["choices"][0]["id"]
+        drop, affix, added = api.claim_pet_drop_choice(collection, "drop-token", selected_id)
+        self.assertTrue(added)
+        self.assertEqual(affix["id"], "hidden-0")
+        self.assertEqual(drop["count"], 1)
+        self.assertEqual(drop["affixes"][0]["id"], "hidden-0")
+        self.assertEqual(collection.total_drops, 1)
+        self.assertEqual(api.pet_pending_drops(collection), [])
+
+    def test_homestead_lists_other_pets_with_appearance_route_and_power(self) -> None:
+        _, _, my_evolution, _ = api.get_or_create_pet(self.db, self.user.id)
+        my_evolution.path = "forest"
+        my_evolution.stage = 2
+        neighbor, profile, progress, evolution, collection = self.add_opponent()
+        profile.name = "小雷"
+        profile.color = "sky"
+        profile.accessory = "glasses"
+        progress.xp_units = api.pet_level_start_xp(8) * 5
+        evolution.path = "storm"
+        evolution.stage = 4
+        evolution.traits = ["闪电耳羽", "疾风羽翼"]
+        item_id = "gear-03-1-3"
+        collection.inventory = {
+            item_id: {"count": 1, "level": 3, "affixes": [], "synthesis_failures": 0},
+            api.PET_FASHION_KEY: {"headwear": "fashion-sailor-headwear"},
+        }
+        collection.equipped = {"head": item_id}
+        self.db.commit()
+
+        home = api.pet_homestead_payload(self.db, self.user)
+
+        self.assertEqual(home["resident_count"], 2)
+        self.assertTrue(home["battle_available"])
+        self.assertEqual(len(home["residents"]), 1)
+        resident = home["residents"][0]
+        self.assertEqual(resident["user_id"], str(neighbor.id))
+        self.assertEqual(resident["pet_name"], "小雷")
+        self.assertEqual(resident["color"], "sky")
+        self.assertEqual(resident["accessory"], "glasses")
+        self.assertEqual(resident["fashion"], {"headwear": "fashion-sailor-headwear"})
+        self.assertEqual(resident["evolution_path"], "storm")
+        self.assertEqual(resident["evolution_stage"], 4)
+        self.assertEqual(resident["equipped_items"][0]["id"], item_id)
+        self.assertGreater(resident["battle_power"], 0)
+        self.assertEqual(resident["battle_power"], sum(resident["power_breakdown"].values()))
+        self.assertNotIn("inventory", resident)
+        self.assertNotIn("password_hash", resident)
+
+    def test_daily_battle_win_queues_guaranteed_drop_and_cannot_repeat(self) -> None:
+        _, progress, evolution, collection = api.get_or_create_pet(self.db, self.user.id)
+        progress.xp_units = api.pet_level_start_xp(20) * 5
+        evolution.path = "guardian"
+        evolution.stage = 8
+        self.add_opponent()
+        self.db.commit()
+
+        with patch.object(api.secrets, "choice", side_effect=lambda choices: choices[0]), patch.object(api.secrets, "randbelow", return_value=0), patch.object(api.secrets, "token_hex", side_effect=["battle-drop", "battle-event"]):
+            result = api.battle_pet_in_homestead(self.user, self.db)
+
+        self.assertTrue(result["won"])
+        self.assertEqual(result["outcome"], "win")
+        self.assertGreater(result["my_power"], result["opponent_power"])
+        self.assertEqual(result["reward_pending"]["reason"], "battle")
+        self.assertEqual(len(result["reward_pending"]["choices"]), 3)
+        self.assertEqual(result["profile"]["pending_drops"][0]["token"], "battle-drop")
+        self.assertFalse(result["home"]["battle_available"])
+        state = api.pet_battle_state(collection)
+        self.assertEqual(state["last_battle_date"], api.pet_battle_day())
+        self.assertEqual(state["history"][0]["outcome"], "win")
+
+        with self.assertRaises(api.HTTPException) as raised:
+            api.battle_pet_in_homestead(self.user, self.db)
+        self.assertEqual(raised.exception.status_code, 409)
+
+    def test_daily_battle_loss_consumes_chance_without_drop(self) -> None:
+        api.get_or_create_pet(self.db, self.user.id)
+        _, _, progress, evolution, _ = self.add_opponent()
+        progress.xp_units = api.pet_level_start_xp(30) * 5
+        evolution.path = "starlight"
+        evolution.stage = 12
+        self.db.commit()
+
+        with patch.object(api.secrets, "choice", side_effect=lambda choices: choices[0]), patch.object(api.secrets, "randbelow", return_value=99), patch.object(api.secrets, "token_hex", return_value="loss-event"):
+            result = api.battle_pet_in_homestead(self.user, self.db)
+
+        self.assertFalse(result["won"])
+        self.assertEqual(result["outcome"], "loss")
+        self.assertIsNone(result["reward_pending"])
+        self.assertEqual(result["profile"]["pending_drops"], [])
+        self.assertFalse(result["home"]["battle_available"])
+
+    def test_daily_battle_loss_has_ten_percent_lucky_drop(self) -> None:
+        api.get_or_create_pet(self.db, self.user.id)
+        _, _, progress, evolution, _ = self.add_opponent()
+        progress.xp_units = api.pet_level_start_xp(30) * 5
+        evolution.path = "starlight"
+        evolution.stage = 12
+        self.db.commit()
+
+        with patch.object(api.secrets, "choice", side_effect=lambda choices: choices[0]), patch.object(api.secrets, "randbelow", return_value=0), patch.object(api.secrets, "token_hex", side_effect=["lucky-drop", "loss-event"]):
+            result = api.battle_pet_in_homestead(self.user, self.db)
+
+        self.assertFalse(result["won"])
+        self.assertEqual(result["outcome"], "loss")
+        self.assertTrue(result["lucky_reward"])
+        self.assertEqual(result["reward_pending"]["reason"], "battle")
+        self.assertEqual(result["profile"]["pending_drops"][0]["token"], "lucky-drop")
+        self.assertTrue(api.pet_battle_state(self.db.scalar(api.select(api.PetCollection).where(api.PetCollection.user_id == self.user.id)))["history"][0]["reward"])
+
+    def test_battle_day_uses_china_calendar_day(self) -> None:
+        before_midnight = api.datetime(2026, 9, 8, 15, 59, tzinfo=api.timezone.utc)
+        after_midnight = api.datetime(2026, 9, 8, 16, 1, tzinfo=api.timezone.utc)
+        self.assertEqual(api.pet_battle_day(before_midnight), "2026-09-08")
+        self.assertEqual(api.pet_battle_day(after_midnight), "2026-09-09")
+        self.assertEqual(api.pet_next_battle_at(before_midnight), "2026-09-08T16:00:00+00:00")
+
+    def test_admin_can_bulk_gift_tickets_to_annotators_and_admins_without_password(self) -> None:
+        admin = api.User(username="admin-pet", display_name="Admin", password_hash=api.hash_password("ticket-secret"), role="admin")
+        other_admin = api.User(username="admin-other", display_name="Other Admin", password_hash="unused", role="admin")
+        self.db.add_all([admin, other_admin])
+        self.db.commit()
+        result = api.gift_pet_tickets(api.PetTicketGiftBody(recipient_user_ids=[self.user.id, admin.id, other_admin.id], amount=7, note="奖励"), admin, self.db)
+        self.assertEqual(result["amount"], 7)
+        self.assertEqual(result["total_amount"], 21)
+        self.assertEqual(len(result["recipients"]), 3)
+        self.assertEqual(result["profile"]["evolution_chances"], 9)
+        admin_evolution = self.db.scalar(api.select(api.PetEvolution).where(api.PetEvolution.user_id == admin.id))
+        other_admin_evolution = self.db.scalar(api.select(api.PetEvolution).where(api.PetEvolution.user_id == other_admin.id))
+        self.assertEqual(admin_evolution.available_chances, 7)
+        self.assertEqual(other_admin_evolution.available_chances, 7)
+        self.assertEqual(len(self.db.scalars(api.select(api.PetTicketGift)).all()), 3)
+
+    def test_admin_can_grant_wheel_chances_and_recipient_spins_them(self) -> None:
+        admin = api.User(username="wheel-admin", display_name="Wheel Admin", password_hash="unused", role="admin")
+        self.db.add(admin)
+        self.db.commit()
+
+        granted = api.gift_pet_wheel_chances(
+            api.PetWheelGrantBody(recipient_user_ids=[self.user.id, admin.id], amount=3, note="周赛奖励"),
+            admin,
+            self.db,
+        )
+        self.assertEqual(granted["total_amount"], 6)
+        self.assertEqual(granted["profile"]["wheel_chances"], 3)
+        self.assertEqual(len(self.db.scalars(api.select(api.PetWheelGrant)).all()), 2)
+        _, _, evolution, collection = api.get_or_create_pet(self.db, self.user.id)
+        chances_before = evolution.available_chances
+        self.assertEqual(api.pet_wheel_state(collection)["chances"], 3)
+
+        with patch.object(api.secrets, "randbelow", return_value=0), patch.object(api.secrets, "token_hex", return_value="wheel-event"):
+            result = api.spin_pet_wheel(self.user, self.db)
+
+        self.assertEqual(result["reward_index"], 0)
+        self.assertEqual(result["reward"]["reward_id"], "ticket_1")
+        self.assertEqual(result["profile"]["wheel_chances"], 2)
+        self.assertEqual(result["profile"]["evolution_chances"], chances_before + 1)
+        self.assertEqual(result["profile"]["wheel_history"][0]["id"], "wheel-event")
+        total_weight = sum(reward["weight"] for reward in api.PET_WHEEL_REWARDS)
+        expected_ticket_numerator = sum(reward["weight"] * reward["amount"] for reward in api.PET_WHEEL_REWARDS if reward["kind"] == "ticket")
+        self.assertEqual(total_weight, 10_000)
+        self.assertEqual(expected_ticket_numerator, total_weight)
+        self.assertEqual({reward["kind"] for reward in api.PET_WHEEL_REWARDS}, {"ticket", "route_focus"})
+
+    def test_wheel_route_focus_improves_targeted_reroute_rate(self) -> None:
+        _, _, _, collection = api.get_or_create_pet(self.db, self.user.id)
+        api.set_pet_wheel_state(collection, {"chances": 1, "history": []})
+        self.db.commit()
+        with patch.object(api.secrets, "randbelow", return_value=8000), patch.object(api.secrets, "token_hex", return_value="focus-event"):
+            result = api.spin_pet_wheel(self.user, self.db)
+        self.assertEqual(result["reward"]["reward_id"], "route_focus")
+        self.assertEqual(result["profile"]["targeted_evolution_blessings"], 1)
+        self.assertEqual(result["profile"]["targeted_evolution_success_rate"], 75)
+
+    def test_wheel_rejects_spin_without_available_chance(self) -> None:
+        api.get_or_create_pet(self.db, self.user.id)
+        self.db.commit()
+        with self.assertRaises(api.HTTPException) as raised:
+            api.spin_pet_wheel(self.user, self.db)
+        self.assertEqual(raised.exception.status_code, 409)
+
+
+if __name__ == "__main__":
+    unittest.main()
