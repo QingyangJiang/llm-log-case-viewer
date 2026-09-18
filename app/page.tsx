@@ -73,12 +73,15 @@ type PetEquipmentSetTier = { pieces: number; key: PetEquipmentEffectKey; value: 
 type PetEquipmentSet = { theme: string; name: string; description: string; pieces: number; bonuses: string[]; tiers: (Omit<PetEquipmentSetTier, "key" | "value"> & { active: boolean })[] };
 type PetWardrobePreset = { id: string; name: string; color: PetColor; accessory: PetAccessory; equipped: Partial<Record<PetEquipmentSlot, string>>; created_at: string };
 type PetSkill = { id: string; name: string; icon: string; description: string; level: number; active: boolean };
-type PetDropReason = "pet" | "annotation" | "badcase" | "battle";
+type PetDropReason = "pet" | "annotation" | "badcase" | "battle" | "wheel";
 type PetDropEvent = PetEquipment & { reason: PetDropReason; duplicate: boolean; identified_affix?: PetEquipmentAffix; affix_added?: boolean; at: string };
 type PetDropChoice = Pick<PetEquipment, "id" | "name" | "slot" | "slot_name" | "symbol" | "rarity" | "theme" | "effect_label" | "effect_value"> & { is_new: boolean; owned_count: number; owned_level?: number | null; owned_affix_count: number; count_after_claim: number; materials_to_synthesize: number; theme_owned_count: number; theme_equipped_count: number; theme_pieces_if_equipped: number; next_set_target?: number | null; next_set_bonus?: string | null; equipped_same_slot?: { id: string; name: string; rarity: PetRarity; level: number; power: number } | null; hidden_affix?: PetEquipmentAffix };
 type PetPendingDrop = { token: string; reason: PetDropReason; at: string; choices: PetDropChoice[] };
 type PetDropReveal = { drop: PetDropEvent; identified_affix: PetEquipmentAffix; affix_added: boolean };
 type PetEvolutionEvent = { at: string; type?: "gift" | "reroute"; spent: number; guaranteed?: boolean; success: boolean; stage: number; path: PetEvolutionPath; trait: string; traits?: string[]; critical?: boolean; success_rate?: number; pity_after?: number; amount?: number; sender?: string; previous_path?: PetEvolutionPath; route_reset?: boolean; skill?: PetSkill | null };
+type PetWheelReward = { id: string; label: string; short_label: string; icon: string; probability: number; tone: string };
+type PetWheelEvent = { reward_id: string; label: string; short_label: string; icon: string; tone: string; detail: string; at: string };
+type PetWheelSpinResult = { profile: PetProfile; reward: PetWheelEvent; reward_index: number; pending_drop?: PetPendingDrop | null };
 type PetProfile = {
   name: string;
   color: PetColor;
@@ -109,6 +112,9 @@ type PetProfile = {
   active_skills: string[];
   drop_history: PetDropEvent[];
   pending_drops: PetPendingDrop[];
+  wheel_chances: number;
+  wheel_history: PetWheelEvent[];
+  wheel_rewards: PetWheelReward[];
   total_drops: number;
   evolution_pity: number;
   evolution_success_rate: number;
@@ -302,7 +308,17 @@ const EMPTY_JUDGE_CONFIG: JudgeConfig = {
   verifier_prompt: "",
 };
 const DEFAULT_EQUIPMENT_STATS: PetEquipmentStats = { total_power: 0, all_drop_bonus: 0, pet_drop_bonus: 0, annotation_drop_bonus: 0, badcase_drop_bonus: 0, evolution_bonus: 0, rarity_boost: 0 };
-const DEFAULT_PET: PetProfile = { name: "小镜", color: "lime", accessory: "none", xp: 0, level: 1, current_level_xp: 0, next_level_xp: 20, earned_event_keys: [], evolution_chances: 0, evolution_credited_level: 1, evolution_stage: 0, evolution_path: "", evolution_variant: 0, evolution_traits: [], evolution_history: [], equipment_catalog_size: 300, equipment_parts: 0, inventory: [], equipped: {}, equipment_stats: DEFAULT_EQUIPMENT_STATS, equipment_sets: [], wardrobe_presets: [], skills: [], active_skills: [], drop_history: [], pending_drops: [], total_drops: 0, evolution_pity: 0, evolution_success_rate: 10 };
+const PET_WHEEL_REWARDS: PetWheelReward[] = [
+  { id: "ticket_1", label: "进化券 ×1", short_label: "1张进化券", icon: "↟", probability: 22, tone: "lime" },
+  { id: "parts_2", label: "熔铸零件 ×2", short_label: "2枚零件", icon: "⌘", probability: 20, tone: "aqua" },
+  { id: "xp_10", label: "宠物经验 +10", short_label: "10 EXP", icon: "★", probability: 20, tone: "sky" },
+  { id: "equipment", label: "装备三选一", short_label: "装备三选一", icon: "◇", probability: 12, tone: "lavender" },
+  { id: "ticket_3", label: "进化券 ×3", short_label: "3张进化券", icon: "↟", probability: 8, tone: "gold" },
+  { id: "parts_5", label: "熔铸零件 ×5", short_label: "5枚零件", icon: "⌘", probability: 8, tone: "peach" },
+  { id: "xp_30", label: "宠物经验 +30", short_label: "30 EXP", icon: "★", probability: 8, tone: "coral" },
+  { id: "jackpot", label: "幸运大奖", short_label: "5券 + 5零件", icon: "♛", probability: 2, tone: "midnight" },
+];
+const DEFAULT_PET: PetProfile = { name: "小镜", color: "lime", accessory: "none", xp: 0, level: 1, current_level_xp: 0, next_level_xp: 20, earned_event_keys: [], evolution_chances: 0, evolution_credited_level: 1, evolution_stage: 0, evolution_path: "", evolution_variant: 0, evolution_traits: [], evolution_history: [], equipment_catalog_size: 300, equipment_parts: 0, inventory: [], equipped: {}, equipment_stats: DEFAULT_EQUIPMENT_STATS, equipment_sets: [], wardrobe_presets: [], skills: [], active_skills: [], drop_history: [], pending_drops: [], wheel_chances: 0, wheel_history: [], wheel_rewards: PET_WHEEL_REWARDS, total_drops: 0, evolution_pity: 0, evolution_success_rate: 10 };
 const PET_COLORS: { id: PetColor; label: string; value: string; level: number }[] = [
   { id: "lime", label: "青柠", value: "#d9ff78", level: 1 },
   { id: "aqua", label: "薄荷", value: "#9de8dc", level: 2 },
@@ -586,9 +602,26 @@ function normalizedPetProfile(value: Partial<PetProfile> | null | undefined): Pe
         next_set_target: nextSetTarget, next_set_bonus: nextSetBonus, equipped_same_slot: equippedSameSlot, hidden_affix: hiddenAffix,
       } satisfies PetDropChoice];
     }).slice(0, 3);
-    const reason: PetDropReason = pending.reason === "pet" || pending.reason === "badcase" || pending.reason === "battle" ? pending.reason : "annotation";
+    const reason: PetDropReason = pending.reason === "pet" || pending.reason === "badcase" || pending.reason === "battle" || pending.reason === "wheel" ? pending.reason : "annotation";
     return choices.length ? [{ token: pending.token, reason, at: typeof pending.at === "string" ? pending.at : new Date().toISOString(), choices }] : [];
   }).slice(0, PET_MAX_PENDING_DROPS) : [];
+  const wheelRewards = Array.isArray(value?.wheel_rewards) ? value.wheel_rewards.filter((reward): reward is PetWheelReward => isObject(reward) && typeof reward.id === "string" && typeof reward.label === "string").map((reward) => ({
+    id: reward.id,
+    label: reward.label,
+    short_label: typeof reward.short_label === "string" ? reward.short_label : reward.label,
+    icon: typeof reward.icon === "string" ? reward.icon : "✦",
+    probability: Math.max(0, Math.min(100, Number(reward.probability) || 0)),
+    tone: typeof reward.tone === "string" ? reward.tone : "lime",
+  })).slice(0, 12) : [];
+  const wheelHistory = Array.isArray(value?.wheel_history) ? value.wheel_history.filter((event): event is PetWheelEvent => isObject(event) && typeof event.reward_id === "string" && typeof event.at === "string").map((event) => ({
+    reward_id: event.reward_id,
+    label: typeof event.label === "string" ? event.label : "神秘奖励",
+    short_label: typeof event.short_label === "string" ? event.short_label : String(event.label ?? "神秘奖励"),
+    icon: typeof event.icon === "string" ? event.icon : "✦",
+    tone: typeof event.tone === "string" ? event.tone : "lime",
+    detail: typeof event.detail === "string" ? event.detail : String(event.label ?? "神秘奖励"),
+    at: event.at,
+  })).slice(0, 30) : [];
   return {
     name: typeof value?.name === "string" && value.name.trim() ? value.name.trim().slice(0, 20) : "小镜",
     color,
@@ -622,6 +655,9 @@ function normalizedPetProfile(value: Partial<PetProfile> | null | undefined): Pe
       return catalogItem ? [{ ...petEquipmentWithProgress(catalogItem, Number(item.count) || 1, item), reason: item.reason, duplicate: Boolean(item.duplicate), at: item.at }] : [];
     }).slice(0, 30) : [],
     pending_drops: pendingDrops,
+    wheel_chances: Math.max(0, Math.floor(Number(value?.wheel_chances) || 0)),
+    wheel_history: wheelHistory,
+    wheel_rewards: wheelRewards.length ? wheelRewards : PET_WHEEL_REWARDS,
     total_drops: Math.max(0, Math.floor(Number(value?.total_drops) || inventory.reduce((sum, item) => sum + item.count, 0))),
     evolution_pity: evolutionPity,
     evolution_success_rate: evolutionSuccessRate,
@@ -838,7 +874,7 @@ function forgeLocalPetEquipment(profile: PetProfile): PetForgeResult {
   return { profile: normalizedPetProfile({ ...profile, inventory, equipment_parts: profile.equipment_parts - 2 }), item: nextItem, level_up: levelUp, identified_affix: affix, affix_added: affixAdded };
 }
 
-function rollLocalPetDrop(profile: PetProfile, reason: Exclude<PetDropReason, "battle">) {
+function rollLocalPetDrop(profile: PetProfile, reason: Exclude<PetDropReason, "battle" | "wheel">) {
   if (profile.pending_drops.length >= PET_MAX_PENDING_DROPS) return { profile, drop: null as PetDropEvent | null, pending: false };
   let chance = PET_DROP_BASE_CHANCES[reason] + activePetSkillLevel(profile, "lucky_nose") * 100 + profile.equipment_stats.all_drop_bonus * 100;
   if (reason === "pet") chance += activePetSkillLevel(profile, "treasure_paws") * 200 + profile.equipment_stats.pet_drop_bonus * 100;
@@ -2137,7 +2173,7 @@ function PetEquipmentGuide({ open, profile, onClose }: { open: boolean; profile:
   </section>;
 }
 
-function CompanionPet({ visible, message, mood, completed, total, pulse, hasNext, profile, settingsOpen, draftName, busy, persistenceLabel, isAdmin, currentUserId, adminUsers, onPet, onEvolve, onEquip, onAutoEquip, onSynthesize, onReforge, onDismantle, onRandomForge, onOpenEquipmentGuide, onSaveWardrobe, onApplyWardrobe, onDeleteWardrobe, onToggleSkill, onGiftTickets, onNext, onHide, onShow, onToggleSettings, onDraftName, onSelectColor, onSelectAccessory, onSaveProfile }: {
+function CompanionPet({ visible, message, mood, completed, total, pulse, hasNext, profile, settingsOpen, draftName, busy, persistenceLabel, isAdmin, currentUserId, adminUsers, onPet, onEvolve, onEquip, onAutoEquip, onSynthesize, onReforge, onDismantle, onRandomForge, onOpenEquipmentGuide, onSaveWardrobe, onApplyWardrobe, onDeleteWardrobe, onToggleSkill, onGiftTickets, onSpinWheel, onCompleteWheelSpin, onGiftWheelChances, onNext, onHide, onShow, onToggleSettings, onDraftName, onSelectColor, onSelectAccessory, onSaveProfile }: {
   visible: boolean;
   message: string;
   mood: PetMood;
@@ -2167,6 +2203,9 @@ function CompanionPet({ visible, message, mood, completed, total, pulse, hasNext
   onDeleteWardrobe: (presetId: string) => void;
   onToggleSkill: (skillId: string) => void;
   onGiftTickets: (userIds: string[], amount: number, note: string) => Promise<void>;
+  onSpinWheel: () => Promise<PetWheelSpinResult>;
+  onCompleteWheelSpin: (result: PetWheelSpinResult) => void;
+  onGiftWheelChances: (userIds: string[], amount: number, note: string) => Promise<void>;
   onNext: () => void;
   onHide: () => void;
   onShow: () => void;
@@ -2176,7 +2215,7 @@ function CompanionPet({ visible, message, mood, completed, total, pulse, hasNext
   onSelectAccessory: (value: PetAccessory) => void;
   onSaveProfile: () => void;
 }) {
-  const [studioSection, setStudioSection] = useState<"evolution" | "equipment" | "wardrobe" | "skills" | "appearance">("evolution");
+  const [studioSection, setStudioSection] = useState<"evolution" | "wheel" | "equipment" | "wardrobe" | "skills" | "appearance">("evolution");
   const [equipmentFilter, setEquipmentFilter] = useState<"all" | "synthesis" | "reforge" | "equipped">("all");
   const [equipmentSlotFilter, setEquipmentSlotFilter] = useState<"all" | PetEquipmentSlot>("all");
   const [equipmentThemeFilter, setEquipmentThemeFilter] = useState("all");
@@ -2185,7 +2224,15 @@ function CompanionPet({ visible, message, mood, completed, total, pulse, hasNext
   const [giftUserIds, setGiftUserIds] = useState<string[]>([]);
   const [giftAmount, setGiftAmount] = useState(1);
   const [giftNote, setGiftNote] = useState("");
+  const [wheelUserIds, setWheelUserIds] = useState<string[]>([]);
+  const [wheelGiftAmount, setWheelGiftAmount] = useState(1);
+  const [wheelGiftNote, setWheelGiftNote] = useState("");
+  const [wheelRotation, setWheelRotation] = useState(0);
+  const [wheelSpinning, setWheelSpinning] = useState(false);
+  const [wheelResult, setWheelResult] = useState<PetWheelEvent | null>(null);
+  const wheelTimer = useRef<number | null>(null);
   const [wardrobeName, setWardrobeName] = useState("");
+  useEffect(() => () => { if (wheelTimer.current !== null) window.clearTimeout(wheelTimer.current); }, []);
   if (!visible) return <button className="pet-summon" type="button" onClick={onShow}><span aria-hidden="true">◉ᴗ◉</span> 唤回{profile.name}</button>;
   const progress = total ? Math.min(100, Math.round(completed / total * 100)) : 0;
   const levelStart = profile.current_level_xp ?? petLevelStartXp(profile.level);
@@ -2230,9 +2277,29 @@ function CompanionPet({ visible, message, mood, completed, total, pulse, hasNext
   const giftUsers = adminUsers.filter((item) => item.active);
   const annotatorGiftIds = giftUsers.filter((item) => item.role === "annotator").map((item) => item.id);
   const toggleGiftUser = (userId: string) => setGiftUserIds((current) => current.includes(userId) ? current.filter((id) => id !== userId) : [...current, userId]);
+  const toggleWheelUser = (userId: string) => setWheelUserIds((current) => current.includes(userId) ? current.filter((id) => id !== userId) : [...current, userId]);
+  const spinWheel = async () => {
+    if (wheelSpinning || busy || profile.wheel_chances < 1 || !currentUserId) return;
+    setWheelSpinning(true);
+    setWheelResult(null);
+    try {
+      const result = await onSpinWheel();
+      const segment = 360 / Math.max(1, profile.wheel_rewards.length);
+      const target = (360 - (result.reward_index * segment + segment / 2)) % 360;
+      setWheelRotation((current) => current + 1440 + ((target - current % 360 + 360) % 360));
+      wheelTimer.current = window.setTimeout(() => {
+        setWheelResult(result.reward);
+        setWheelSpinning(false);
+        onCompleteWheelSpin(result);
+        wheelTimer.current = null;
+      }, 3200);
+    } catch {
+      setWheelSpinning(false);
+    }
+  };
   return (
     <><section className={`companion-card mood-${mood}`} aria-label={`标注搭子${profile.name}`} style={{ "--pet-color": petColor } as CSSProperties}>
-      <header><span>CASE BUDDY · {profile.name}</span><div className="pet-header-actions"><b>LV.{profile.level}</b>{profile.evolution_chances > 0 ? <b className="pet-chance-badge">进化券×{profile.evolution_chances}</b> : null}<button type="button" onClick={onToggleSettings} aria-label="自定义标注搭子">✎</button><button type="button" onClick={onHide} aria-label="收起标注搭子">×</button></div></header>
+      <header><span>CASE BUDDY · {profile.name}</span><div className="pet-header-actions"><b>LV.{profile.level}</b>{profile.wheel_chances > 0 ? <b className="pet-wheel-badge">转盘×{profile.wheel_chances}</b> : null}{profile.evolution_chances > 0 ? <b className="pet-chance-badge">进化券×{profile.evolution_chances}</b> : null}<button type="button" onClick={onToggleSettings} aria-label="自定义标注搭子">✎</button><button type="button" onClick={onHide} aria-label="收起标注搭子">×</button></div></header>
       <div className="companion-main">
         <button className="pet-stage" type="button" onClick={onPet} aria-label="摸摸小镜" key={pulse}>
           <span className="pet-spark spark-one" aria-hidden="true">✦</span><span className="pet-spark spark-two" aria-hidden="true">·</span>
@@ -2260,7 +2327,7 @@ function CompanionPet({ visible, message, mood, completed, total, pulse, hasNext
           </aside>
           <div className="pet-studio-editor">
             <nav className="pet-studio-tabs" aria-label="宠物工作室分类">
-              {[["evolution", "进化抽奖"], ["equipment", `装备 ${profile.inventory.length}/${profile.equipment_catalog_size}`], ["wardrobe", `衣柜 ${profile.wardrobe_presets.length}/8`], ["skills", `技能 ${profile.skills.filter((item) => item.level > 0).length}/8`], ["appearance", "外观与等级"]].map(([id, label]) => <button type="button" className={studioSection === id ? "active" : ""} onClick={() => setStudioSection(id as typeof studioSection)} key={id}>{label}</button>)}
+              {[["evolution", "进化抽奖"], ["wheel", `幸运转盘 ${profile.wheel_chances}`], ["equipment", `装备 ${profile.inventory.length}/${profile.equipment_catalog_size}`], ["wardrobe", `衣柜 ${profile.wardrobe_presets.length}/8`], ["skills", `技能 ${profile.skills.filter((item) => item.level > 0).length}/8`], ["appearance", "外观与等级"]].map(([id, label]) => <button type="button" className={studioSection === id ? "active" : ""} onClick={() => setStudioSection(id as typeof studioSection)} key={id}>{label}</button>)}
             </nav>
             {studioSection === "evolution" ? <section className={`pet-evolution-lab pet-evolution-v2 ${profile.evolution_path ? `path-${profile.evolution_path}` : ""}`}>
               <header><div><span>EVOLUTION LOTTERY</span><strong>{profile.evolution_stage ? `${profile.evolution_name} · 第 ${profile.evolution_stage} 次进化` : "等待第一次随机进化"}</strong></div><b>{profile.evolution_chances} 张进化券</b></header>
@@ -2275,6 +2342,29 @@ function CompanionPet({ visible, message, mood, completed, total, pulse, hasNext
                 <div className="pet-ticket-recipient-actions"><button type="button" onClick={() => setGiftUserIds(annotatorGiftIds)}>一键全选标注员</button><button type="button" onClick={() => setGiftUserIds(giftUsers.map((item) => item.id))}>全选所有账号</button><button type="button" onClick={() => setGiftUserIds([])}>清空</button></div>
                 <div className="pet-ticket-recipients">{giftUsers.map((item) => <label className={giftUserIds.includes(item.id) ? "active" : ""} key={item.id}><input type="checkbox" checked={giftUserIds.includes(item.id)} onChange={() => toggleGiftUser(item.id)} /><span><strong>{item.display_name}{item.id === currentUserId ? " · 当前账号" : ""}</strong><small>{item.role === "admin" ? "管理员" : "标注员"} · {item.username}</small></span></label>)}</div>
                 <div className="pet-ticket-send-row"><label><span>每人数量</span><input type="number" min={1} max={50} value={giftAmount} onChange={(event) => setGiftAmount(Math.max(1, Math.min(50, Number(event.target.value) || 1)))} /></label><label><span>发放备注</span><input value={giftNote} onChange={(event) => setGiftNote(event.target.value)} placeholder="可选" maxLength={300} /></label><button type="submit" disabled={busy || !giftUserIds.length}>{busy ? "发送中…" : `一键发放 · 共 ${giftUserIds.length * giftAmount} 张`}</button></div>
+              </form> : null}
+            </section> : null}
+            {studioSection === "wheel" ? <section className="pet-wheel-panel">
+              <header><div><span>LUCKY PRIZE WHEEL</span><h3>幸运大转盘</h3><p>管理员发放抽奖机会，由获赠者亲自转动。每次消耗 1 次，奖励由服务端即时结算。</p></div><b><small>可用次数</small>{profile.wheel_chances}</b></header>
+              <div className="pet-wheel-dashboard">
+                <div className="pet-wheel-stage">
+                  <i className="pet-wheel-pointer" aria-hidden="true" />
+                  <div className={`pet-prize-wheel ${wheelSpinning ? "spinning" : ""}`} style={{ "--wheel-rotation": `${wheelRotation}deg` } as CSSProperties}>
+                    {profile.wheel_rewards.map((reward, index) => <span style={{ "--wheel-label-angle": `${index * (360 / profile.wheel_rewards.length)}deg`, "--wheel-label-counter": `${-index * (360 / profile.wheel_rewards.length)}deg` } as CSSProperties} key={reward.id}><b>{reward.icon}</b><small>{reward.short_label}</small></span>)}
+                  </div>
+                  <button className="pet-wheel-spin" type="button" disabled={busy || wheelSpinning || profile.wheel_chances < 1 || !currentUserId} onClick={() => void spinWheel()}><strong>{wheelSpinning ? "转动中" : "开始"}</strong><small>{currentUserId ? `${profile.wheel_chances} 次可用` : "团队模式开放"}</small></button>
+                </div>
+                <div className="pet-wheel-info">
+                  <div className={`pet-wheel-result ${wheelResult ? "won" : ""}`}><span>{wheelResult ? "本次抽中" : "等待开奖"}</span><b>{wheelResult?.icon ?? "✦"}</b><strong>{wheelResult?.detail ?? (profile.wheel_chances ? "点击转盘中央开始抽奖" : "请联系管理员发放抽奖机会")}</strong><small>{wheelResult ? new Date(wheelResult.at).toLocaleString("zh-CN") : "奖励概率公开，结算记录永久保存在团队账号"}</small></div>
+                  <div className="pet-wheel-odds"><header><strong>奖池概率</strong><small>各次抽取相互独立</small></header><div>{profile.wheel_rewards.map((reward) => <span className={`tone-${reward.tone}`} key={reward.id}><i>{reward.icon}</i><b>{reward.label}</b><em>{reward.probability}%</em></span>)}</div></div>
+                </div>
+              </div>
+              {profile.wheel_history.length ? <details className="pet-wheel-history"><summary>最近中奖记录 · {profile.wheel_history.length}</summary><div>{profile.wheel_history.slice(0, 10).map((event) => <article key={`${event.at}-${event.reward_id}`}><i>{event.icon}</i><span><strong>{event.detail}</strong><small>{new Date(event.at).toLocaleString("zh-CN")}</small></span></article>)}</div></details> : null}
+              {isAdmin ? <form className="pet-ticket-gift pet-wheel-gift" onSubmit={(event) => { event.preventDefault(); void onGiftWheelChances(wheelUserIds, wheelGiftAmount, wheelGiftNote).then(() => setWheelUserIds([])).catch(() => undefined); }}>
+                <header><div><span>ADMIN DISTRIBUTION</span><strong>发放大转盘机会</strong><small>可批量发给标注员或管理员，每人 1–50 次，无需重复输入密码。</small></div><b>{wheelUserIds.length} 人已选</b></header>
+                <div className="pet-ticket-recipient-actions"><button type="button" onClick={() => setWheelUserIds(annotatorGiftIds)}>一键全选标注员</button><button type="button" onClick={() => setWheelUserIds(giftUsers.map((item) => item.id))}>全选所有账号</button><button type="button" onClick={() => setWheelUserIds([])}>清空</button></div>
+                <div className="pet-ticket-recipients">{giftUsers.map((item) => <label className={wheelUserIds.includes(item.id) ? "active" : ""} key={item.id}><input type="checkbox" checked={wheelUserIds.includes(item.id)} onChange={() => toggleWheelUser(item.id)} /><span><strong>{item.display_name}{item.id === currentUserId ? " · 当前账号" : ""}</strong><small>{item.role === "admin" ? "管理员" : "标注员"} · {item.username}</small></span></label>)}</div>
+                <div className="pet-ticket-send-row"><label><span>每人次数</span><input type="number" min={1} max={50} value={wheelGiftAmount} onChange={(event) => setWheelGiftAmount(Math.max(1, Math.min(50, Number(event.target.value) || 1)))} /></label><label><span>发放备注</span><input value={wheelGiftNote} onChange={(event) => setWheelGiftNote(event.target.value)} placeholder="例如：周赛奖励" maxLength={300} /></label><button type="submit" disabled={busy || !wheelUserIds.length}>{busy ? "发放中…" : `发放 · 共 ${wheelUserIds.length * wheelGiftAmount} 次`}</button></div>
               </form> : null}
             </section> : null}
             {studioSection === "equipment" ? <section className="pet-collection-panel">
@@ -5128,6 +5218,40 @@ export default function Home() {
     }
   };
 
+  const requestPetWheelSpin = async () => {
+    if (!serverUser) throw new Error("幸运大转盘仅在团队账号模式开放");
+    setPetBusy(true);
+    try {
+      return await apiRequest<PetWheelSpinResult>("/api/pet/wheel/spin", { method: "POST" });
+    } catch (error) {
+      wakePet(error instanceof Error ? error.message : "大转盘抽奖失败", "worried");
+      void refreshPetProfile().catch(() => undefined);
+      throw error;
+    } finally {
+      setPetBusy(false);
+    }
+  };
+
+  const completePetWheelSpin = (result: PetWheelSpinResult) => {
+    applyPetProfile(result.profile);
+    wakePet(`幸运转盘抽中「${result.reward.detail}」！`, result.reward.reward_id === "jackpot" ? "proud" : "happy");
+  };
+
+  const giftPetWheelChances = async (userIds: string[], amount: number, note: string) => {
+    if (!serverUser || serverUser.role !== "admin") return;
+    setPetBusy(true);
+    try {
+      const result = await apiRequest<{ recipients: ServerUser[]; amount: number; total_amount: number; profile?: PetProfile | null }>("/api/pet/admin/gift-wheel", { method: "POST", body: JSON.stringify({ recipient_user_ids: userIds.map(Number), amount, note }) });
+      if (result.profile) applyPetProfile(result.profile);
+      wakePet(`已向 ${result.recipients.length} 个账号发放 ${result.total_amount} 次大转盘机会。`, "proud");
+    } catch (error) {
+      wakePet(error instanceof Error ? error.message : "大转盘机会发放失败", "worried");
+      throw error;
+    } finally {
+      setPetBusy(false);
+    }
+  };
+
   const togglePetStudio = () => {
     if (petSettingsOpen) {
       const snapshot = petCustomizationSnapshot.current;
@@ -5813,7 +5937,7 @@ export default function Home() {
               <div className="annotator-fields"><input value={annotatorId} disabled={Boolean(serverUser)} onChange={(event) => setAnnotatorId(event.target.value)} placeholder="用户 ID，如 jiangqy" aria-label="标注员 ID" /><input value={annotatorName} disabled={Boolean(serverUser)} onChange={(event) => setAnnotatorName(event.target.value)} placeholder="显示姓名" aria-label="标注员姓名" /></div>
               <div className="annotator-actions"><button onClick={downloadAnnotationTemplate}>下载输入模板</button><button onClick={exportAnnotationRows}>仅导出标注记录</button></div>
             </div>
-            <CompanionPet visible={petVisible} message={petMessage || defaultPetMessage} mood={petMessage ? petMood : defaultPetMood} completed={Math.min(submittedCases, annotatableCases)} total={annotatableCases} pulse={petPulse} hasNext={pendingCases > 0} profile={petProfile} settingsOpen={petSettingsOpen} draftName={petDraftName} busy={petBusy} persistenceLabel={serverUser ? "团队账号" : "当前浏览器"} isAdmin={serverUser?.role === "admin"} currentUserId={serverUser?.id} adminUsers={serverUsers} onPet={() => void petTheCompanion()} onEvolve={(spend) => void evolveCompanion(spend)} onEquip={(slot, itemId) => void equipPetItem(slot, itemId)} onAutoEquip={(mode) => void autoEquipPet(mode)} onSynthesize={(itemId) => void synthesizePetItem(itemId)} onReforge={(itemId) => void reforgePetItem(itemId)} onDismantle={(itemId) => void dismantlePetItem(itemId)} onRandomForge={() => void randomForgePetItem()} onOpenEquipmentGuide={openPetEquipmentGuide} onSaveWardrobe={savePetWardrobe} onApplyWardrobe={(presetId) => void applyPetWardrobe(presetId)} onDeleteWardrobe={(presetId) => void deletePetWardrobe(presetId)} onToggleSkill={(skillId) => void togglePetSkill(skillId)} onGiftTickets={giftPetTickets} onNext={goToNextPendingCase} onHide={() => setPetVisible(false)} onShow={() => { setPetVisible(true); wakePet("我回来啦，继续一起标！", "happy"); }} onToggleSettings={togglePetStudio} onDraftName={setPetDraftName} onSelectColor={(color) => previewPetStyle({ color })} onSelectAccessory={(accessory) => previewPetStyle({ accessory })} onSaveProfile={() => void savePetCustomization()} />
+            <CompanionPet visible={petVisible} message={petMessage || defaultPetMessage} mood={petMessage ? petMood : defaultPetMood} completed={Math.min(submittedCases, annotatableCases)} total={annotatableCases} pulse={petPulse} hasNext={pendingCases > 0} profile={petProfile} settingsOpen={petSettingsOpen} draftName={petDraftName} busy={petBusy} persistenceLabel={serverUser ? "团队账号" : "当前浏览器"} isAdmin={serverUser?.role === "admin"} currentUserId={serverUser?.id} adminUsers={serverUsers} onPet={() => void petTheCompanion()} onEvolve={(spend) => void evolveCompanion(spend)} onEquip={(slot, itemId) => void equipPetItem(slot, itemId)} onAutoEquip={(mode) => void autoEquipPet(mode)} onSynthesize={(itemId) => void synthesizePetItem(itemId)} onReforge={(itemId) => void reforgePetItem(itemId)} onDismantle={(itemId) => void dismantlePetItem(itemId)} onRandomForge={() => void randomForgePetItem()} onOpenEquipmentGuide={openPetEquipmentGuide} onSaveWardrobe={savePetWardrobe} onApplyWardrobe={(presetId) => void applyPetWardrobe(presetId)} onDeleteWardrobe={(presetId) => void deletePetWardrobe(presetId)} onToggleSkill={(skillId) => void togglePetSkill(skillId)} onGiftTickets={giftPetTickets} onSpinWheel={requestPetWheelSpin} onCompleteWheelSpin={completePetWheelSpin} onGiftWheelChances={giftPetWheelChances} onNext={goToNextPendingCase} onHide={() => setPetVisible(false)} onShow={() => { setPetVisible(true); wakePet("我回来啦，继续一起标！", "happy"); }} onToggleSettings={togglePetStudio} onDraftName={setPetDraftName} onSelectColor={(color) => previewPetStyle({ color })} onSelectAccessory={(accessory) => previewPetStyle({ accessory })} onSaveProfile={() => void savePetCustomization()} />
             <label className="search-box"><Icon>⌕</Icon><input ref={searchInput} value={query} onChange={(event) => { setQuery(event.target.value); setVisibleLimit(400); }} placeholder="搜索 ID、模型或消息…" /><kbd>⌘K</kbd></label>
             <div className="filters">
               <select value={protocolFilter} onChange={(event) => { setProtocolFilter(event.target.value as "all" | Protocol); setVisibleLimit(400); }} aria-label="协议筛选">

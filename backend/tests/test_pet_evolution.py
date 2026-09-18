@@ -385,6 +385,40 @@ class PetEvolutionTest(unittest.TestCase):
         self.assertEqual(other_admin_evolution.available_chances, 7)
         self.assertEqual(len(self.db.scalars(api.select(api.PetTicketGift)).all()), 3)
 
+    def test_admin_can_grant_wheel_chances_and_recipient_spins_them(self) -> None:
+        admin = api.User(username="wheel-admin", display_name="Wheel Admin", password_hash="unused", role="admin")
+        self.db.add(admin)
+        self.db.commit()
+
+        granted = api.gift_pet_wheel_chances(
+            api.PetWheelGrantBody(recipient_user_ids=[self.user.id, admin.id], amount=3, note="周赛奖励"),
+            admin,
+            self.db,
+        )
+        self.assertEqual(granted["total_amount"], 6)
+        self.assertEqual(granted["profile"]["wheel_chances"], 3)
+        self.assertEqual(len(self.db.scalars(api.select(api.PetWheelGrant)).all()), 2)
+        _, _, evolution, collection = api.get_or_create_pet(self.db, self.user.id)
+        chances_before = evolution.available_chances
+        self.assertEqual(api.pet_wheel_state(collection)["chances"], 3)
+
+        with patch.object(api.secrets, "randbelow", return_value=0), patch.object(api.secrets, "token_hex", return_value="wheel-event"):
+            result = api.spin_pet_wheel(self.user, self.db)
+
+        self.assertEqual(result["reward_index"], 0)
+        self.assertEqual(result["reward"]["reward_id"], "ticket_1")
+        self.assertEqual(result["profile"]["wheel_chances"], 2)
+        self.assertEqual(result["profile"]["evolution_chances"], chances_before + 1)
+        self.assertEqual(result["profile"]["wheel_history"][0]["id"], "wheel-event")
+        self.assertEqual(sum(reward["weight"] for reward in api.PET_WHEEL_REWARDS), 10_000)
+
+    def test_wheel_rejects_spin_without_available_chance(self) -> None:
+        api.get_or_create_pet(self.db, self.user.id)
+        self.db.commit()
+        with self.assertRaises(api.HTTPException) as raised:
+            api.spin_pet_wheel(self.user, self.db)
+        self.assertEqual(raised.exception.status_code, 409)
+
 
 if __name__ == "__main__":
     unittest.main()

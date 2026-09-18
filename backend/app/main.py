@@ -202,6 +202,16 @@ class PetTicketGift(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class PetWheelGrant(Base):
+    __tablename__ = "pet_wheel_grants"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    sender_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    recipient_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    amount: Mapped[int] = mapped_column(Integer)
+    note: Mapped[str] = mapped_column(String(300), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class JudgeConfigVersion(Base):
     __tablename__ = "judge_config_versions"
     __table_args__ = (UniqueConstraint("project_id", "version"),)
@@ -669,6 +679,13 @@ class PetTicketGiftBody(BaseModel):
     note: str = Field(default="", max_length=300)
 
 
+class PetWheelGrantBody(BaseModel):
+    recipient_user_id: int | None = Field(default=None, ge=1)
+    recipient_user_ids: list[int] = Field(default_factory=list, max_length=500)
+    amount: int = Field(ge=1, le=50)
+    note: str = Field(default="", max_length=300)
+
+
 def user_dict(user: User) -> dict[str, Any]:
     return {"id": str(user.id), "username": user.username, "display_name": user.display_name, "role": user.role, "active": user.active}
 
@@ -729,8 +746,10 @@ PET_PENDING_DROPS_KEY = "__pending_drops__"
 PET_BATTLE_STATE_KEY = "__homestead_battle__"
 PET_EQUIPMENT_PARTS_KEY = "__equipment_parts__"
 PET_WARDROBE_KEY = "__wardrobe_presets__"
+PET_WHEEL_STATE_KEY = "__prize_wheel__"
 PET_MAX_PENDING_DROPS = 10
 PET_MAX_WARDROBE_PRESETS = 8
+PET_WHEEL_HISTORY_LIMIT = 30
 PET_BATTLE_HISTORY_LIMIT = 20
 PET_HOME_TIMEZONE = timezone(timedelta(hours=8))
 PET_EQUIPMENT_SYNTHESIS_RATES = {1: 90, 2: 80, 3: 70, 4: 60, 5: 50, 6: 40, 7: 32, 8: 24, 9: 18}
@@ -757,6 +776,16 @@ PET_EQUIPMENT_SET_EFFECTS: dict[str, dict[str, Any]] = {
     "纸片": {"name": "灵感归档", "description": "Badcase 追踪与标注", "tiers": [(2, "badcase_drop_bonus", 3, "Badcase 掉率 +3%"), (3, "all_drop_bonus", 2, "所有装备掉率 +2%"), (5, "annotation_drop_bonus", 5, "提交标注掉率 +5%")]},
 }
 PET_DROP_BASE_CHANCES = {"pet": 500, "annotation": 1800, "badcase": 2000}
+PET_WHEEL_REWARDS: list[dict[str, Any]] = [
+    {"id": "ticket_1", "label": "进化券 ×1", "short_label": "1张进化券", "icon": "↟", "weight": 2200, "kind": "ticket", "amount": 1, "tone": "lime"},
+    {"id": "parts_2", "label": "熔铸零件 ×2", "short_label": "2枚零件", "icon": "⌘", "weight": 2000, "kind": "parts", "amount": 2, "tone": "aqua"},
+    {"id": "xp_10", "label": "宠物经验 +10", "short_label": "10 EXP", "icon": "★", "weight": 2000, "kind": "xp", "amount": 10, "tone": "sky"},
+    {"id": "equipment", "label": "装备三选一", "short_label": "装备三选一", "icon": "◇", "weight": 1200, "kind": "equipment", "amount": 1, "tone": "lavender"},
+    {"id": "ticket_3", "label": "进化券 ×3", "short_label": "3张进化券", "icon": "↟", "weight": 800, "kind": "ticket", "amount": 3, "tone": "gold"},
+    {"id": "parts_5", "label": "熔铸零件 ×5", "short_label": "5枚零件", "icon": "⌘", "weight": 800, "kind": "parts", "amount": 5, "tone": "peach"},
+    {"id": "xp_30", "label": "宠物经验 +30", "short_label": "30 EXP", "icon": "★", "weight": 800, "kind": "xp", "amount": 30, "tone": "coral"},
+    {"id": "jackpot", "label": "幸运大奖", "short_label": "5券 + 5零件", "icon": "♛", "weight": 200, "kind": "jackpot", "amount": 5, "tone": "midnight"},
+]
 PET_SKILLS: dict[str, dict[str, Any]] = {
     "lucky_nose": {"name": "幸运鼻尖", "icon": "✦", "description": "所有装备掉率 +1%/级"},
     "treasure_paws": {"name": "寻宝肉垫", "icon": "◇", "description": "摸摸装备掉率 +2%/级"},
@@ -1170,6 +1199,27 @@ def pet_evolution_success_rate(collection: PetCollection) -> int:
     return min(55, 10 + echo + min(30, collection.pity * (2 + steady)) + equipment_stats["evolution_bonus"])
 
 
+def pet_wheel_state(collection: PetCollection) -> dict[str, Any]:
+    raw = (collection.inventory or {}).get(PET_WHEEL_STATE_KEY, {})
+    if not isinstance(raw, dict):
+        return {"chances": 0, "history": []}
+    history = [event for event in raw.get("history", []) if isinstance(event, dict)] if isinstance(raw.get("history"), list) else []
+    return {
+        "chances": max(0, int(raw.get("chances", 0) or 0)),
+        "history": history[:PET_WHEEL_HISTORY_LIMIT],
+    }
+
+
+def set_pet_wheel_state(collection: PetCollection, state: dict[str, Any]) -> None:
+    inventory = dict(collection.inventory or {})
+    inventory[PET_WHEEL_STATE_KEY] = {
+        "chances": max(0, int(state.get("chances", 0) or 0)),
+        "history": [event for event in state.get("history", []) if isinstance(event, dict)][:PET_WHEEL_HISTORY_LIMIT],
+    }
+    collection.inventory = inventory
+    collection.updated_at = utcnow()
+
+
 def pet_collection_payload(collection: PetCollection) -> dict[str, Any]:
     inventory = collection.inventory or {}
     inventory_items = [
@@ -1184,6 +1234,7 @@ def pet_collection_payload(collection: PetCollection) -> dict[str, Any]:
         for skill_id, definition in PET_SKILLS.items()
     ]
     equipment_stats, equipment_sets = pet_equipment_state(collection)
+    wheel = pet_wheel_state(collection)
     return {
         "equipment_catalog_size": len(PET_EQUIPMENT_CATALOG),
         "equipment_parts": pet_equipment_parts(collection),
@@ -1196,6 +1247,13 @@ def pet_collection_payload(collection: PetCollection) -> dict[str, Any]:
         "active_skills": collection.active_skills or [],
         "drop_history": collection.drop_history or [],
         "pending_drops": pet_pending_drop_payload(collection),
+        "wheel_chances": wheel["chances"],
+        "wheel_history": wheel["history"],
+        "wheel_rewards": [
+            {key: reward[key] for key in ("id", "label", "short_label", "icon", "tone")}
+            | {"probability": reward["weight"] / 100}
+            for reward in PET_WHEEL_REWARDS
+        ],
         "total_drops": collection.total_drops,
         "evolution_pity": collection.pity,
         "evolution_success_rate": pet_evolution_success_rate(collection),
@@ -1414,6 +1472,60 @@ def queue_pet_equipment_drop(collection: PetCollection, reason: str, *, prepend:
     collection.inventory = inventory
     collection.updated_at = utcnow()
     return pending
+
+
+def choose_pet_wheel_reward() -> tuple[int, dict[str, Any]]:
+    draw = secrets.randbelow(sum(int(reward["weight"]) for reward in PET_WHEEL_REWARDS))
+    for index, reward in enumerate(PET_WHEEL_REWARDS):
+        weight = int(reward["weight"])
+        if draw < weight:
+            return index, reward
+        draw -= weight
+    return len(PET_WHEEL_REWARDS) - 1, PET_WHEEL_REWARDS[-1]
+
+
+def apply_pet_wheel_reward(
+    profile: PetProfile,
+    progress: PetProgressV2,
+    evolution: PetEvolution,
+    collection: PetCollection,
+    reward: dict[str, Any],
+) -> tuple[str, dict[str, Any] | None]:
+    """Apply one already-selected wheel reward and return its public detail."""
+    kind = str(reward["kind"])
+    amount = max(0, int(reward["amount"]))
+    pending_drop: dict[str, Any] | None = None
+    detail = str(reward["label"])
+    inventory = dict(collection.inventory or {})
+    if kind == "ticket":
+        evolution.available_chances += amount
+        evolution.updated_at = utcnow()
+    elif kind == "parts":
+        inventory[PET_EQUIPMENT_PARTS_KEY] = max(0, int(inventory.get(PET_EQUIPMENT_PARTS_KEY, 0) or 0)) + amount
+        collection.inventory = inventory
+    elif kind == "xp":
+        progress.xp_units += amount * 5
+        progress.updated_at = utcnow()
+        profile.updated_at = utcnow()
+        next_level = pet_level(progress.xp_units / 5)
+        if next_level > evolution.credited_level:
+            evolution.available_chances += next_level - evolution.credited_level
+            evolution.credited_level = next_level
+            evolution.updated_at = utcnow()
+    elif kind == "equipment":
+        pending_drop = queue_pet_equipment_drop(collection, "wheel", prepend=True)
+        if pending_drop is None:
+            inventory = dict(collection.inventory or {})
+            inventory[PET_EQUIPMENT_PARTS_KEY] = max(0, int(inventory.get(PET_EQUIPMENT_PARTS_KEY, 0) or 0)) + 5
+            collection.inventory = inventory
+            detail = "装备待选队列已满，补偿熔铸零件 ×5"
+    elif kind == "jackpot":
+        evolution.available_chances += amount
+        evolution.updated_at = utcnow()
+        inventory[PET_EQUIPMENT_PARTS_KEY] = max(0, int(inventory.get(PET_EQUIPMENT_PARTS_KEY, 0) or 0)) + amount
+        collection.inventory = inventory
+    collection.updated_at = utcnow()
+    return detail, pending_drop
 
 
 def maybe_drop_pet_equipment(collection: PetCollection, reason: str) -> dict[str, Any] | None:
@@ -3143,6 +3255,91 @@ def set_pet_skills(body: PetSkillsBody, user: CurrentUser, db: DB) -> dict[str, 
     collection.updated_at = utcnow()
     db.commit()
     return pet_dict(profile, progress, evolution, collection)
+
+
+@app.post("/api/pet/wheel/spin")
+def spin_pet_wheel(user: CurrentUser, db: DB) -> dict[str, Any]:
+    profile, progress, evolution, collection = get_or_create_pet(db, user.id)
+    db.flush()
+    collection = db.scalar(
+        select(PetCollection).where(PetCollection.user_id == user.id).with_for_update().execution_options(populate_existing=True)
+    ) or collection
+    progress = db.scalar(
+        select(PetProgressV2).where(PetProgressV2.user_id == user.id).with_for_update().execution_options(populate_existing=True)
+    ) or progress
+    evolution = db.scalar(
+        select(PetEvolution).where(PetEvolution.user_id == user.id).with_for_update().execution_options(populate_existing=True)
+    ) or evolution
+    state = pet_wheel_state(collection)
+    if state["chances"] < 1:
+        raise HTTPException(409, "大转盘抽奖次数不足，请联系管理员发放")
+
+    reward_index, reward = choose_pet_wheel_reward()
+    detail, pending_drop = apply_pet_wheel_reward(profile, progress, evolution, collection, reward)
+    now = utcnow()
+    event = {
+        "id": secrets.token_hex(8),
+        "reward_id": reward["id"],
+        "label": reward["label"],
+        "short_label": reward["short_label"],
+        "icon": reward["icon"],
+        "tone": reward["tone"],
+        "detail": detail,
+        "at": now.isoformat(),
+    }
+    set_pet_wheel_state(collection, {
+        "chances": state["chances"] - 1,
+        "history": [event, *state["history"]],
+    })
+    db.commit()
+    public_pending = None
+    if pending_drop:
+        public_pending = next(
+            (entry for entry in pet_pending_drop_payload(collection) if entry["token"] == pending_drop["token"]),
+            None,
+        )
+    return {
+        "profile": pet_dict(profile, progress, evolution, collection),
+        "reward": event,
+        "reward_index": reward_index,
+        "pending_drop": public_pending,
+    }
+
+
+@app.post("/api/pet/admin/gift-wheel")
+def gift_pet_wheel_chances(body: PetWheelGrantBody, admin: AdminUser, db: DB) -> dict[str, Any]:
+    recipient_ids = list(dict.fromkeys([*body.recipient_user_ids, *([body.recipient_user_id] if body.recipient_user_id else [])]))
+    if not recipient_ids:
+        raise HTTPException(422, "请至少选择一位接收人")
+    recipients = [db.get(User, recipient_id) for recipient_id in recipient_ids]
+    if any(recipient is None or not recipient.active for recipient in recipients):
+        raise HTTPException(404, "部分接收人不存在或已停用")
+    profiles: dict[int, dict[str, Any]] = {}
+    for recipient in recipients:
+        assert recipient is not None
+        profile, progress, evolution, collection = get_or_create_pet(db, recipient.id)
+        db.flush()
+        collection = db.scalar(
+            select(PetCollection).where(PetCollection.user_id == recipient.id).with_for_update().execution_options(populate_existing=True)
+        ) or collection
+        state = pet_wheel_state(collection)
+        set_pet_wheel_state(collection, {**state, "chances": state["chances"] + body.amount})
+        db.add(PetWheelGrant(
+            sender_user_id=admin.id,
+            recipient_user_id=recipient.id,
+            amount=body.amount,
+            note=body.note.strip(),
+        ))
+        profiles[recipient.id] = pet_dict(profile, progress, evolution, collection)
+    db.commit()
+    recipient_payloads = [user_dict(recipient) for recipient in recipients if recipient is not None]
+    return {
+        "recipient": recipient_payloads[0],
+        "recipients": recipient_payloads,
+        "amount": body.amount,
+        "total_amount": body.amount * len(recipient_payloads),
+        "profile": profiles.get(admin.id),
+    }
 
 
 @app.post("/api/pet/admin/gift-tickets")
