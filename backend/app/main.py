@@ -733,8 +733,17 @@ PET_EVOLUTION_PATHS: dict[str, dict[str, Any]] = {
     "cloud": {"name": "云梦团子", "quality": "dreamy", "traits": [["棉云耳朵", "彩虹额纹", "雨滴尾巴"], ["软云翅膀", "晚霞披风", "风铃足环"], ["晴空冠冕", "梦境领域", "虹光心核"], ["层云软甲", "晨曦翼阵", "雷雨铃铛"], ["九霄圣环", "幻梦结界", "天空王座"], ["云神化身", "万里晴空", "长梦不醒"]]},
     "pixel": {"name": "像素精怪", "quality": "digital", "traits": [["方块耳尖", "扫描额纹", "光标尾巴"], ["数据翅膀", "代码披风", "缓存光环"], ["像素冠冕", "矩阵领域", "算力核心"], ["量子像素", "递归翼阵", "霓虹装甲"], ["无限循环环", "协议王座", "虚拟结界"], ["数字神格", "全域矩阵", "永恒在线"]]},
     "wonky": {"name": "歪歪异变体", "quality": "awkward", "traits": [["参差尖牙", "皱皱触角", "大小眼花纹"], ["斑驳小翅膀", "歪斜尾鳍", "补丁披风"], ["倾斜纸冠", "毛边光圈", "咕嘟气泡场"], ["打结尾巴", "漏气翼阵", "反向护目镜"], ["掉漆王座", "卡顿领域", "吱呀心核"], ["究极毛边", "歪星圣环", "混沌咕嘟"]]},
+    "eva": {"name": "EVA · 同步机体", "quality": "sync", "traits": [["同步耳机", "警戒额纹", "紫绿装甲"], ["拘束肩甲", "核心胸灯", "脐带尾缆"], ["绝对领域", "高同步光环", "使徒感应器"], ["觉醒目镜", "超频翼板", "红海足迹"], ["初号机核心", "暴走领域", "朗基努斯光痕"], ["终局同步", "补完之环", "新世界屏障"]]},
+    "blade_soul": {"name": "剑灵 · 御剑灵兽", "quality": "sword", "traits": [["剑穗耳羽", "灵气额印", "玉佩尾坠"], ["御剑翼阵", "流云披帛", "青锋足环"], ["剑心冠冕", "御风领域", "灵脉核心"], ["万剑归宗", "龙脉战衣", "凌云剑匣"], ["天剑圣环", "剑域王座", "无相灵光"], ["剑神化身", "九天剑阵", "万古锋芒"]]},
+    "dnf": {"name": "DNF · 深渊勇者", "quality": "awakening", "traits": [["深渊角饰", "勇者额章", "史诗尾光"], ["觉醒披风", "地下城翼", "强化足环"], ["史诗冠冕", "深渊领域", "冒险核心"], ["增幅装甲", "团本光翼", "闪光轨迹"], ["太初圣环", "勇士王座", "神话结界"], ["终极觉醒", "阿拉德星幕", "深渊主宰"]]},
+    "nba": {"name": "NBA · 全明星球王", "quality": "allstar", "traits": [["护腕耳饰", "球衣额纹", "篮网尾环"], ["飞跃球翼", "冠军披风", "球鞋足环"], ["全明星冠冕", "主场领域", "绝杀核心"], ["空接翼阵", "三分光弧", "防守装甲"], ["总冠军圣环", "王朝座椅", "MVP 光辉"], ["传奇球魂", "压哨星幕", "不败主场"]]},
+    "honor": {"name": "王者 · 峡谷传说", "quality": "glory", "traits": [["峡谷耳冠", "荣耀额印", "兵线尾光"], ["回城翼纹", "战令披风", "野区足环"], ["王者冠冕", "高地领域", "水晶核心"], ["五杀翼阵", "龙坑战甲", "荣耀播报"], ["巅峰圣环", "峡谷王座", "星耀结界"], ["荣耀化身", "万军星幕", "永恒水晶"]]},
+    "valorant": {"name": "VALORANT · 战术特工", "quality": "tactical", "traits": [["战术耳麦", "准星额纹", "信标尾灯"], ["烟幕翼片", "特工披风", "静步足环"], ["终极冠冕", "爆能领域", "协议核心"], ["闪光翼阵", "无畏装甲", "侦察光标"], ["辐能圣环", "战术王座", "封锁结界"], ["王牌特工", "无畏星幕", "终局协议"]]},
+    "lol": {"name": "LOL · 符文传奇", "quality": "rune", "traits": [["符文耳坠", "召唤额印", "峡谷尾焰"], ["传送翼纹", "英雄披风", "法力足环"], ["段位冠冕", "召唤领域", "符文核心"], ["纳什翼阵", "远古战甲", "五杀光痕"], ["世界赛圣环", "传奇王座", "巨龙结界"], ["联盟化身", "符文星幕", "永恒传奇"]]},
+    "nexus": {"name": "终焉 · 次元观测者", "quality": "hidden", "hidden": True, "traits": [["未知耳环", "裂隙额印", "观测尾光"], ["次元翼膜", "虚空披风", "悖论足环"], ["无名冠冕", "折叠领域", "奇点核心"], ["时空翼阵", "观测者装甲", "逆因果轨迹"], ["终焉圣环", "维度王座", "零点结界"], ["观测者真身", "万界星幕", "不可名状之光"]]},
 }
-PET_EVOLUTION_PATH_LOTTERY = ["starlight"] * 16 + ["guardian"] * 15 + ["forest"] * 15 + ["storm"] * 14 + ["ocean"] * 12 + ["ember"] * 11 + ["cloud"] * 10 + ["pixel"] * 8 + ["wonky"] * 9
+PET_EVOLUTION_PATH_LOTTERY = ["starlight"] * 16 + ["guardian"] * 15 + ["forest"] * 15 + ["storm"] * 14 + ["ocean"] * 12 + ["ember"] * 11 + ["cloud"] * 10 + ["pixel"] * 8 + ["wonky"] * 9 + ["eva"] * 7 + ["blade_soul"] * 7 + ["dnf"] * 7 + ["nba"] * 6 + ["honor"] * 7 + ["valorant"] * 7 + ["lol"] * 7 + ["nexus"] * 2
+PET_PUBLIC_EVOLUTION_PATHS = tuple(path for path, definition in PET_EVOLUTION_PATHS.items() if not definition.get("hidden"))
 PET_EQUIPMENT_SLOTS = {"head": ("头饰", "♛"), "face": ("面饰", "◉"), "neck": ("颈饰", "✦"), "back": ("背饰", "⌁"), "tail": ("尾饰", "◇")}
 PET_EQUIPMENT_THEMES = ["星尘", "森林", "雷云", "海盐", "琥珀", "月影", "霓虹", "机械", "云朵", "蜂蜜", "像素", "纸片"]
 PET_EQUIPMENT_AFFIXES = [("微光", "common"), ("鲜活", "uncommon"), ("幻彩", "rare"), ("秘仪", "epic"), ("神话", "legendary")]
@@ -1245,6 +1254,32 @@ def pet_evolution_success_rate(collection: PetCollection) -> int:
     steady = pet_active_skill_level(collection, "steady_heart")
     equipment_stats, _ = pet_equipment_state(collection)
     return min(55, 10 + echo + min(30, collection.pity * (2 + steady)) + equipment_stats["evolution_bonus"])
+
+
+def pet_evolution_route_counts(db: Session, user_id: int) -> dict[str, int]:
+    """Read current ownership under the evolution transaction's allocation lock."""
+    paths = db.scalars(
+        select(PetEvolution.path)
+        .where(PetEvolution.user_id != user_id, PetEvolution.stage > 0)
+    ).all()
+    counts = {path: 0 for path in PET_EVOLUTION_PATHS}
+    for path in paths:
+        if path in counts:
+            counts[path] += 1
+    return counts
+
+
+def choose_pet_evolution_path(db: Session, user_id: int, excluded: set[str] | None = None) -> str:
+    """Allocate only unowned routes; exhaustion must never create a duplicate."""
+    excluded = excluded or set()
+    weighted = [path for path in PET_EVOLUTION_PATH_LOTTERY if path not in excluded]
+    if not weighted:
+        raise HTTPException(409, "暂无空闲进化路线，本次未扣券；请等待其他宠物释放路线")
+    counts = pet_evolution_route_counts(db, user_id)
+    unused = {path for path in weighted if counts[path] == 0}
+    if unused:
+        return secrets.choice([path for path in weighted if path in unused])
+    raise HTTPException(409, "暂无空闲进化路线，本次未扣券；请等待其他宠物释放路线")
 
 
 def pet_wheel_state(collection: PetCollection) -> dict[str, Any]:
@@ -3071,6 +3106,13 @@ def update_pet(body: PetProfileUpdate, user: CurrentUser, db: DB) -> dict[str, A
 def evolve_pet(body: PetEvolutionBody, user: CurrentUser, db: DB) -> dict[str, Any]:
     if body.spend not in {1, 5, 10}:
         raise HTTPException(422, "进化只能使用 1 张、5 张或 10 张进化券")
+    # Serialize allocation before even creating a first pet. Row locks alone do
+    # not cover concurrently inserted evolution rows or an initially empty pool.
+    if db.get_bind().dialect.name == "postgresql":
+        db.execute(select(func.pg_advisory_xact_lock(739218041)))
+    elif db.get_bind().dialect.name == "sqlite":
+        # SQLite has a single writer; acquire it before reading route ownership.
+        db.execute(update(User).where(User.id == user.id).values(active=User.active))
     profile, progress, evolution, collection = get_or_create_pet(db, user.id)
     if evolution.available_chances < body.spend:
         raise HTTPException(422, "可用进化券不足")
@@ -3096,13 +3138,20 @@ def evolve_pet(body: PetEvolutionBody, user: CurrentUser, db: DB) -> dict[str, A
             raise HTTPException(422, "完成首次进化后才能定向更换路线")
         if target_path not in PET_EVOLUTION_PATHS:
             raise HTTPException(422, "请选择有效的目标路线")
+        if PET_EVOLUTION_PATHS[target_path].get("hidden"):
+            raise HTTPException(422, "隐藏路线只能通过随机进化发现")
         if target_path == evolution.path:
             raise HTTPException(422, "目标路线不能与当前路线相同")
-    evolution.available_chances -= body.spend
+        if pet_evolution_route_counts(db, user.id).get(target_path, 0) > 0:
+            raise HTTPException(409, "该路线已被其他宠物占用，请选择其他路线")
     guaranteed = body.spend == 5
     route_reset = (guaranteed and evolution.stage > 0 and evolution.path in PET_EVOLUTION_PATHS) or targeted_attempt
     previous_path = evolution.path if route_reset else ""
     previous_stage = evolution.stage if route_reset else 0
+    next_path = target_path if targeted_attempt else ""
+    if not targeted_attempt and (route_reset or evolution.stage == 0 or evolution.path not in PET_EVOLUTION_PATHS):
+        next_path = choose_pet_evolution_path(db, user.id, {previous_path} if route_reset else None)
+    evolution.available_chances -= body.spend
     success_rate = pet_targeted_evolution_rate(collection, target_path) if targeted_attempt else pet_evolution_success_rate(collection)
     success = guaranteed or secrets.randbelow(100) < success_rate
     traits: list[str] = []
@@ -3111,11 +3160,7 @@ def evolve_pet(body: PetEvolutionBody, user: CurrentUser, db: DB) -> dict[str, A
     wheel_compensation = 0
     if success:
         if route_reset:
-            if targeted_attempt:
-                evolution.path = target_path
-            else:
-                reroll_pool = [candidate for candidate in PET_EVOLUTION_PATH_LOTTERY if candidate != previous_path]
-                evolution.path = secrets.choice(reroll_pool)
+            evolution.path = next_path
             evolution.stage = 0
             evolution.traits = []
             targeted_state = pet_targeted_evolution_state(collection)
@@ -3125,7 +3170,7 @@ def evolve_pet(body: PetEvolutionBody, user: CurrentUser, db: DB) -> dict[str, A
                 "blessings": 0 if targeted_attempt else targeted_state["blessings"],
             })
         elif evolution.stage == 0 or evolution.path not in PET_EVOLUTION_PATHS:
-            evolution.path = secrets.choice(PET_EVOLUTION_PATH_LOTTERY)
+            evolution.path = next_path
         path = PET_EVOLUTION_PATHS[evolution.path]
         critical = False if route_reset else secrets.randbelow(100) < 12
         stage_gain = 1 if route_reset else 2 if critical else 1
@@ -3286,6 +3331,7 @@ def synthesize_pet_item(body: PetEquipmentActionBody, user: CurrentUser, db: DB)
     if not item:
         raise HTTPException(422, "未知的装备")
     inventory = dict(collection.inventory or {})
+    previous_entry = pet_inventory_entry(inventory.get(body.item_id, 0))
     try:
         entry, success, success_rate, gained_affixes = synthesize_pet_equipment_entry(item, inventory.get(body.item_id, 0))
     except ValueError as error:
@@ -3298,6 +3344,10 @@ def synthesize_pet_item(body: PetEquipmentActionBody, user: CurrentUser, db: DB)
         "profile": pet_dict(profile, progress, evolution, collection),
         "success": success,
         "success_rate": success_rate,
+        "next_success_rate": pet_synthesis_success_rate(entry),
+        "previous_level": previous_entry["level"],
+        "next_level": entry["level"],
+        "remaining_count": entry["count"],
         "gained_affixes": gained_affixes,
     }
 

@@ -62,7 +62,7 @@ type PetColor = "lime" | "aqua" | "peach" | "lavender" | "sky" | "coral" | "gold
 type PetAccessory = "none" | "leaf" | "bow" | "glasses" | "star" | "headphones" | "cap" | "crown" | "halo" | "medal";
 type PetFashionSlot = "headwear" | "outfit" | "outerwear" | "footwear" | "handheld";
 type PetFashionItem = { id: string; name: string; slot: PetFashionSlot; slot_name: string; symbol: string; theme: string; theme_name: string; level: number; rarity: PetRarity; primary: string; secondary: string };
-type PetEvolutionPath = "" | "starlight" | "guardian" | "forest" | "storm" | "ocean" | "ember" | "cloud" | "pixel" | "wonky";
+type PetEvolutionPath = "" | "starlight" | "guardian" | "forest" | "storm" | "ocean" | "ember" | "cloud" | "pixel" | "wonky" | "eva" | "blade_soul" | "dnf" | "nba" | "honor" | "valorant" | "lol" | "nexus";
 type PetRarity = "common" | "uncommon" | "rare" | "epic" | "legendary";
 type PetEquipmentSlot = "head" | "face" | "neck" | "back" | "tail";
 type PetEquipmentSort = "theme_slot" | "slot_theme" | "power" | "level" | "rarity" | "count";
@@ -80,6 +80,8 @@ type PetDropEvent = PetEquipment & { reason: PetDropReason; duplicate: boolean; 
 type PetDropChoice = Pick<PetEquipment, "id" | "name" | "slot" | "slot_name" | "symbol" | "rarity" | "theme" | "effect_label" | "effect_value"> & { is_new: boolean; owned_count: number; owned_level?: number | null; owned_affix_count: number; count_after_claim: number; materials_to_synthesize: number; theme_owned_count: number; theme_equipped_count: number; theme_pieces_if_equipped: number; next_set_target?: number | null; next_set_bonus?: string | null; equipped_same_slot?: { id: string; name: string; rarity: PetRarity; level: number; power: number } | null; hidden_affix?: PetEquipmentAffix };
 type PetPendingDrop = { token: string; reason: PetDropReason; at: string; choices: PetDropChoice[] };
 type PetDropReveal = { drop: PetDropEvent; identified_affix: PetEquipmentAffix; affix_added: boolean };
+type PetSynthesisResult = { profile: PetProfile; success: boolean; success_rate: number; next_success_rate: number; previous_level: number; next_level: number; remaining_count: number; gained_affixes: PetEquipmentAffix[] };
+type PetSynthesisNotice = Omit<PetSynthesisResult, "profile"> & { item: PetEquipment };
 type PetEvolutionEvent = { at: string; type?: "gift" | "reroute" | "targeted_reroute"; spent: number; guaranteed?: boolean; success: boolean; stage: number; path: PetEvolutionPath; trait: string; traits?: string[]; critical?: boolean; success_rate?: number; pity_after?: number; amount?: number; sender?: string; previous_path?: PetEvolutionPath; target_path?: PetEvolutionPath; route_reset?: boolean; wheel_compensation?: number; skill?: PetSkill | null };
 type PetWheelReward = { id: string; label: string; short_label: string; icon: string; probability: number; tone: string };
 type PetWheelEvent = { reward_id: string; label: string; short_label: string; icon: string; tone: string; detail: string; at: string };
@@ -400,7 +402,7 @@ const PET_LEVELS = [
 ];
 const PET_MAX_LEVEL = 50;
 const PET_STEADY_LEVEL_COST = 140;
-const PET_EVOLUTION_PATHS: Record<Exclude<PetEvolutionPath, "">, { name: string; motif: string; traits: string[][]; tone: string }> = {
+const PET_EVOLUTION_PATHS: Record<Exclude<PetEvolutionPath, "">, { name: string; motif: string; traits: string[][]; tone: string; hidden?: boolean }> = {
   starlight: { name: "星辉灵兽", motif: "✦", traits: [["星尘额纹", "新月耳尖", "彗星小角"], ["月光羽翼", "星轨尾焰", "银河披风"], ["星环冠冕", "极光领域", "星核辉光"], ["群星脉络", "超新星尾迹", "天穹结晶"], ["星海共鸣", "永昼星环", "宇宙心核"], ["星神投影", "万象星幕", "永恒辉光"]], tone: "璀璨" },
   guardian: { name: "守护机甲", motif: "◆", traits: [["合金耳甲", "战术目镜", "棱镜面罩"], ["折叠钢翼", "推进尾翼", "护盾肩甲"], ["量子核心", "冠军冠冕", "脉冲力场"], ["轨道装甲", "光束翼阵", "重力护盾"], ["星舰核心", "堡垒领域", "超导王冠"], ["终焉机铠", "天基阵列", "不灭能源"]], tone: "坚毅" },
   forest: { name: "森灵幻兽", motif: "♧", traits: [["新芽鹿角", "苔藓耳尖", "花蕾额纹"], ["叶脉羽翼", "花藤披风", "蒲公英尾"], ["萤火光环", "古树冠冕", "四季领域"], ["灵鹿枝冠", "雨林结界", "蘑菇星灯"], ["世界树心", "百花圣环", "万物低语"], ["森神化身", "四季轮转", "生命洪流"]], tone: "温柔" },
@@ -410,11 +412,22 @@ const PET_EVOLUTION_PATHS: Record<Exclude<PetEvolutionPath, "">, { name: string;
   cloud: { name: "云梦团子", motif: "☁", traits: [["棉云耳朵", "彩虹额纹", "雨滴尾巴"], ["软云翅膀", "晚霞披风", "风铃足环"], ["晴空冠冕", "梦境领域", "虹光心核"], ["层云软甲", "晨曦翼阵", "雷雨铃铛"], ["九霄圣环", "幻梦结界", "天空王座"], ["云神化身", "万里晴空", "长梦不醒"]], tone: "软绵" },
   pixel: { name: "像素精怪", motif: "▦", traits: [["方块耳尖", "扫描额纹", "光标尾巴"], ["数据翅膀", "代码披风", "缓存光环"], ["像素冠冕", "矩阵领域", "算力核心"], ["量子像素", "递归翼阵", "霓虹装甲"], ["无限循环环", "协议王座", "虚拟结界"], ["数字神格", "全域矩阵", "永恒在线"]], tone: "赛博" },
   wonky: { name: "歪歪异变体", motif: "≋", traits: [["参差尖牙", "皱皱触角", "大小眼花纹"], ["斑驳小翅膀", "歪斜尾鳍", "补丁披风"], ["倾斜纸冠", "毛边光圈", "咕嘟气泡场"], ["打结尾巴", "漏气翼阵", "反向护目镜"], ["掉漆王座", "卡顿领域", "吱呀心核"], ["究极毛边", "歪星圣环", "混沌咕嘟"]], tone: "有点难看" },
+  eva: { name: "EVA · 同步机体", motif: "◈", traits: [["同步耳机", "警戒额纹", "紫绿装甲"], ["拘束肩甲", "核心胸灯", "脐带尾缆"], ["绝对领域", "高同步光环", "使徒感应器"], ["觉醒目镜", "超频翼板", "红海足迹"], ["初号机核心", "暴走领域", "朗基努斯光痕"], ["终局同步", "补完之环", "新世界屏障"]], tone: "同步" },
+  blade_soul: { name: "剑灵 · 御剑灵兽", motif: "剑", traits: [["剑穗耳羽", "灵气额印", "玉佩尾坠"], ["御剑翼阵", "流云披帛", "青锋足环"], ["剑心冠冕", "御风领域", "灵脉核心"], ["万剑归宗", "龙脉战衣", "凌云剑匣"], ["天剑圣环", "剑域王座", "无相灵光"], ["剑神化身", "九天剑阵", "万古锋芒"]], tone: "凌厉" },
+  dnf: { name: "DNF · 深渊勇者", motif: "✥", traits: [["深渊角饰", "勇者额章", "史诗尾光"], ["觉醒披风", "地下城翼", "强化足环"], ["史诗冠冕", "深渊领域", "冒险核心"], ["增幅装甲", "团本光翼", "闪光轨迹"], ["太初圣环", "勇士王座", "神话结界"], ["终极觉醒", "阿拉德星幕", "深渊主宰"]], tone: "觉醒" },
+  nba: { name: "NBA · 全明星球王", motif: "●", traits: [["护腕耳饰", "球衣额纹", "篮网尾环"], ["飞跃球翼", "冠军披风", "球鞋足环"], ["全明星冠冕", "主场领域", "绝杀核心"], ["空接翼阵", "三分光弧", "防守装甲"], ["总冠军圣环", "王朝座椅", "MVP 光辉"], ["传奇球魂", "压哨星幕", "不败主场"]], tone: "热血" },
+  honor: { name: "王者 · 峡谷传说", motif: "♜", traits: [["峡谷耳冠", "荣耀额印", "兵线尾光"], ["回城翼纹", "战令披风", "野区足环"], ["王者冠冕", "高地领域", "水晶核心"], ["五杀翼阵", "龙坑战甲", "荣耀播报"], ["巅峰圣环", "峡谷王座", "星耀结界"], ["荣耀化身", "万军星幕", "永恒水晶"]], tone: "荣耀" },
+  valorant: { name: "VALORANT · 战术特工", motif: "V", traits: [["战术耳麦", "准星额纹", "信标尾灯"], ["烟幕翼片", "特工披风", "静步足环"], ["终极冠冕", "爆能领域", "协议核心"], ["闪光翼阵", "无畏装甲", "侦察光标"], ["辐能圣环", "战术王座", "封锁结界"], ["王牌特工", "无畏星幕", "终局协议"]], tone: "精准" },
+  lol: { name: "LOL · 符文传奇", motif: "◐", traits: [["符文耳坠", "召唤额印", "峡谷尾焰"], ["传送翼纹", "英雄披风", "法力足环"], ["段位冠冕", "召唤领域", "符文核心"], ["纳什翼阵", "远古战甲", "五杀光痕"], ["世界赛圣环", "传奇王座", "巨龙结界"], ["联盟化身", "符文星幕", "永恒传奇"]], tone: "传奇" },
+  nexus: { name: "终焉 · 次元观测者", motif: "?", traits: [["未知耳环", "裂隙额印", "观测尾光"], ["次元翼膜", "虚空披风", "悖论足环"], ["无名冠冕", "折叠领域", "奇点核心"], ["时空翼阵", "观测者装甲", "逆因果轨迹"], ["终焉圣环", "维度王座", "零点结界"], ["观测者真身", "万界星幕", "不可名状之光"]], tone: "隐藏", hidden: true },
 };
 const PET_EVOLUTION_PATH_LOTTERY: Exclude<PetEvolutionPath, "">[] = [
   ...Array(16).fill("starlight"), ...Array(15).fill("guardian"), ...Array(15).fill("forest"), ...Array(14).fill("storm"),
   ...Array(12).fill("ocean"), ...Array(11).fill("ember"), ...Array(10).fill("cloud"), ...Array(8).fill("pixel"), ...Array(9).fill("wonky"),
+  ...Array(7).fill("eva"), ...Array(7).fill("blade_soul"), ...Array(7).fill("dnf"), ...Array(6).fill("nba"),
+  ...Array(7).fill("honor"), ...Array(7).fill("valorant"), ...Array(7).fill("lol"), ...Array(2).fill("nexus"),
 ] as Exclude<PetEvolutionPath, "">[];
+const PET_PUBLIC_EVOLUTION_PATHS = Object.entries(PET_EVOLUTION_PATHS).filter(([, item]) => !item.hidden) as [Exclude<PetEvolutionPath, "">, (typeof PET_EVOLUTION_PATHS)[Exclude<PetEvolutionPath, "">]][];
 const PET_EQUIPMENT_SLOTS: Record<PetEquipmentSlot, { label: string; symbol: string }> = { head: { label: "头饰", symbol: "♛" }, face: { label: "面饰", symbol: "◉" }, neck: { label: "颈饰", symbol: "✦" }, back: { label: "背饰", symbol: "⌁" }, tail: { label: "尾饰", symbol: "◇" } };
 const PET_EQUIPMENT_THEMES = ["星尘", "森林", "雷云", "海盐", "琥珀", "月影", "霓虹", "机械", "云朵", "蜂蜜", "像素", "纸片"];
 const PET_EQUIPMENT_AFFIXES: [string, PetRarity][] = [["微光", "common"], ["鲜活", "uncommon"], ["幻彩", "rare"], ["秘仪", "epic"], ["神话", "legendary"]];
@@ -737,6 +750,7 @@ function evolveLocalPet(profile: PetProfile, spend: 1 | 5 | 10, targetPath: PetE
   const steady = profile.active_skills.includes("steady_heart") ? profile.skills.find((item) => item.id === "steady_heart")?.level ?? 0 : 0;
   const evolutionBonus = profile.equipment_stats.evolution_bonus;
   const targeted = spend === 10;
+  if (targeted && (!targetPath || PET_EVOLUTION_PATHS[targetPath]?.hidden)) throw new Error("隐藏路线只能通过随机进化发现");
   const targetFailures = targeted && targetPath === profile.targeted_evolution_target ? profile.targeted_evolution_failures : 0;
   const successRate = targeted
     ? Math.min(100, 70 + targetFailures * 10 + profile.targeted_evolution_blessings * 5)
@@ -896,7 +910,7 @@ function claimLocalPetDrop(profile: PetProfile, token: string, itemId: string) {
   return { profile: normalizedPetProfile({ ...profile, inventory, pending_drops: remaining, drop_history: [drop, ...profile.drop_history].slice(0, 30), total_drops: profile.total_drops + 1 }), drop, identified_affix: choice.hidden_affix, affix_added: affixAdded };
 }
 
-function synthesizeLocalPetEquipment(profile: PetProfile, itemId: string) {
+function synthesizeLocalPetEquipment(profile: PetProfile, itemId: string): PetSynthesisResult {
   const item = profile.inventory.find((owned) => owned.id === itemId);
   if (!item || item.count < 3 || item.level >= PET_EQUIPMENT_MAX_LEVEL) throw new Error(item?.level === PET_EQUIPMENT_MAX_LEVEL ? "这件装备已经达到 Lv.10" : "需要至少 3 件同名装备才能合成");
   const successRate = item.synthesis_success_rate;
@@ -911,7 +925,16 @@ function synthesizeLocalPetEquipment(profile: PetProfile, itemId: string) {
   } else {
     nextItem = petEquipmentWithProgress(item, item.count - 2, { ...item, synthesis_failures: Math.min(20, item.synthesis_failures + 1) });
   }
-  return { profile: normalizedPetProfile({ ...profile, inventory: profile.inventory.map((owned) => owned.id === itemId ? nextItem : owned) }), success, success_rate: successRate, gained_affixes: gainedAffixes };
+  return {
+    profile: normalizedPetProfile({ ...profile, inventory: profile.inventory.map((owned) => owned.id === itemId ? nextItem : owned) }),
+    success,
+    success_rate: successRate,
+    next_success_rate: nextItem.synthesis_success_rate,
+    previous_level: item.level,
+    next_level: nextItem.level,
+    remaining_count: nextItem.count,
+    gained_affixes: gainedAffixes,
+  };
 }
 
 function reforgeLocalPetEquipment(profile: PetProfile, itemId: string) {
@@ -2209,6 +2232,25 @@ function PetDropRevealModal({ result, queueSize, onClose }: { result: PetDropRev
   </div>;
 }
 
+function PetSynthesisNoticeModal({ result, onClose }: { result: PetSynthesisNotice | null; onClose: () => void }) {
+  if (!result) return null;
+  const criticalCount = result.gained_affixes.filter((affix) => affix.critical).length;
+  return <div className="pet-drop-backdrop pet-reveal-backdrop pet-synthesis-notice-backdrop" role="presentation">
+    <section className={`pet-synthesis-notice ${result.success ? "success" : "failure"}`} role="alertdialog" aria-modal="true" aria-label={`装备合成${result.success ? "成功" : "失败"}`}>
+      <header><span>SYNTHESIS RESULT</span><b>{result.success ? "强化成功" : "强化失败"}</b></header>
+      <div className="pet-synthesis-status"><i>{result.success ? "✓" : "×"}</i><div><small>{result.item.theme}套装 · {result.item.slot_name}</small><h2>{result.item.name}</h2><p>{result.success ? `等级提升至 Lv.${result.next_level}` : `等级保持 Lv.${result.previous_level}`}</p></div></div>
+      <dl>
+        <div><dt>本次概率</dt><dd>{result.success_rate}%</dd></div>
+        <div><dt>材料消耗</dt><dd>同名装备 ×2</dd></div>
+        <div><dt>剩余库存</dt><dd>×{result.remaining_count}</dd></div>
+        <div><dt>{result.success ? "新增词条" : "下次概率"}</dt><dd>{result.success ? `${result.gained_affixes.length} 条${criticalCount ? ` · ${criticalCount} 条暴击` : ""}` : `${result.next_success_rate}%`}</dd></div>
+      </dl>
+      {result.success && result.gained_affixes.length ? <div className="pet-synthesis-affixes">{result.gained_affixes.map((affix) => <span className={affix.critical ? "critical" : ""} key={affix.id}>{affix.critical ? "暴击 · " : ""}{affix.label} +{affix.value}{affix.key === "rarity_boost" ? "" : "%"}</span>)}</div> : <p className="pet-synthesis-tip">{result.success ? "装备已升级，本次没有额外词条。" : "装备等级与原有词条完整保留，失败保底已自动累积。"}</p>}
+      <button type="button" onClick={onClose}>{result.success ? "收下强化结果" : "知道了，下次再来"}</button>
+    </section>
+  </div>;
+}
+
 function PetForgeRevealModal({ result, onClose }: { result: PetForgeResult | null; onClose: () => void }) {
   if (!result) return null;
   const { item, identified_affix: affix } = result;
@@ -2436,11 +2478,11 @@ function CompanionPet({ visible, message, mood, completed, total, pulse, hasNext
             </nav>
             {studioSection === "evolution" ? <section className={`pet-evolution-lab pet-evolution-v2 ${profile.evolution_path ? `path-${profile.evolution_path}` : ""}`}>
               <header><div><span>EVOLUTION LOTTERY</span><strong>{profile.evolution_stage ? `${profile.evolution_name} · 第 ${profile.evolution_stage} 次进化` : "等待第一次随机进化"}</strong></div><b>{profile.evolution_chances} 张进化券</b></header>
-              <div className="pet-lottery-hero"><div className="pet-lottery-orbit"><PetCreatureVisual profile={profile} accessory={accessory} /><i>{profile.evolution_stage || "?"}</i></div><div><strong>{profile.evolution_path ? `${PET_EVOLUTION_PATHS[profile.evolution_path].tone}路线持续强化` : "9 条路线随机诞生"}</strong><p>{profile.evolution_path ? "单抽继续强化当前路线；使用 5 张进化券可改抽另一条路线，原路线层级与路线特征会清空，新路线从第 1 次进化开始。装备和技能保留。" : "首次成功决定主路线；之后单抽持续强化。获得路线后，也可以用 5 张进化券更换路线并从第 1 次进化重新开始。"}</p><div className="pet-odds"><span>本次单抽成功率</span><b>{profile.evolution_success_rate}%</b><i><em style={{ width: `${profile.evolution_success_rate}%` }} /></i><small>连续失败会提高保底，成功后重置</small></div></div></div>
+              <div className="pet-lottery-hero"><div className="pet-lottery-orbit"><PetCreatureVisual profile={profile} accessory={accessory} /><i>{profile.evolution_stage || "?"}</i></div><div><strong>{profile.evolution_path ? `${PET_EVOLUTION_PATHS[profile.evolution_path].tone}路线持续强化` : "16 条公开路线 + 1 条隐藏路线"}</strong><p>{profile.evolution_path ? "单抽继续强化当前路线；使用 5 张进化券可改抽另一条路线，原路线层级与路线特征会清空，新路线从第 1 次进化开始。团队账号只会获得当前无人使用的路线；路线已满时不扣券。" : "首次成功决定主路线；团队账号仅分配无人使用的路线；没有空闲路线时不扣券，隐藏路线只能随机发现。获得路线后，也可以用 5 张券更换路线。"}</p><div className="pet-odds"><span>本次单抽成功率</span><b>{profile.evolution_success_rate}%</b><i><em style={{ width: `${profile.evolution_success_rate}%` }} /></i><small>连续失败会提高保底，成功后重置</small></div></div></div>
               <div className="pet-evolution-track">{[1, 3, 6, 9, 12, Math.max(15, Math.ceil((profile.evolution_stage + 1) / 3) * 3)].filter((stage, index, list) => list.indexOf(stage) === index).map((stage) => <i className={profile.evolution_stage >= stage ? "active" : stage === profile.evolution_stage + 1 ? "next" : ""} key={stage}><span>{stage}</span><small>{stage === 1 ? "路线诞生" : stage === 3 ? "展翼" : stage === 6 ? "领域" : stage === 9 ? "神话" : stage === 12 ? "星环" : "无限强化"}</small></i>)}</div>
-              <div className="pet-path-pool">{Object.entries(PET_EVOLUTION_PATHS).map(([id, item]) => <span className={profile.evolution_path === id ? "active" : id === "wonky" ? "wonky" : ""} key={id}><b>{item.motif}</b>{item.name}</span>)}</div>
-              {profile.evolution_path ? <section className="pet-targeted-reroute"><header><div><span>TARGETED REROUTE</span><strong>十券定向换路线</strong><small>失败不改变当前路线；同一目标每次失败 +10%，定向祝福每层额外 +5%。成功后旧路线每级补偿 2 次大转盘。</small></div><b>{targetedEvolutionRate}%<small>当前成功率</small></b></header><div>{Object.entries(PET_EVOLUTION_PATHS).filter(([id]) => id !== profile.evolution_path).map(([id, item]) => <button type="button" className={`${targetEvolutionPath === id ? "active" : ""} ${profile.targeted_evolution_target === id && profile.targeted_evolution_failures ? "pity" : ""}`} onClick={() => setTargetEvolutionPath(id as PetEvolutionPath)} key={id}><i>{item.motif}</i><span>{item.name}<small>{profile.targeted_evolution_target === id && profile.targeted_evolution_failures ? `已失败 ${profile.targeted_evolution_failures} 次` : item.tone}</small></span></button>)}</div><footer><span><b>{profile.targeted_evolution_blessings}</b> 层定向祝福 · 成功补偿 <b>{profile.evolution_stage * 2}</b> 次大转盘</span><button type="button" disabled={busy || profile.evolution_chances < 10 || !targetEvolutionPath || targetEvolutionPath === profile.evolution_path} onClick={() => onEvolve(10, targetEvolutionPath)}>{profile.evolution_chances < 10 ? `还差 ${10 - profile.evolution_chances} 张券` : targetEvolutionPath ? `消耗 10 券 · ${targetedEvolutionRate}%` : "先选择目标路线"}</button></footer></section> : null}
-              {profile.evolution_traits.length ? <div className="pet-evolution-traits">{profile.evolution_traits.slice(-12).map((trait, index) => <span key={`${trait}-${index}`}>{trait}</span>)}</div> : <p>结果包含星辉、机甲、森灵、风暴、潮汐、火焰、云梦、像素，以及外观不太妙的“歪歪异变体”。</p>}
+              <div className="pet-path-pool">{PET_PUBLIC_EVOLUTION_PATHS.map(([id, item]) => <span className={profile.evolution_path === id ? "active" : id === "wonky" ? "wonky" : ""} key={id}><b>{item.motif}</b>{item.name}</span>)}<span className={profile.evolution_path === "nexus" ? "active hidden" : "hidden"}><b>{profile.evolution_path === "nexus" ? PET_EVOLUTION_PATHS.nexus.motif : "?"}</b>{profile.evolution_path === "nexus" ? PET_EVOLUTION_PATHS.nexus.name : "隐藏路线 · 抽中揭晓"}</span></div>
+              {profile.evolution_path ? <section className="pet-targeted-reroute"><header><div><span>TARGETED REROUTE</span><strong>十券定向换路线</strong><small>失败不改变当前路线；同一目标每次失败 +10%，定向祝福每层额外 +5%。已被其他宠物占用的路线不会重复分配，隐藏路线不可定向。</small></div><b>{targetedEvolutionRate}%<small>当前成功率</small></b></header><div>{PET_PUBLIC_EVOLUTION_PATHS.filter(([id]) => id !== profile.evolution_path).map(([id, item]) => <button type="button" className={`${targetEvolutionPath === id ? "active" : ""} ${profile.targeted_evolution_target === id && profile.targeted_evolution_failures ? "pity" : ""}`} onClick={() => setTargetEvolutionPath(id as PetEvolutionPath)} key={id}><i>{item.motif}</i><span>{item.name}<small>{profile.targeted_evolution_target === id && profile.targeted_evolution_failures ? `已失败 ${profile.targeted_evolution_failures} 次` : item.tone}</small></span></button>)}</div><footer><span><b>{profile.targeted_evolution_blessings}</b> 层定向祝福 · 成功补偿 <b>{profile.evolution_stage * 2}</b> 次大转盘</span><button type="button" disabled={busy || profile.evolution_chances < 10 || !targetEvolutionPath || targetEvolutionPath === profile.evolution_path} onClick={() => onEvolve(10, targetEvolutionPath)}>{profile.evolution_chances < 10 ? `还差 ${10 - profile.evolution_chances} 张券` : targetEvolutionPath ? `消耗 10 券 · ${targetedEvolutionRate}%` : "先选择目标路线"}</button></footer></section> : null}
+              {profile.evolution_traits.length ? <div className="pet-evolution-traits">{profile.evolution_traits.slice(-12).map((trait, index) => <span key={`${trait}-${index}`}>{trait}</span>)}</div> : <p>路线池现有 16 条公开路线，包含 EVA、剑灵、DNF、NBA、王者、VALORANT、LOL 联动主题；另有 1 条只能随机发现的隐藏路线。</p>}
               <div className="pet-evolution-actions"><button type="button" disabled={busy || profile.evolution_chances < 1} onClick={() => onEvolve(1)}><strong>抽一次</strong><small>消耗 1 张 · 当前 {profile.evolution_success_rate}%</small></button><button className="guaranteed" type="button" disabled={busy || profile.evolution_chances < 5} onClick={() => onEvolve(5)}><strong>{profile.evolution_path ? "五券随机换路线" : "五券首进化"}</strong><small>{profile.evolution_path ? `100% 换路线 · 补偿 ${profile.evolution_stage * 2} 次转盘` : "消耗 5 张 · 100% 成功"}</small></button></div>
               {profile.evolution_history.length ? <details className="pet-evolution-history"><summary>最近抽奖记录 · {profile.evolution_history.length}</summary>{profile.evolution_history.slice(0, 10).map((event, index) => <div key={`${event.at}-${index}`}><span>{event.type === "gift" ? event.trait : event.success ? `${event.critical ? "暴击 · " : "成功 · "}${event.trait || PET_EVOLUTION_PATHS[event.path as Exclude<PetEvolutionPath, "">]?.name || "新形态"}${event.wheel_compensation ? ` · 补偿 ${event.wheel_compensation} 次转盘` : ""}${event.skill ? ` · ${event.skill.name} Lv.${event.skill.level}` : ""}` : event.type === "targeted_reroute" ? `定向失败 · 当前路线保留，下次同目标概率提升` : `失败 · 保底提升至 ${event.pity_after ?? 0}`}</span><small>{event.type === "gift" ? event.sender : event.type === "targeted_reroute" ? `十券定向 ${event.success_rate ?? 70}%` : event.type === "reroute" ? "五券随机换路线" : event.spent === 5 ? "五券首进化" : `单抽 ${event.success_rate ?? 10}%`} · {new Date(event.at).toLocaleString()}</small></div>)}</details> : null}
               {isAdmin ? <form className="pet-ticket-gift" onSubmit={(event) => { event.preventDefault(); void onGiftTickets(giftUserIds, giftAmount, giftNote).then(() => setGiftUserIds([])).catch(() => undefined); }}>
@@ -3490,6 +3532,7 @@ export default function Home() {
   const [petProfile, setPetProfile] = useState<PetProfile>(DEFAULT_PET);
   const [petDropReveal, setPetDropReveal] = useState<PetDropReveal | null>(null);
   const [petForgeReveal, setPetForgeReveal] = useState<PetForgeResult | null>(null);
+  const [petSynthesisNotice, setPetSynthesisNotice] = useState<PetSynthesisNotice | null>(null);
   const [petEquipmentGuideOpen, setPetEquipmentGuideOpen] = useState(false);
   const [petHomeOpen, setPetHomeOpen] = useState(false);
   const [petHomeData, setPetHomeData] = useState<PetHomeData | null>(null);
@@ -5212,10 +5255,11 @@ export default function Home() {
     setPetBusy(true);
     try {
       const result = serverUser
-        ? await apiRequest<{ profile: PetProfile; success: boolean; success_rate: number; gained_affixes: PetEquipmentAffix[] }>("/api/pet/equipment/synthesize", { method: "POST", body: JSON.stringify({ item_id: itemId }) })
+        ? await apiRequest<PetSynthesisResult>("/api/pet/equipment/synthesize", { method: "POST", body: JSON.stringify({ item_id: itemId }) })
         : synthesizeLocalPetEquipment(petProfileRef.current, itemId);
       const next = applyPetProfile(result.profile);
       const nextItem = next.inventory.find((owned) => owned.id === itemId);
+      setPetSynthesisNotice({ ...result, item: nextItem ?? item });
       if (result.success) {
         const criticalCount = result.gained_affixes.filter((affix) => affix.critical).length;
         wakePet(`合成成功！${item.name} 升至 Lv.${nextItem?.level ?? item.level + 1}，获得 ${result.gained_affixes.length} 条词条${criticalCount ? `，其中 ${criticalCount} 条暴击` : ""}。`, "proud");
@@ -6020,9 +6064,10 @@ export default function Home() {
       onDragLeave={(event) => { if (event.currentTarget === event.target) setDragging(false); }}
       onDrop={onDrop}
     >
-      <PetDropChoiceModal pending={petDropReveal || petForgeReveal || petHomeOpen || petEquipmentGuideOpen ? undefined : petProfile.pending_drops[0]} queueSize={petProfile.pending_drops.length} busy={petBusy} onClaim={(token, itemId) => void claimPetDrop(token, itemId)} />
+      <PetDropChoiceModal pending={petDropReveal || petForgeReveal || petSynthesisNotice || petHomeOpen || petEquipmentGuideOpen ? undefined : petProfile.pending_drops[0]} queueSize={petProfile.pending_drops.length} busy={petBusy} onClaim={(token, itemId) => void claimPetDrop(token, itemId)} />
       <PetDropRevealModal result={petDropReveal} queueSize={petProfile.pending_drops.length} onClose={() => setPetDropReveal(null)} />
       <PetForgeRevealModal result={petForgeReveal} onClose={() => setPetForgeReveal(null)} />
+      <PetSynthesisNoticeModal result={petSynthesisNotice} onClose={() => setPetSynthesisNotice(null)} />
       <PetEquipmentGuide open={petEquipmentGuideOpen} profile={petProfile} onClose={() => setPetEquipmentGuideOpen(false)} />
       <PetHomestead open={petHomeOpen} user={serverUser} data={petHomeData} busy={petHomeBusy} battleBusy={petBattleBusy} error={petHomeError} result={petBattleResult} onRefresh={() => void refreshPetHomestead()} onBattle={() => void battleInPetHomestead()} onClose={() => { setPetHomeOpen(false); setPetBattleResult(null); }} onOpenTeam={() => { setPetHomeOpen(false); setTeamOpen(true); }} onFinishResult={finishPetBattleResult} />
       <header className="topbar">

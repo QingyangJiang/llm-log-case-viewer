@@ -1,5 +1,8 @@
 import os
+import tempfile
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
 os.environ.setdefault("DATABASE_URL", "sqlite://")
@@ -113,6 +116,126 @@ class PetEvolutionTest(unittest.TestCase):
         self.assertEqual(second["profile"]["evolution_traits"], ["新芽鹿角"])
         self.assertEqual(second["wheel_compensation"], 2)
         self.assertEqual(second["profile"]["wheel_chances"], 2)
+
+    def test_new_routes_include_seven_public_collaborations_and_one_hidden_route(self) -> None:
+        self.assertEqual(len(api.PET_EVOLUTION_PATHS), 17)
+        self.assertEqual(len(api.PET_PUBLIC_EVOLUTION_PATHS), 16)
+        self.assertTrue(api.PET_EVOLUTION_PATHS["nexus"]["hidden"])
+        for path in {"eva", "blade_soul", "dnf", "nba", "honor", "valorant", "lol", "nexus"}:
+            self.assertIn(path, api.PET_EVOLUTION_PATH_LOTTERY)
+
+    def test_random_evolution_excludes_routes_owned_by_other_users(self) -> None:
+        opponent, _, _, opponent_evolution, _ = self.add_opponent()
+        opponent_evolution.path = "starlight"
+        opponent_evolution.stage = 3
+        _, _, evolution, _ = api.get_or_create_pet(self.db, self.user.id)
+        evolution.available_chances = 5
+        self.db.commit()
+
+        with patch.object(api.secrets, "choice", side_effect=lambda choices: choices[0]), patch.object(api.secrets, "randbelow", side_effect=[50, 2]):
+            result = api.evolve_pet(api.PetEvolutionBody(spend=5), self.user, self.db)
+
+        self.assertTrue(result["success"])
+        self.assertNotEqual(result["profile"]["evolution_path"], opponent_evolution.path)
+        self.assertEqual(api.pet_evolution_route_counts(self.db, opponent.id)[result["profile"]["evolution_path"]], 1)
+
+    def test_full_route_pool_rejects_first_evolution_and_reroute_without_charges(self) -> None:
+        _, _, evolution, collection = api.get_or_create_pet(self.db, self.user.id)
+        evolution.available_chances = 20
+        for path in api.PET_EVOLUTION_PATHS:
+            _, _, _, other, _ = self.add_opponent(username=f"owner-{path}")
+            other.path = path
+            other.stage = 1
+        self.db.commit()
+        for current_path, stage, spend in [("", 0, 1), ("", 0, 5), ("forest", 3, 5)]:
+            with self.subTest(current_path=current_path, spend=spend):
+                evolution.path = current_path
+                evolution.stage = stage
+                self.db.commit()
+                with self.assertRaises(api.HTTPException) as raised:
+                    api.evolve_pet(api.PetEvolutionBody(spend=spend), self.user, self.db)
+                self.assertEqual(raised.exception.status_code, 409)
+                self.assertEqual(evolution.available_chances, 20)
+                self.assertEqual(evolution.path, current_path)
+                self.assertEqual(evolution.stage, stage)
+                self.assertEqual(collection.pity, 0)
+                self.assertEqual(api.pet_wheel_state(collection)["chances"], 0)
+
+    def test_hidden_route_can_be_randomly_discovered_and_released_routes_reused(self) -> None:
+        _, _, evolution, _ = api.get_or_create_pet(self.db, self.user.id)
+        evolution.available_chances = 5
+        for path in api.PET_PUBLIC_EVOLUTION_PATHS:
+            _, _, _, other, _ = self.add_opponent(username=f"owner-{path}")
+            other.path = path
+            other.stage = 1
+        self.db.commit()
+        with patch.object(api.secrets, "choice", side_effect=lambda choices: choices[0]), patch.object(api.secrets, "randbelow", return_value=50):
+            result = api.evolve_pet(api.PetEvolutionBody(spend=5), self.user, self.db)
+        self.assertEqual(result["profile"]["evolution_path"], "nexus")
+        other.path = ""
+        other.stage = 0
+        self.db.commit()
+        self.assertEqual(api.choose_pet_evolution_path(self.db, self.user.id, {"nexus"}), path)
+
+    def test_targeted_reroute_rejects_an_occupied_or_hidden_route_without_spending_tickets(self) -> None:
+        _, _, _, opponent_evolution, _ = self.add_opponent()
+        opponent_evolution.path = "storm"
+        opponent_evolution.stage = 2
+        _, _, evolution, _ = api.get_or_create_pet(self.db, self.user.id)
+        evolution.path = "forest"
+        evolution.stage = 2
+        evolution.available_chances = 20
+        self.db.commit()
+
+        with self.assertRaises(api.HTTPException) as occupied:
+            api.evolve_pet(api.PetEvolutionBody(spend=10, target_path="storm"), self.user, self.db)
+        self.assertEqual(occupied.exception.status_code, 409)
+        self.assertEqual(evolution.available_chances, 20)
+
+        with self.assertRaises(api.HTTPException) as hidden:
+            api.evolve_pet(api.PetEvolutionBody(spend=10, target_path="nexus"), self.user, self.db)
+        self.assertEqual(hidden.exception.status_code, 422)
+        self.assertEqual(evolution.available_chances, 20)
+
+    def test_concurrent_claims_of_one_route_have_only_one_winner(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            engine = api.create_engine(f"sqlite:///{directory}/pets.db", connect_args={"check_same_thread": False, "timeout": 10})
+            factory = api.sessionmaker(engine, expire_on_commit=False)
+            api.Base.metadata.create_all(engine)
+            try:
+                with factory() as db:
+                    user_ids = []
+                    for index, path in enumerate(["forest", "storm"]):
+                        owner = api.User(username=f"racer-{index}", display_name="Racer", password_hash="unused", role="annotator")
+                        db.add(owner)
+                        db.flush()
+                        _, _, evolution, _ = api.get_or_create_pet(db, owner.id)
+                        evolution.path = path
+                        evolution.stage = 1
+                        evolution.available_chances = 10
+                        user_ids.append(owner.id)
+                    db.commit()
+                ready = threading.Barrier(2)
+
+                def claim(user_id):
+                    with factory() as db:
+                        owner = db.get(api.User, user_id)
+                        ready.wait(timeout=5)
+                        try:
+                            return api.evolve_pet(api.PetEvolutionBody(spend=10, target_path="eva"), owner, db)["success"]
+                        except api.HTTPException as error:
+                            db.rollback()
+                            return error.status_code
+
+                with patch.object(api.secrets, "randbelow", return_value=0), ThreadPoolExecutor(max_workers=2) as pool:
+                    results = list(pool.map(claim, user_ids))
+                self.assertCountEqual(results, [True, 409])
+                with factory() as db:
+                    pets = db.scalars(api.select(api.PetEvolution)).all()
+                    self.assertEqual(sum(pet.path == "eva" for pet in pets), 1)
+                    self.assertEqual(sorted(pet.available_chances for pet in pets), [0, 10])
+            finally:
+                engine.dispose()
 
     def test_ten_ticket_targeted_reroute_stacks_failures_and_compensates_old_stage(self) -> None:
         _, _, evolution, _ = api.get_or_create_pet(self.db, self.user.id)
@@ -286,6 +409,38 @@ class PetEvolutionTest(unittest.TestCase):
         self.assertEqual(failed["affixes"], [generated])
         self.assertEqual(affixes, [])
         self.assertEqual(api.pet_synthesis_success_rate(failed), 85)
+
+    def test_synthesis_endpoint_returns_a_complete_result_notification_payload(self) -> None:
+        _, _, _, collection = api.get_or_create_pet(self.db, self.user.id)
+        item_id = "gear-01-1-1"
+        collection.inventory = {item_id: {"count": 3, "level": 2, "affixes": [], "synthesis_failures": 0}}
+        self.db.commit()
+
+        with patch.object(api.secrets, "randbelow", return_value=99):
+            result = api.synthesize_pet_item(api.PetEquipmentActionBody(item_id=item_id), self.user, self.db)
+
+        self.assertFalse(result["success"])
+        self.assertEqual(result["success_rate"], 80)
+        self.assertEqual(result["next_success_rate"], 85)
+        self.assertEqual(result["previous_level"], 2)
+        self.assertEqual(result["next_level"], 2)
+        self.assertEqual(result["remaining_count"], 1)
+
+    def test_successful_synthesis_notification_includes_upgrade_and_new_affixes(self) -> None:
+        _, _, _, collection = api.get_or_create_pet(self.db, self.user.id)
+        item_id = "gear-01-1-1"
+        collection.inventory = {item_id: {"count": 4, "level": 2, "affixes": [], "synthesis_failures": 2}}
+        self.db.commit()
+        with patch.object(api.secrets, "randbelow", return_value=0):
+            result = api.synthesize_pet_item(api.PetEquipmentActionBody(item_id=item_id), self.user, self.db)
+        self.assertTrue(result["success"])
+        self.assertEqual(result["previous_level"], 2)
+        self.assertEqual(result["next_level"], 3)
+        self.assertEqual(result["remaining_count"], 2)
+        self.assertTrue(result["gained_affixes"])
+        item = next(item for item in result["profile"]["inventory"] if item["id"] == item_id)
+        self.assertEqual(item["synthesis_failures"], 0)
+        self.assertEqual(result["next_success_rate"], item["synthesis_success_rate"])
 
     def test_reforge_keeps_level_and_can_add_many_random_affixes(self) -> None:
         item = api.PET_EQUIPMENT_CATALOG["gear-01-1-1"]
