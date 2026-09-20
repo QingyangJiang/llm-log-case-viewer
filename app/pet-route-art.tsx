@@ -1,15 +1,16 @@
 "use client";
 
 import { useId } from "react";
+import { RouteProgress } from "./pet-route-progress";
 
 export const ILLUSTRATED_ROUTES = {
   eva: { light: "#c0a3ff", base: "#8660d1", dark: "#302846", accent: "#c7fc75", soft: "#eee5ff", caption: "紫晶装甲 · 荧光核心" },
-  blade_soul: { light: "#ffffff", base: "#d3f1ef", dark: "#326c78", accent: "#83ddd1", soft: "#e5fbf7", caption: "霜白灵狐 · 青玉飞剑" },
-  dnf: { light: "#ac869f", base: "#69516f", dark: "#372c49", accent: "#ffc776", soft: "#fff0df", caption: "深渊骑士 · 琥珀剑魂" },
+  blade_soul: { light: "#ffffff", base: "#d3f1ef", dark: "#326c78", accent: "#83ddd1", soft: "#e5fbf7", caption: "灵族灵剑士 · 青玉飞剑" },
+  dnf: { light: "#ac869f", base: "#69516f", dark: "#372c49", accent: "#ffc776", soft: "#fff0df", caption: "鬼剑士 · 鬼手与锁链" },
   nba: { light: "#ffe6b3", base: "#e9ac67", dark: "#614538", accent: "#f28d50", soft: "#fff2d8", caption: "奶橘球星 · 冠军球衣" },
-  honor: { light: "#fffbea", base: "#f0d8a6", dark: "#826044", accent: "#e8ae57", soft: "#fff6db", caption: "鎏金神兽 · 赤绸云纹" },
-  valorant: { light: "#f3faff", base: "#bfdadf", dark: "#304b5e", accent: "#72decf", soft: "#e6fbf7", caption: "疾风特工 · 浮空飞刃" },
-  lol: { light: "#a4dfef", base: "#659fc8", dark: "#35476c", accent: "#eac486", soft: "#e5f2ff", caption: "符文幼龙 · 海蓝晶杖" },
+  honor: { light: "#fff7fa", base: "#e3c6df", dark: "#755f86", accent: "#c5a4df", soft: "#f7edf7", caption: "梦奇灵感 · 绒耳与梦泡" },
+  valorant: { light: "#f3faff", base: "#bfdadf", dark: "#304b5e", accent: "#72decf", soft: "#e6fbf7", caption: "捷风灵感 · 白发与飞刃" },
+  lol: { light: "#ffecdc", base: "#edc6b8", dark: "#684b64", accent: "#9edeea", soft: "#f3edf6", caption: "阿狸灵感 · 灵珠与狐火" },
   nexus: { light: "#9285ca", base: "#504d88", dark: "#2a2b53", accent: "#d0bcff", soft: "#ede7ff", caption: "星河绒羽 · 月相之环" },
 } as const;
 
@@ -45,7 +46,6 @@ export function PetRouteArt({ path, stage = 1 }: { path: IllustratedRoute; stage
   const paint = (name: string) => `url(#pet-${uid}-${name})`;
   const body = paint("body");
   const metal = paint("metal");
-  const gem = paint("gem");
   const ink = palette.dark;
   return <svg className={`pet-route-illustration route-art-${path}`} viewBox="0 0 160 160" fill="none" aria-hidden="true" focusable="false">
     <defs>
@@ -55,12 +55,11 @@ export function PetRouteArt({ path, stage = 1 }: { path: IllustratedRoute; stage
       <radialGradient id={`pet-${uid}-halo`}><stop stopColor={palette.accent} stopOpacity=".2" /><stop offset="1" stopColor={palette.accent} stopOpacity="0" /></radialGradient>
     </defs>
     <ellipse cx="80" cy="140" rx="33" ry="5" fill={ink} opacity=".12" />
-    {stage >= 3 ? <g className="route-radiance"><circle cx="80" cy="80" r="65" fill={paint("halo")} /><path d="M28 102a57 57 0 0 1 86-69M132 61a57 57 0 0 1-82 67" stroke={palette.accent} strokeOpacity=".4" strokeWidth="1" /><Spark x={25} y={67} color={palette.accent} /><Spark x={135} y={98} size={3} color={palette.accent} /></g> : null}
-    {stage >= 6 ? <g className="route-ascension" stroke={palette.accent}><ellipse cx="80" cy="23" rx="24" ry="6" strokeWidth="1.5" /><Spark x={80} y={17} size={4} color={palette.accent} /><circle cx="31" cy="115" r="2" /><circle cx="127" cy="40" r="2" /></g> : null}
+    <RouteProgress path={path} stage={stage} />
     <g className="route-familiar" stroke={ink} strokeWidth="2.2" strokeLinejoin="round" strokeLinecap="round">
       {path === "eva" ? <>
         <path d="M111 119c26 14 34-13 21-19" stroke="#5a487c" strokeWidth="5" /><path d="m130 99 6 1-1 8-6-2Z" fill="#e9ac66" />
-        <g className="route-floating"><path d="M42 75 30 41l-9 9 6 42 13 7M118 75l12-34 9 9-6 42-13 7" fill={body} /><path d="m29 49 5 14m97-14-5 14" stroke="#c7fc75" strokeWidth="4" /></g>
+        <g className="route-floating" transform={stage >= 3 ? undefined : "translate(12 14) scale(.85)"}><path d="M42 75 30 41l-9 9 6 42 13 7M118 75l12-34 9 9-6 42-13 7" fill={body} /><path d="m29 49 5 14m97-14-5 14" stroke="#c7fc75" strokeWidth="4" /></g>
         <path d="m59 109-5 22q8 8 19 0l2-15m11-7 2 22q11 8 19 0l-5-23" fill={body} /><path d="m56 131 16-2m18 0 15 2" stroke="#bbf36c" strokeWidth="3" />
         <path d="M54 98q26-16 52 0l-4 25-22 9-22-9Z" fill={body} /><path d="m62 104 18 8 18-8-5 17H67Z" fill="#302846" /><path className="route-personal-accent" d="m72 112 8-5 8 5-8 8Z" fill="#f4b369" strokeWidth="1.3" />
         <path d="m53 92-14 4-5 19 11 7 14-16m48-14 14 4 5 19-11 7-14-16" fill={body} /><path d="m38 111 8 4m68 0 8-4" stroke="#c7fc75" strokeWidth="3" />
@@ -86,11 +85,12 @@ export function PetRouteArt({ path, stage = 1 }: { path: IllustratedRoute; stage
         <path d="M52 86q-18 11-10 43l18-9 20 15 19-15 20 9q5-34-13-43" fill="#953c58" /><path d="m48 118 8-19m48 0 8 19" stroke="#c15e70" />
         <path d="m56 112-2 20q7 8 19 1l3-20m10 0 2 20q12 7 20-1l-4-20" fill="#564864" /><path d="m56 131 15-1m19 0 15 1" stroke={metal} strokeWidth="3" />
         <path d="m56 93 24-8 24 8-4 30-20 8-20-8Z" fill={body} /><path d="m61 99 19 8 19-8-6 17H67Z" fill={metal} /><path className="route-personal-accent" d="m75 110 5-7 5 7-5 7Z" fill="#d96e71" strokeWidth="1" />
-        <path d="M49 50q-18-7-13-25 3 13 23 11m42 0q20 2 23-11 5 18-13 25" fill={metal} />
+        <path d="M48 52 55 33l16 9 17-12 21 17-7 12Z" fill="#e3d6e8" />
         <path d="M47 55q3-16 33-16t33 16l1 28-12 17H58L46 83Z" fill={body} /><path d="M54 63q26-12 52 0l-2 22q-24 20-48 0Z" fill="#f2d1bf" />
-        <path d="m49 57 16 5 15-13 15 13 16-5-8-13-23-7-23 7Z" fill="#58415f" /><path d="m70 44 10 6 10-6-10-8Z" fill={metal} />
+        <path d="m49 57 16 5 15-13 15 13 16-5-8-13-23-7-23 7Z" fill="#ded5e8" /><path d="m59 47 10 4m25-4 8 5" stroke="#f7f1ff" /><path d="M57 44q23-9 46 0" stroke="#67455f" strokeWidth="4" />
         <Face ink={ink} iris="#c48755" y={75} fierce />
         <path d="m53 94-16 1-7 14 18 6 11-11m48-10 16 1 7 14-18 6-11-11" fill={metal} /><path d="m39 98 6 7m75-7-6 7" stroke="#fff0c9" strokeWidth="2" />
+        <path d="m45 99-10 6 4 13 12-7Z" fill="#bc5267" stroke="#692f52" />
         <g transform="rotate(-16 125 96)"><path d="m119 107-3-50 9-19 9 19-3 50Z" fill="#5f506e" /><path d="m125 49 0 55" stroke="#ffc776" strokeWidth="3" /><path d="m114 107 22 0-3 6h-16Z" fill={metal} /><path d="M122 113h6v17h-6Z" fill="#925065" /><circle cx="125" cy="131" r="4" fill={metal} /></g>
       </> : null}
       {path === "nba" ? <>
@@ -98,7 +98,7 @@ export function PetRouteArt({ path, stage = 1 }: { path: IllustratedRoute; stage
         <path d="M58 102h44l3 27H85l-5-12-5 12H55Z" fill="#7261a7" /><path d="M60 126v6m40-6v6" stroke="#f4d0a1" strokeWidth="10" />
         <path d="M53 132q9-9 20-1l1 7H51Zm34-1q11-8 20 1l2 6H86Z" fill="#fff6e6" /><path d="M53 138h20m15 0h19" stroke="#b59269" />
         <path d="m56 90 14-6q10 10 20 0l14 6 0 28H56Z" fill="#8165b7" /><path d="m59 92 0 22m42-22 0 22" stroke="#f6d585" strokeWidth="3" /><path d="M70 89q10 10 20 0" stroke="#f6d585" strokeWidth="3" />
-        <path d="M71 103h6l-6 9h6m7-9h6l-6 9h6" stroke="#fff2bc" strokeWidth="2.6" />
+        <text x="80" y="112" textAnchor="middle" fill="#fff2bc" stroke="none" fontSize="14" fontWeight="800" fontFamily="sans-serif">01</text>
         <path d="M47 55 42 27q15 0 24 18m28 0q9-18 24-18l-5 28" fill={body} /><path d="m48 38 6 13m52 0 6-13" stroke="#d99880" strokeWidth="5" />
         <path d="M45 67q-1-25 35-25t35 25v13q-4 21-35 21T45 80Z" fill={body} />
         <path className="route-personal-accent" d="M47 58q33-11 66 0v9q-33-11-66 0Z" fill="#fcf2da" /><path d="m74 49 2 4m8-5 0 4" stroke="#c68a54" strokeWidth="3" /><path d="m48 76 6 2m-5 5 5 1m52-6 6-2m-6 8 5-1" stroke="#c98957" strokeWidth="2" />
@@ -107,21 +107,22 @@ export function PetRouteArt({ path, stage = 1 }: { path: IllustratedRoute; stage
         <g className="route-ball"><circle cx="122" cy="115" r="17" fill="#f0a15e" /><path d="M106 115h32m-16-17v34m-12-29q23 12 0 24m24-24q-23 12 0 24" stroke="#986039" strokeWidth="1.5" /><path d="M114 103q6-3 10-2" stroke="#ffd1a0" strokeWidth="2.6" /></g>
       </> : null}
       {path === "honor" ? <>
-        <path d="M103 103q35-23 35-6-2 8-15 7 13 5 8 15-7 10-24-2" fill={metal} /><path d="M114 109q14 3 12 8" stroke="#fff1bc" />
-        <path d="M49 86Q25 96 33 120l22-12m56-22q24 10 16 34l-22-12" fill="#b95157" /><path d="m35 115 14-11m76 11-14-11" stroke="#efbc8a" strokeWidth="2" />
-        <path d="M60 100q20-8 40 0l4 29-24 7-24-7Z" fill={body} /><ellipse cx="63" cy="132" rx="10" ry="6" fill="#ffedc6" /><ellipse cx="97" cy="132" rx="10" ry="6" fill="#ffedc6" /><path d="m61 133 4 0m30 0 4 0" stroke="#bd9367" />
-        <path d="M57 103q23 17 46 0l-6 18H63Z" fill={metal} /><path className="route-personal-accent" d="m73 116 7-8 7 8-7 9Z" fill="#78bdbc" strokeWidth="1.3" />
-        <path d="M45 49q-13-9-9-19 12-1 22 15m44 0q10-16 22-15 4 10-9 19" fill={metal} />
-        <path d="M53 48q-17 5-18 19l7 6-6 11 12 6 2 12 16 0 14 7 14-7h16l2-12 12-6-6-11 7-6q-1-14-18-19Z" fill={metal} />
-        <path d="M49 64q5-18 31-18t31 18l-3 23q-11 17-28 15-17 2-28-15Z" fill={body} />
-        <path d="m57 48-4-16 17 8 10-17 10 17 17-8-4 16q-23 9-46 0Z" fill={metal} /><path d="m75 41 5-8 5 8-5 7Z" fill="#83c9c4" strokeWidth="1" />
-        <Face ink={ink} iris="#c89d4c" />
-        <path d="M55 66q5-6 10-3m30 0q5-3 10 3" stroke="#bf985b" strokeWidth="2" />
-        <path d="m50 99-9 11q-1 9 10 9l8-10m51-10 9 11q1 9-10 9l-8-10" fill={body} /><path d="M44 113h9m54 0h9" stroke={metal} strokeWidth="3" />
-        <path d="m46 90-13 8 5 8m76-16 13 8-5 8" stroke="#eed097" strokeWidth="2" />
+        <path d="M109 106q25-4 22-26 18 19-2 37l-24 5" fill={body} />
+        <path d="M54 95q26-14 52 0l10 28q-36 27-72 0Z" fill={body} />
+        <ellipse cx="80" cy="116" rx="23" ry="18" fill="#fff8ed" stroke="none" />
+        <ellipse cx="57" cy="134" rx="12" ry="6" fill="#d8bbd8" /><ellipse cx="103" cy="134" rx="12" ry="6" fill="#d8bbd8" />
+        <path d="M49 58Q20 20 39 12q19-2 26 35m29 0q7-37 26-35 19 8-10 46" fill={body} />
+        <path d="M44 26q-4 9 10 25m52 0q14-16 10-25" stroke="#b28cbf" strokeWidth="8" />
+        <path d="M42 64q4-24 38-24t38 24l7 20-10-2 3 12q-38 24-76 0l3-12-10 2Z" fill={body} />
+        <path d="M55 83q25-10 50 0l-4 12q-21 15-42 0Z" fill="#fff8ed" stroke="none" />
+        <path d="m71 45 9 10 9-10m-9 10 0 7" stroke="#ac83bb" strokeWidth="3" />
+        <Face ink={ink} iris="#b082c3" y={76} />
+        <path d="M49 103q-17-5-14 9 5 9 18 4m58-13q17-5 14 9-5 9-18 4" fill={body} />
+        <path d="M55 101q25 13 50 0" stroke="#9c82b6" strokeWidth="4" />
+        <path className="route-personal-accent" d="m74 109 6-5 6 5-6 8Z" fill="#deb66f" strokeWidth="1" />
       </> : null}
       {path === "valorant" ? <>
-        <g className="route-floating" fill="#bcece8"><path d="m24 64 9-26 3 22-7 15Z" /><path d="m128 35 10 26-4 13-7-15Z" /><path d="m141 91-3 22-8 11 1-22Z" /></g>
+        <g className="route-floating" fill="#bcece8"><path d="m24 64 9-26 3 22-7 15Z" /><path d="m128 35 10 26-4 13-7-15Z" /></g>
         <path d="M103 104q26 7 22-21 13 23-5 37l-19-7" fill={body} />
         <path d="m56 110 3 22h15l6-19 6 19h15l3-22" fill="#3b5368" /><path d="M58 130h17v8H55Zm27 0h17l3 8H85Z" fill="#e0edef" /><path d="m57 137 17 0m12 0 17 0" stroke="#79d8ce" strokeWidth="2" />
         <path d="m57 91 15-6 8 9 8-9 15 6 5 31H52Z" fill="#487584" /><path className="route-personal-accent" d="m72 93 8 6 8-6 3 29H69Z" fill="#e0eff1" /><path d="m80 100 0 21" stroke="#85c6ca" strokeWidth="2" /><path d="M53 112h16m22 0h16" stroke="#254c61" strokeWidth="5" />
@@ -134,17 +135,16 @@ export function PetRouteArt({ path, stage = 1 }: { path: IllustratedRoute; stage
         <path d="m60 118 7-2m26 0 7 2" stroke="#76dfd0" strokeWidth="2" />
       </> : null}
       {path === "lol" ? <>
-        <path d="M106 110q25 2 23-20 19 26-18 34" fill={body} /><path d="m128 101 6-8 4 10-9 5" fill={metal} />
-        <g className="route-floating"><path d="M50 76Q22 52 23 85l10-1 0 12 11-3 10 8m56-25q28-24 27 9l-10-1 0 12-11-3-10 8" fill="#8abbd3" /><path d="M27 77 49 91m84-14-22 14" stroke="#cbe9f1" strokeWidth="1.5" /></g>
-        <path d="M59 98q21-10 42 0l7 30q-28 17-56 0Z" fill={body} /><path d="M65 100q15 11 30 0l2 27q-17 9-34 0Z" fill="#c5e2e7" /><path d="M69 115h22m-23 7h24" stroke="#90bacd" strokeWidth="1.5" />
-        <ellipse cx="60" cy="132" rx="10" ry="6" fill={body} /><ellipse cx="100" cy="132" rx="10" ry="6" fill={body} />
-        <path d="M51 52q-18-7-15-24 9 11 25 11m38 0q16 0 25-11 3 17-15 24" fill={metal} />
-        <path d="M47 62q2-22 33-22t33 22l2 21q-8 22-35 21-27 1-35-21Z" fill={body} /><path d="M52 82q28-9 56 0-1 20-28 20T52 82Z" fill="#d7ecec" stroke="none" />
-        <path d="m68 46 12-14 12 14-12 13Z" fill={metal} /><path d="m74 46 6-8 6 8-6 7Z" fill={gem} strokeWidth="1" />
-        <Face ink={ink} iris="#5da6c6" />
-        <path d="M55 98q25 17 50 0l-8 13H63Z" fill={metal} /><path className="route-personal-accent" d="m76 109 4-5 4 5-4 6Z" fill="#78cde0" strokeWidth="1" />
-        <path d="M53 101q-12-3-13 9 3 10 13 6m54-14q12-2 14 9-2 9-12 5" fill={body} />
-        <g className="route-floating"><path d="M128 79v52" stroke="#c79958" strokeWidth="5" /><path d="m117 72 11 14 11-14-5-25h-12Z" fill={gem} /><path d="m128 47 0 35m-10-21 10 5 10-5" stroke="#dafbff" strokeWidth="1.2" /><path d="m116 73 12 9 12-9-3 13-9 4-9-4Z" fill={metal} /><path d="M124 130h8" stroke={metal} strokeWidth="4" /></g>
+        <path d="M57 96q23-11 46 0l8 33q-31 11-62 0Z" fill="#ad4e68" />
+        <path d="m67 99 13 12 13-12-6 26H73Z" fill="#fff1e2" /><path d="M57 120h46" stroke={metal} strokeWidth="4" />
+        <ellipse cx="62" cy="133" rx="10" ry="5" fill="#f6dfda" /><ellipse cx="98" cy="133" rx="10" ry="5" fill="#f6dfda" />
+        <path d="M48 55 42 23q20 2 25 23m26 0q5-21 25-23l-6 32" fill="#4f4667" /><path d="m49 34 10 16m42 0 10-16" stroke="#e8b9ca" strokeWidth="5" />
+        <path d="M45 65q0-24 35-24t35 24v18q-4 21-35 21T45 83Z" fill={body} />
+        <path d="M44 68q-6-28 36-31 40 0 36 33L98 56l-2 9-20-14-14 15 1-11Z" fill="#4f4667" /><path d="M55 51q10-7 21-6" stroke="#84739a" />
+        <Face ink={ink} iris="#c3986c" y={76} />
+        <path d="m49 82 9 2m-8 4 9 1m43-5 9-2m-10 7 9-1" stroke="#ad748c" strokeWidth="1.5" />
+        <path d="m50 102-11 8 5 11 12-9m54-10 11 8-5 11-12-9" fill="#fff1e2" /><path d="m43 118 10-8m54 0 10 8" stroke="#ad4e68" strokeWidth="4" />
+        <path className="route-personal-accent" d="m76 113 4-5 4 5-4 5Z" fill={metal} strokeWidth="1" />
       </> : null}
       {path === "nexus" ? <>
         <g className="route-celestial-ring" stroke="#b7a7e6" strokeWidth="1.3"><ellipse cx="80" cy="78" rx="64" ry="38" transform="rotate(-28 80 78)" /><circle cx="25" cy="95" r="4" fill="#d6c4ef" /><circle cx="133" cy="58" r="3" fill="#a5d5e5" /></g>
@@ -160,5 +160,6 @@ export function PetRouteArt({ path, stage = 1 }: { path: IllustratedRoute; stage
         <path d="M52 104q-10-4-11 6 4 8 11 4m56-10q10-4 11 6-4 8-11 4" fill="#9990c9" />
       </> : null}
     </g>
+    <RouteProgress path={path} stage={stage} front />
   </svg>;
 }

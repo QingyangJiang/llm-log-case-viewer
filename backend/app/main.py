@@ -733,15 +733,25 @@ PET_EVOLUTION_PATHS: dict[str, dict[str, Any]] = {
     "cloud": {"name": "云梦团子", "quality": "dreamy", "traits": [["棉云耳朵", "彩虹额纹", "雨滴尾巴"], ["软云翅膀", "晚霞披风", "风铃足环"], ["晴空冠冕", "梦境领域", "虹光心核"], ["层云软甲", "晨曦翼阵", "雷雨铃铛"], ["九霄圣环", "幻梦结界", "天空王座"], ["云神化身", "万里晴空", "长梦不醒"]]},
     "pixel": {"name": "像素精怪", "quality": "digital", "traits": [["方块耳尖", "扫描额纹", "光标尾巴"], ["数据翅膀", "代码披风", "缓存光环"], ["像素冠冕", "矩阵领域", "算力核心"], ["量子像素", "递归翼阵", "霓虹装甲"], ["无限循环环", "协议王座", "虚拟结界"], ["数字神格", "全域矩阵", "永恒在线"]]},
     "wonky": {"name": "歪歪异变体", "quality": "awkward", "traits": [["参差尖牙", "皱皱触角", "大小眼花纹"], ["斑驳小翅膀", "歪斜尾鳍", "补丁披风"], ["倾斜纸冠", "毛边光圈", "咕嘟气泡场"], ["打结尾巴", "漏气翼阵", "反向护目镜"], ["掉漆王座", "卡顿领域", "吱呀心核"], ["究极毛边", "歪星圣环", "混沌咕嘟"]]},
-    "eva": {"name": "EVA · 同步机体", "quality": "sync", "traits": [["同步耳机", "警戒额纹", "紫绿装甲"], ["拘束肩甲", "核心胸灯", "脐带尾缆"], ["绝对领域", "高同步光环", "使徒感应器"], ["觉醒目镜", "超频翼板", "红海足迹"], ["初号机核心", "暴走领域", "朗基努斯光痕"], ["终局同步", "补完之环", "新世界屏障"]]},
-    "blade_soul": {"name": "剑灵 · 御剑灵兽", "quality": "sword", "traits": [["剑穗耳羽", "灵气额印", "玉佩尾坠"], ["御剑翼阵", "流云披帛", "青锋足环"], ["剑心冠冕", "御风领域", "灵脉核心"], ["万剑归宗", "龙脉战衣", "凌云剑匣"], ["天剑圣环", "剑域王座", "无相灵光"], ["剑神化身", "九天剑阵", "万古锋芒"]]},
-    "dnf": {"name": "DNF · 深渊勇者", "quality": "awakening", "traits": [["深渊角饰", "勇者额章", "史诗尾光"], ["觉醒披风", "地下城翼", "强化足环"], ["史诗冠冕", "深渊领域", "冒险核心"], ["增幅装甲", "团本光翼", "闪光轨迹"], ["太初圣环", "勇士王座", "神话结界"], ["终极觉醒", "阿拉德星幕", "深渊主宰"]]},
-    "nba": {"name": "NBA · 全明星球王", "quality": "allstar", "traits": [["护腕耳饰", "球衣额纹", "篮网尾环"], ["飞跃球翼", "冠军披风", "球鞋足环"], ["全明星冠冕", "主场领域", "绝杀核心"], ["空接翼阵", "三分光弧", "防守装甲"], ["总冠军圣环", "王朝座椅", "MVP 光辉"], ["传奇球魂", "压哨星幕", "不败主场"]]},
-    "honor": {"name": "王者 · 峡谷传说", "quality": "glory", "traits": [["峡谷耳冠", "荣耀额印", "兵线尾光"], ["回城翼纹", "战令披风", "野区足环"], ["王者冠冕", "高地领域", "水晶核心"], ["五杀翼阵", "龙坑战甲", "荣耀播报"], ["巅峰圣环", "峡谷王座", "星耀结界"], ["荣耀化身", "万军星幕", "永恒水晶"]]},
-    "valorant": {"name": "VALORANT · 战术特工", "quality": "tactical", "traits": [["战术耳麦", "准星额纹", "信标尾灯"], ["烟幕翼片", "特工披风", "静步足环"], ["终极冠冕", "爆能领域", "协议核心"], ["闪光翼阵", "无畏装甲", "侦察光标"], ["辐能圣环", "战术王座", "封锁结界"], ["王牌特工", "无畏星幕", "终局协议"]]},
-    "lol": {"name": "LOL · 符文传奇", "quality": "rune", "traits": [["符文耳坠", "召唤额印", "峡谷尾焰"], ["传送翼纹", "英雄披风", "法力足环"], ["段位冠冕", "召唤领域", "符文核心"], ["纳什翼阵", "远古战甲", "五杀光痕"], ["世界赛圣环", "传奇王座", "巨龙结界"], ["联盟化身", "符文星幕", "永恒传奇"]]},
-    "nexus": {"name": "终焉 · 次元观测者", "quality": "hidden", "hidden": True, "traits": [["未知耳环", "裂隙额印", "观测尾光"], ["次元翼膜", "虚空披风", "悖论足环"], ["无名冠冕", "折叠领域", "奇点核心"], ["时空翼阵", "观测者装甲", "逆因果轨迹"], ["终焉圣环", "维度王座", "零点结界"], ["观测者真身", "万界星幕", "不可名状之光"]]},
+    "eva": {"name": "EVA · 同步机体", "quality": "sync", "traits": [["紫绿装甲", "单角头甲", "同步目镜"], ["拘束肩甲", "核心胸灯", "脐带电缆"], ["AT 力场", "八边屏障", "领域投影"], ["核心觉醒", "装甲辉光", "觉醒核心"], ["领域扩张", "力场共鸣", "八边领域"], ["同步突破", "核心共鸣", "机体觉醒"]]},
+    "blade_soul": {"name": "剑灵 · 御剑灵兽", "quality": "sword", "traits": [["灵族长耳", "青玉飞剑", "灵剑剑穗"], ["流云披帛", "玉佩腰带", "青锋护手"], ["双剑护身", "灵气流转", "剑穗飘带"], ["御剑剑阵", "剑气环绕", "灵剑共鸣"], ["流云剑气", "剑阵展开", "剑心护持"], ["剑心通明", "飞剑齐鸣", "灵气归一"]]},
+    "dnf": {"name": "DNF · 深渊勇者", "quality": "awakening", "traits": [["银发剑士", "鬼手印记", "冒险长剑"], ["鬼手锁链", "皮革护甲", "剑柄护手"], ["血气觉醒", "锁链护腕", "血色剑气"], ["巨剑锋芒", "觉醒剑痕", "阿拉德徽记"], ["剑痕爆发", "鬼手辉光", "巨剑重斩"], ["冒险者荣誉", "阿拉德勇士", "觉醒锋芒"]]},
+    "nba": {"name": "NBA · 全明星球王", "quality": "allstar", "traits": [["新秀球衣", "运动发带", "圆头球鞋"], ["运动护臂", "吸汗护腕", "训练队服"], ["全明星徽章", "球衣金边", "比赛用球"], ["冠军奖杯", "夺冠纪念", "球场荣誉"], ["主场聚光", "球场边线", "全明星之夜"], ["传奇球星", "荣誉金星", "冠军纪念章"]]},
+    "honor": {"name": "王者 · 峡谷传说", "quality": "glory", "traits": [["入梦绒耳", "梦纹额饰", "信物吊坠"], ["梦力泡泡", "幻梦绒毛", "寻梦足迹"], ["梦境护盾", "梦力流转", "绒耳灵光"], ["梦境环游", "泡泡轨迹", "幻梦涟漪"], ["幻梦森林", "寻梦花叶", "梦泡簇拥"], ["寻梦之旅", "梦力共鸣", "入梦之灵"]]},
+    "valorant": {"name": "VALORANT · 战术特工", "quality": "tactical", "traits": [["白发束髻", "青蓝战衣", "战术手套"], ["乘风起势", "轻装护臂", "风刃护手"], ["浮空飞刃", "上升气流", "风势环绕"], ["五刃齐发", "逐风轨迹", "精准飞刃"], ["疾风掠影", "风流交错", "机动轨迹"], ["王牌时刻", "飞刃齐鸣", "疾风纪念章"]]},
+    "lol": {"name": "LOL · 符文传奇", "quality": "rune", "traits": [["灵狐双耳", "九尾绒毛", "面颊狐纹"], ["灵魂宝珠", "红白灵衣", "金边腰饰"], ["狐火环绕", "灵珠辉光", "灵魂流光"], ["灵魄突袭", "狐尾流转", "灵火足迹"], ["九尾舒展", "灵魂涟漪", "狐火共鸣"], ["灵魂共鸣", "灵狐辉光", "九尾流光"]]},
+    "nexus": {"name": "终焉 · 次元观测者", "quality": "hidden", "hidden": True, "traits": [["月相额纹", "星河绒羽", "观测尾光"], ["月相流转", "弦月伴星", "月光轨迹"], ["星羽展开", "绒羽流光", "次元羽翼"], ["双重星轨", "星环交汇", "观测星体"], ["星图浮现", "星座连线", "星幕绘卷"], ["次元观测", "观测者印记", "群星共鸣"]]},
 }
+PET_ILLUSTRATED_PATHS = frozenset({"eva", "blade_soul", "dnf", "nba", "honor", "valorant", "lol", "nexus"})
+PET_ILLUSTRATED_STAGE_THRESHOLDS = (1, 3, 6, 9, 12, 15)
+
+
+def pet_evolution_trait_tier(path: str, completed_stage: int) -> int:
+    if path in PET_ILLUSTRATED_PATHS:
+        return max(0, sum(completed_stage >= threshold for threshold in PET_ILLUSTRATED_STAGE_THRESHOLDS) - 1)
+    return min(max(0, completed_stage - 1) // 2, len(PET_EVOLUTION_PATHS[path]["traits"]) - 1)
+
+
 PET_EVOLUTION_PATH_LOTTERY = ["starlight"] * 16 + ["guardian"] * 15 + ["forest"] * 15 + ["storm"] * 14 + ["ocean"] * 12 + ["ember"] * 11 + ["cloud"] * 10 + ["pixel"] * 8 + ["wonky"] * 9 + ["eva"] * 7 + ["blade_soul"] * 7 + ["dnf"] * 7 + ["nba"] * 6 + ["honor"] * 7 + ["valorant"] * 7 + ["lol"] * 7 + ["nexus"] * 2
 PET_PUBLIC_EVOLUTION_PATHS = tuple(path for path, definition in PET_EVOLUTION_PATHS.items() if not definition.get("hidden"))
 PET_EQUIPMENT_SLOTS = {"head": ("头饰", "♛"), "face": ("面饰", "◉"), "neck": ("颈饰", "✦"), "back": ("背饰", "⌁"), "tail": ("尾饰", "◇")}
@@ -3177,9 +3187,12 @@ def evolve_pet(body: PetEvolutionBody, user: CurrentUser, db: DB) -> dict[str, A
         next_traits = list(evolution.traits or [])
         for stage_offset in range(stage_gain):
             next_stage = evolution.stage + stage_offset
-            trait_pool = path["traits"][min(next_stage // 2, len(path["traits"]) - 1)]
+            trait_pool = path["traits"][pet_evolution_trait_tier(evolution.path, next_stage + 1)]
             trait = secrets.choice(trait_pool)
-            if next_stage >= len(path["traits"]) * 2:
+            if evolution.path in PET_ILLUSTRATED_PATHS:
+                if next_stage + 1 > 15:
+                    trait = f"{trait} · 进化{next_stage + 1}阶"
+            elif next_stage >= len(path["traits"]) * 2:
                 trait = f"{trait} · 星环{next_stage - len(path['traits']) * 2 + 1}"
             traits.append(trait)
             next_traits.append(trait)

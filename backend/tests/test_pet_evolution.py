@@ -35,6 +35,17 @@ class PetEvolutionTest(unittest.TestCase):
         self.db.commit()
         return opponent, profile, progress, evolution, collection
 
+    def test_illustrated_traits_follow_visible_milestones(self) -> None:
+        expected = {1: 0, 2: 0, 3: 1, 5: 1, 6: 2, 8: 2, 9: 3, 11: 3, 12: 4, 14: 4, 15: 5, 16: 5, 99: 5}
+        for route in api.PET_ILLUSTRATED_PATHS:
+            for stage, tier in expected.items():
+                with self.subTest(route=route, stage=stage):
+                    self.assertEqual(api.pet_evolution_trait_tier(route, stage), tier)
+        # Existing nine routes retain their original two-stage trait cadence.
+        for route in api.PET_EVOLUTION_PATHS.keys() - api.PET_ILLUSTRATED_PATHS:
+            for stage in range(1, 20):
+                self.assertEqual(api.pet_evolution_trait_tier(route, stage), min((stage - 1) // 2, 5))
+
     def test_existing_levels_credit_one_chance_per_upgrade_once(self) -> None:
         _, _, evolution, _ = api.get_or_create_pet(self.db, self.user.id)
         self.assertEqual(api.pet_level(80), 3)

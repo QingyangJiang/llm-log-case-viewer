@@ -1,0 +1,50 @@
+/* Clothing uses the character's illustration coordinates and leaves eyes/mouth clear. */
+.pet-creature > .pet-fashion-art {
+  position: absolute;
+  left: -18.5px;
+  top: -18px;
+  width: 70px;
+  height: 70px;
+  max-width: none;
+  overflow: visible;
+  pointer-events: none;
+  z-index: 6;
+}
+.pet-creature > .pet-fashion-art-headwear,
+.pet-creature > .pet-fashion-art-handheld { z-index: 7; }
+.pet-creature:not(.pet-illustrated) > .pet-fashion-footwear { bottom: -9px; }
+.pet-fashion-icon { display: block; width: 100%; height: 100%; padding: 2px; overflow: visible; }
+.pet-fashion-sets > div > article > .pet-fashion-set-preview {
+  display: block;
+  position: relative;
+  height: 116px;
+  margin: 0 0 8px;
+  border-radius: 14px;
+  background: radial-gradient(ellipse at 50% 70%, #fffdf6 10%, color-mix(in srgb, var(--fashion-primary) 10%, #f8f7f1) 80%);
+  overflow: hidden;
+}
+.pet-fashion-set-preview .pet-creature,
+.pet-fashion-set-preview .pet-creature.pet-illustrated {
+  left: calc(50% - 16.5px);
+  top: 39px;
+  transform: scale(1.65);
+}
+.pet-fashion-sets > div > article.locked .pet-fashion-set-preview { opacity: .65; }
+.pet-fashion-current-slots > button > i,
+.pet-fashion-grid > button > i,
+.pet-fashion-sets > div > article > div > i,
+.pet-wardrobe-items > i { overflow: visible; }
+.pet-fashion-grid > button.locked .pet-fashion-icon { opacity: .55; }
+.pet-route-evolution-preview { margin: 16px 0; padding: 14px; background: #f6f5ef; border: 1px solid #e5e5d9; border-radius: 16px; }
+.pet-route-evolution-preview > header { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.pet-route-evolution-preview > header strong { font-size: 13px; color: #425148; }
+.pet-route-evolution-preview > header small { font-size: 10px; color: #7c857c; }
+.pet-route-evolution-preview > div { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
+.pet-route-evolution-preview figure { margin: 0; padding: 6px; background: #fffefa; border: 1px solid #e5e5db; border-radius: 12px; min-width: 0; }
+.pet-route-evolution-preview figure.unlocked { border-color: #a8bd92; }
+.pet-route-evolution-preview figcaption { display: flex; flex-direction: column; gap: 3px; text-align: center; font-size: 10px; color: #6b7569; }
+.pet-route-evolution-preview figcaption b { color: #425148; font-size: 11px; }
+.pet-route-evolution-preview figcaption small { font-size: 9px; color: #999b8f; }
+@media (max-width: 700px) {
+  .pet-route-evolution-preview > div { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
