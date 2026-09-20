@@ -1,0 +1,85 @@
+/* One illustration, with a stable face anchor for the existing wardrobe layers. */
+.pet-creature.pet-illustrated {
+  width: 33px;
+  height: 32px;
+  min-width: 0;
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  right: auto;
+  bottom: auto;
+  background: none;
+  box-shadow: none;
+}
+.pet-route-illustration { display: block; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
+.pet-illustrated > .pet-route-illustration { position: absolute; z-index: 0; width: 70px; height: 70px; max-width: none; left: -18.5px; top: -18px; filter: drop-shadow(0 2px 1px rgba(30,35,53,.12)); }
+.pet-illustrated > .pet-fashion,.pet-illustrated > .pet-accessory,.pet-illustrated > .pet-equipment { z-index: 6; }
+.pet-illustrated > .pet-fashion-outfit { top: 23px; bottom: -8px; }
+.pet-illustrated > .pet-fashion-outerwear { z-index: -1; top: 20px; height: 24px; }
+.pet-illustrated > .pet-fashion-footwear { bottom: -13px; }
+.pet-illustrated > .pet-fashion-handheld { bottom: -6px; }
+.pet-illustrated .route-personal-accent { fill: var(--pet-color); }
+.pet-illustrated > .pet-equipment-neck { top: 24px; }
+.pet-lottery-orbit .pet-creature.pet-illustrated { left: 49px; top: 43px; transform: scale(1.65); }
+.pet-home-orbit .pet-creature.pet-illustrated { left: 37px; top: 32px; transform: scale(1.65); }
+.pet-wardrobe-preview .pet-creature.pet-illustrated { left: 55px; top: 49px; transform: scale(1.9); }
+.pet-lookbook-preview .pet-creature.pet-illustrated { top: 20px; transform: scale(1.15); }
+.pet-stage-large .pet-creature.pet-illustrated { top: 59px; transform: scale(2.1); }
+.pet-stage-large:hover .pet-creature.pet-illustrated { transform: translateY(-2px) rotate(-2deg) scale(2.1); }
+.pet-home-main-pet .pet-creature.pet-illustrated { top: 35px; transform: scale(2.7); }
+.pet-battle-versus .pet-creature.pet-illustrated { top: 41px; transform: translateX(-50%) scale(1.95); }
+.pet-route-illustration .route-floating { animation: route-float 4s ease-in-out infinite; }
+.pet-route-illustration .route-radiance { animation: route-glimmer 5s ease-in-out infinite; }
+.pet-route-illustration .route-ascension { animation: route-float 5s ease-in-out infinite; }
+.pet-route-illustration .route-celestial-ring { transform-origin: 80px 78px; animation: route-orbit 12s ease-in-out infinite; }
+@keyframes route-float { 0%,100% { translate: 0 0; } 50% { translate: 0 -2.5px; } }
+@keyframes route-glimmer { 0%,100% { opacity: .5; } 50% { opacity: 1; } }
+@keyframes route-orbit { 0%,100% { transform: rotate(-6deg); } 50% { transform: rotate(6deg); } }
+
+/* The codex uses the actual pet art, including the undiscovered-state boundary. */
+.pet-route-gallery { margin: 4px 12px 18px; padding: 15px; border: 1px solid #536359; border-radius: 16px; background: linear-gradient(140deg,#24362e,#1c2a24); }
+.pet-route-gallery > header { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; padding: 1px 0 14px; }
+.pet-route-gallery > header span { display: block; color: #acbcac; font-size: 8px; font-weight: 650; letter-spacing: .18em; }
+.pet-route-gallery > header strong { display: block; margin-top: 5px; color: #f7f5ea; font-size: 17px; font-weight: 650; letter-spacing: .08em; }
+.pet-route-gallery > header small { color: #b2c1b6; font-size: 9px; }
+.pet-route-gallery > div { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 9px; }
+.pet-route-gallery article { position: relative; min-width: 0; padding: 0 8px 12px; overflow: hidden; border: 1px solid #d9e0d5; border-radius: 12px; background: #fbfcf7; color: #354337; text-align: center; transition: border-color .18s,transform .18s,box-shadow .18s; }
+.pet-route-gallery article:hover { transform: translateY(-3px); border-color: var(--route-accent); box-shadow: 0 6px 16px #0c171c30; }
+.pet-route-gallery article.active { border-color: #c9e79f; box-shadow: 0 0 0 2px #c9e79f; }
+.pet-route-portrait { position: relative; height: 116px; margin: 0 -8px 7px; display: grid; place-items: center; background: radial-gradient(ellipse at 50% 50%,var(--route-soft) 0 42%,transparent 43%),linear-gradient(160deg,#fff,#f0f3ee); }
+.pet-route-portrait::after { content: ""; position: absolute; width: 84px; height: 84px; border: 1px solid color-mix(in srgb,var(--route-accent) 30%,transparent); border-radius: 50%; pointer-events: none; }
+.pet-route-portrait > .pet-route-illustration { position: relative; z-index: 1; width: 112px; height: 112px; }
+.pet-route-portrait > span { position: absolute; z-index: 2; right: 6px; top: 6px; padding: 3px 5px; border: 1px solid #a4c588; border-radius: 6px; background: #e9f5d8; color: #46603e; font-size: 7px; }
+.pet-route-gallery article > strong { display: block; min-height: 27px; font-size: 10px; line-height: 1.35; font-weight: 750; overflow-wrap: anywhere; }
+.pet-route-gallery article > small { display: block; margin-top: 2px; color: #78827a; font-size: 8px; line-height: 1.5; }
+.pet-route-gallery article.undiscovered { border-color: #716d8f; background: #333449; color: #e5dff5; }
+.pet-route-gallery article.undiscovered > small { color: #b7b4cd; }
+.undiscovered .pet-route-portrait { background: radial-gradient(circle at 50% 52%,#645c8644,transparent 60%),#2c2e43; }
+.pet-route-mystery { position: relative; display: grid; place-items: center; gap: 6px; color: #c9c2e4; }
+.pet-route-mystery > i { position: absolute; width: 60px; height: 60px; border: 1px dashed #b3a6d666; border-radius: 50%; transform: rotate(-20deg) scaleY(.68); }
+.pet-route-mystery > b { font-family: Georgia,serif; font-size: 36px; font-weight: 400; text-shadow: 0 0 20px #b2a5ec66; }
+.pet-route-mystery > small { font-size: 5px; letter-spacing: .22em; }
+.pet-targeted-reroute > div button:has(.route-choice-icon) { min-height: 62px; gap: 6px; padding: 4px 6px; }
+.pet-targeted-reroute > div i.route-choice-icon { width: 42px; height: 48px; flex: 0 0 42px; border-radius: 8px; background: #edf3ed; }
+.pet-targeted-reroute .route-choice-icon .pet-route-illustration { width: 46px; height: 46px; margin-left: -2px; }
+@media (max-width:760px) {
+  .pet-route-gallery > div { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .pet-route-portrait { height: 132px; }
+  .pet-route-portrait > .pet-route-illustration { width: 128px; height: 128px; }
+  .pet-route-gallery article > strong { min-height: 0; font-size: 11px; }
+  .pet-route-gallery article > small { font-size: 9px; }
+}
+@media (max-width:560px) {
+  .pet-home-orbit .pet-creature.pet-illustrated { left: 27px; top: 23px; transform: scale(1.3); }
+}
+@media (max-width:480px) {
+  .pet-stage-large .pet-creature.pet-illustrated { top: 45px; transform: scale(1.75); }
+  .pet-stage-large:hover .pet-creature.pet-illustrated { transform: translateY(-2px) rotate(-2deg) scale(1.75); }
+  .pet-route-gallery { padding: 10px; }
+  .pet-route-gallery > header { align-items: flex-start; flex-direction: column; gap: 5px; }
+}
+@media (prefers-reduced-motion:reduce) {
+  .pet-route-illustration .route-floating,.pet-route-illustration .route-radiance,.pet-route-illustration .route-ascension,.pet-route-illustration .route-celestial-ring { animation: none; }
+  .pet-route-gallery article { transition: none; }
+}
