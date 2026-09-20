@@ -26,7 +26,6 @@ export function RouteProgress({ path, stage, front = false }: { path: Illustrate
     {path === "eva" && c ? <path d="m70 113 10-8 10 8-10 11Z" fill="#ff986a" stroke="#ffe8ad" /> : null}
     {path === "blade_soul" && a ? <path d="M43 108q-19 18-25 10m19-5q-4 19-17 20" stroke="#6bbfb5" strokeWidth="3" /> : null}
     {path === "dnf" && a ? <g><path d="m47 96-10 9 4 16 13-12Z" fill="#c75360" stroke="#692f52" /><path d="m38 101 10 7m-11-1 10 7m-8-1 7 6" stroke="#e5ced5" strokeWidth="3" /></g> : null}
-    {path === "dnf" && c ? <path d="m116 47 9-16 13 27-7 46" stroke="#ffc479" strokeWidth="4" /> : null}
     {path === "nba" && a ? <path d="m38 99-4 14" stroke="#665296" strokeWidth="8" /> : null}
     {path === "nba" && b ? <path d="m59 94 3-5 3 5-3 4Z" fill="#ffe295" stroke="#fff5d6" strokeWidth="1" /> : null}
     {path === "nba" && c ? <g fill="#eec06e" stroke="#9b713c"><path d="M19 105h19v10q0 12-9 12t-10-12Z" /><path d="M19 108h-7q-3 14 11 13m15-13h7q3 14-11 13M29 127v8m-8 0h16" /><circle cx="29" cy="110" r="5" fill="#fff0b3" /></g> : null}
@@ -45,7 +44,15 @@ export function RouteProgress({ path, stage, front = false }: { path: Illustrate
     {path === "nba" ? <g stroke="#cead73">{d ? <><path d="m24 19 26 107M136 19l-26 107" stroke="#edd7a3" strokeWidth="11" opacity=".4" /><path d="M17 141h126m-119-5 18-10m94 10-18-10" /></> : null}{e ? <g fill="#e9bf72" strokeWidth="1"><path d="m34 23 3 5 6 1-4 4 1 6-6-3-5 3 1-6-4-4 6-1Z" /><path d="m123 23 3 5 6 1-4 4 1 6-6-3-5 3 1-6-4-4 6-1Z" /></g> : null}</g> : null}
     {path === "honor" ? <g stroke="#ba91c6">{b ? <ellipse cx="80" cy="86" rx="62" ry="61" strokeWidth="4" strokeDasharray="65 12" opacity=".55" /> : null}{c ? <path d="M15 109q50 48 126-16M22 116q14-26 25-6" stroke="#e5b7ce" strokeWidth="5" /> : null}{d ? <g fill="#d9c4ec"><circle cx="27" cy="53" r="9" /><circle cx="135" cy="71" r="7" /><circle cx="115" cy="25" r="6" /></g> : null}{e ? <path d="M18 139q-4-14 8-20m-3 11-11-6m126 15q4-14-8-20m3 11 11-6" stroke="#8cbaa0" strokeWidth="4" /> : null}</g> : null}
     {path === "valorant" ? <g stroke="#74b8c1" fill="#e1ffff">{b ? <path d="m17 86 5-24 4 21-4 9Z" /> : null}{c ? <path d="m80 7 4 18-4 11-4-11Zm62 61 4 18-4 11-4-11Z" /> : null}{d ? <path d="M17 54Q2 122 75 140m70-73q5-30-20-43" stroke="#8ed7d3" strokeWidth="4" fill="none" /> : null}{e ? <path d="m7 107 19 7m107-75 18 4M37 141l15-8" stroke="#5eaabd" strokeWidth="3" /> : null}</g> : null}
-    {path === "lol" ? <g stroke="#897c9f">{([-4,-3,-2,-1,0,1,2,3,4].map((index) => index * (d ? 16 : c ? 12 : 7))).map((angle) => <path key={angle} transform={`rotate(${angle} 80 120)`} d="M73 124Q47 65 80 17q33 48 7 107Z" fill="#edf1f7" />)}{b ? <g stroke="#84c6db" fill="#bbe9fa"><path d="M18 85q-9-10 3-23-3 10 5 13 4 13-8 10Zm120 0q-9-10 3-23-3 10 5 13 4 13-8 10Z" /></g> : null}{e ? <path d="M9 115q71 47 142 0" stroke="#99cce1" strokeWidth="4" /> : null}</g> : null}
+    {path === "lol" ? <g stroke="#b4a1b7" strokeWidth="1.35">
+      <g transform="translate(80 0) scale(.84 1) translate(-80 0)">{[-4,4,-3,3,-2,2,-1,1,0].map((index) => <g key={index} transform={`translate(80 126) rotate(${index * (e ? 15 : d ? 14 : c ? 12 : b ? 10 : a ? 9 : 8)}) scale(${e ? 1.02 : d ? .98 : c ? .94 : b ? .86 : a ? .79 : .72}) translate(-80 -126)`}>
+        <path d="M76 128C48 113 43 64 66 29c-5 31 27 43 26 69q1 20-16 30Z" fill={index % 2 ? "#eee1ee" : "#fff6ef"} />
+        <path d="M66 29c-4 18 5 33 13 43q-16-5-20-13" fill="#ddd4e8" stroke="none" />
+        <path d="M77 115q-17-21-14-41" fill="none" stroke="#e2cfdc" />
+      </g>)}</g>
+      {b ? <g stroke="#84c6db" fill="#bbe9fa"><path d="M18 85q-9-10 3-23-3 10 5 13 4 13-8 10Zm124 0q-9-10 3-23-3 10 5 13 4 13-8 10Z" /></g> : null}
+      {e ? <path d="M9 115q71 47 142 0" stroke="#99cce1" strokeWidth="4" fill="none" /> : null}
+    </g> : null}
     {path === "nexus" ? <g stroke="#c3abeb">{b ? <path d="m42 91-26-28 5 30-11 5 34 20m74-27 26-28-5 30 11 5-34 20" fill="#8274b1" /> : null}{c ? <ellipse cx="80" cy="79" rx="67" ry="43" transform="rotate(30 80 79)" /> : null}{d ? <path d="m22 39 31-23 59 3 25 27m-84-30 27 18 32-15" strokeDasharray="3 4" /> : null}{e ? <circle cx="80" cy="80" r="74" strokeWidth="3" strokeDasharray="1 13" /> : null}</g> : null}
   </g>;
 }

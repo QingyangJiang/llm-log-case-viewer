@@ -46,7 +46,7 @@
 
 “小镜暖暖”12 个主题的帽子、衣服、披肩和手持物采用独立矢量轮廓，按基础小镜与进化角色分别对齐；圆头鞋保留原有样式。套装、单件与收藏使用相同绘制部件，支持混搭和原有试穿/保存流程；时装 ID、解锁等级与收藏数据保持兼容。
 
-[进化阶段对照](docs/pet-route-evolution.png) · [十二套时装预览](docs/wardrobe-preview.png) · [设计与验证说明](docs/pet-visual-design.md)
+[鬼剑与灵狐重绘对照](docs/pet-character-refinement.png) · [进化阶段对照](docs/pet-route-evolution.png) · [十二套时装预览](docs/wardrobe-preview.png) · [设计与验证说明](docs/pet-visual-design.md)
 
 
 ![新路线角色预览](docs/pet-route-preview.png)
