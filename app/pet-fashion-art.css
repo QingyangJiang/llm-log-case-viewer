@@ -35,16 +35,44 @@
 .pet-fashion-sets > div > article > div > i,
 .pet-wardrobe-items > i { overflow: visible; }
 .pet-fashion-grid > button.locked .pet-fashion-icon { opacity: .55; }
-.pet-route-evolution-preview { margin: 16px 0; padding: 14px; background: #f6f5ef; border: 1px solid #e5e5d9; border-radius: 16px; }
+.pet-route-evolution-preview {
+  position: relative;
+  isolation: isolate;
+  margin: 16px 12px 20px;
+  padding: 14px;
+  overflow: hidden;
+  background: #f6f5ef;
+  border: 1px solid #e5e5d9;
+  border-radius: 16px;
+}
 .pet-route-evolution-preview > header { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
 .pet-route-evolution-preview > header strong { font-size: 13px; color: #425148; }
 .pet-route-evolution-preview > header small { font-size: 10px; color: #7c857c; }
-.pet-route-evolution-preview > div { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
-.pet-route-evolution-preview figure { margin: 0; padding: 6px; background: #fffefa; border: 1px solid #e5e5db; border-radius: 12px; min-width: 0; }
+.pet-route-evolution-preview > div { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); align-items: stretch; gap: 8px; margin-top: 12px; }
+.pet-route-evolution-preview figure {
+  min-width: 0;
+  margin: 0;
+  padding: 6px 6px 8px;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  align-content: start;
+  overflow: hidden;
+  background: #fffefa;
+  border: 1px solid #e5e5db;
+  border-radius: 12px;
+}
+.pet-route-evolution-preview figure > .pet-route-illustration {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1;
+  overflow: hidden;
+}
 .pet-route-evolution-preview figure.unlocked { border-color: #a8bd92; }
-.pet-route-evolution-preview figcaption { display: flex; flex-direction: column; gap: 3px; text-align: center; font-size: 10px; color: #6b7569; }
+.pet-route-evolution-preview figcaption { min-height: 48px; display: flex; flex-direction: column; justify-content: flex-start; gap: 3px; text-align: center; font-size: 10px; line-height: 1.25; color: #6b7569; }
 .pet-route-evolution-preview figcaption b { color: #425148; font-size: 11px; }
 .pet-route-evolution-preview figcaption small { font-size: 9px; color: #999b8f; }
+.pet-route-evolution-preview + .pet-path-pool { position: relative; z-index: 1; padding-top: 0; }
 @media (max-width: 700px) {
+  .pet-route-evolution-preview { margin-right: 8px; margin-left: 8px; padding: 10px; }
   .pet-route-evolution-preview > div { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
