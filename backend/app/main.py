@@ -644,6 +644,11 @@ class PetProfileUpdate(BaseModel):
 class PetEvolutionBody(BaseModel):
     spend: int = Field(ge=1, le=10)
     target_path: str | None = Field(default=None, max_length=30)
+    persona: str | None = Field(default=None, max_length=20)
+
+
+class PetPersonaBody(BaseModel):
+    persona: str = Field(min_length=1, max_length=20)
 
 
 class PetEquipmentBody(BaseModel):
@@ -754,6 +759,9 @@ def pet_evolution_trait_tier(path: str, completed_stage: int) -> int:
 
 PET_EVOLUTION_PATH_LOTTERY = ["starlight"] * 16 + ["guardian"] * 15 + ["forest"] * 15 + ["storm"] * 14 + ["ocean"] * 12 + ["ember"] * 11 + ["cloud"] * 10 + ["pixel"] * 8 + ["wonky"] * 9 + ["eva"] * 7 + ["blade_soul"] * 7 + ["dnf"] * 7 + ["nba"] * 6 + ["honor"] * 7 + ["valorant"] * 7 + ["lol"] * 7 + ["nexus"] * 2
 PET_PUBLIC_EVOLUTION_PATHS = tuple(path for path, definition in PET_EVOLUTION_PATHS.items() if not definition.get("hidden"))
+PET_COLLAB_PATHS = PET_ILLUSTRATED_PATHS
+PET_PUBLIC_COLLAB_PATHS = tuple(path for path in PET_PUBLIC_EVOLUTION_PATHS if path in PET_COLLAB_PATHS)
+PET_COLLAB_PATH_LOTTERY = [path for path in PET_EVOLUTION_PATH_LOTTERY if path in PET_COLLAB_PATHS]
 PET_EQUIPMENT_SLOTS = {"head": ("头饰", "♛"), "face": ("面饰", "◉"), "neck": ("颈饰", "✦"), "back": ("背饰", "⌁"), "tail": ("尾饰", "◇")}
 PET_EQUIPMENT_THEMES = ["星尘", "森林", "雷云", "海盐", "琥珀", "月影", "霓虹", "机械", "云朵", "蜂蜜", "像素", "纸片"]
 PET_EQUIPMENT_AFFIXES = [("微光", "common"), ("鲜活", "uncommon"), ("幻彩", "rare"), ("秘仪", "epic"), ("神话", "legendary")]
@@ -774,6 +782,14 @@ PET_WARDROBE_KEY = "__wardrobe_presets__"
 PET_FASHION_KEY = "__fashion_equipped__"
 PET_WHEEL_STATE_KEY = "__prize_wheel__"
 PET_TARGETED_EVOLUTION_KEY = "__targeted_evolution__"
+PET_PERSONAS_KEY = "__pet_personas__"
+PET_PERSONA_ORIGIN = "origin"
+PET_PERSONA_COLLAB = "collab"
+PET_SECONDARY_UNLOCK_COST = 10
+PET_SECONDARY_UNLOCK_STAGE = 6
+PET_SECONDARY_BASE_RATE = 5
+PET_SECONDARY_RATE_CAP = 50
+PET_SECONDARY_HARD_PITY = 12
 PET_MAX_PENDING_DROPS = 10
 PET_MAX_WARDROBE_PRESETS = 8
 PET_WHEEL_HISTORY_LIMIT = 30
@@ -1266,26 +1282,112 @@ def pet_evolution_success_rate(collection: PetCollection) -> int:
     return min(55, 10 + echo + min(30, collection.pity * (2 + steady)) + equipment_stats["evolution_bonus"])
 
 
+def pet_personas_state(collection: PetCollection) -> dict[str, Any]:
+    raw = (collection.inventory or {}).get(PET_PERSONAS_KEY, {})
+    if not isinstance(raw, dict):
+        raw = {}
+    collab_raw = raw.get("collab")
+    collab: dict[str, Any] | None = None
+    if isinstance(collab_raw, dict) and collab_raw.get("unlocked"):
+        path = str(collab_raw.get("path") or "")
+        stage = max(0, int(collab_raw.get("stage", 0) or 0))
+        if path not in PET_COLLAB_PATHS or stage < 1:
+            path, stage = "", 0
+        collab = {
+            "unlocked": True,
+            "path": path,
+            "stage": stage,
+            "variant_seed": max(0, min(7, int(collab_raw.get("variant_seed", 0) or 0))),
+            "traits": [item for item in collab_raw.get("traits", []) if isinstance(item, str)][-24:] if isinstance(collab_raw.get("traits"), list) else [],
+            "history": [item for item in collab_raw.get("history", []) if isinstance(item, dict)][:50] if isinstance(collab_raw.get("history"), list) else [],
+            "pity": max(0, min(PET_SECONDARY_HARD_PITY, int(collab_raw.get("pity", 0) or 0))),
+            "target": str(collab_raw.get("target") or "") if str(collab_raw.get("target") or "") in PET_PUBLIC_COLLAB_PATHS else "",
+            "target_failures": max(0, min(3, int(collab_raw.get("target_failures", 0) or 0))),
+            "unlocked_at": str(collab_raw.get("unlocked_at") or ""),
+        }
+    active = str(raw.get("active") or PET_PERSONA_ORIGIN)
+    if active != PET_PERSONA_COLLAB or collab is None:
+        active = PET_PERSONA_ORIGIN
+    return {"active": active, "collab": collab}
+
+
+def set_pet_personas_state(collection: PetCollection, state: dict[str, Any]) -> None:
+    inventory = dict(collection.inventory or {})
+    inventory[PET_PERSONAS_KEY] = state
+    collection.inventory = inventory
+    collection.updated_at = utcnow()
+
+
+def pet_secondary_evolution_success_rate(collection: PetCollection, collab: dict[str, Any]) -> int:
+    if int(collab.get("pity", 0) or 0) >= PET_SECONDARY_HARD_PITY:
+        return 100
+    echo = pet_active_skill_level(collection, "evolution_echo")
+    steady = pet_active_skill_level(collection, "steady_heart")
+    equipment_stats, _ = pet_equipment_state(collection)
+    return min(
+        PET_SECONDARY_RATE_CAP,
+        PET_SECONDARY_BASE_RATE + echo + min(30, int(collab.get("pity", 0) or 0) * (2 + steady)) + equipment_stats["evolution_bonus"],
+    )
+
+
+def pet_secondary_targeted_rate(collection: PetCollection, collab: dict[str, Any], target_path: str = "") -> int:
+    failures = int(collab.get("target_failures", 0) or 0) if target_path and collab.get("target") == target_path else 0
+    blessings = pet_targeted_evolution_state(collection)["blessings"]
+    return min(100, PET_TARGETED_EVOLUTION_BASE_RATE + failures * PET_TARGETED_EVOLUTION_FAILURE_BONUS + blessings * PET_TARGETED_EVOLUTION_BLESSING_BONUS)
+
+
+def pet_owned_evolution_paths(db: Session, excluded_owner: tuple[int, str] | None = None) -> list[str]:
+    """Return paths held by both persona slots while optionally ignoring one slot."""
+    paths: list[str] = []
+    for owner_id, path, stage in db.execute(select(PetEvolution.user_id, PetEvolution.path, PetEvolution.stage)).all():
+        if excluded_owner == (owner_id, PET_PERSONA_ORIGIN):
+            continue
+        if stage > 0 and path in PET_EVOLUTION_PATHS:
+            paths.append(path)
+    for collection in db.scalars(select(PetCollection)).all():
+        if excluded_owner == (collection.user_id, PET_PERSONA_COLLAB):
+            continue
+        collab = pet_personas_state(collection)["collab"]
+        if collab and collab["stage"] > 0 and collab["path"] in PET_EVOLUTION_PATHS:
+            paths.append(collab["path"])
+    return paths
+
+
 def pet_evolution_route_counts(db: Session, user_id: int) -> dict[str, int]:
-    """Read current ownership under the evolution transaction's allocation lock."""
-    paths = db.scalars(
+    """Count routes held by other users across both persona slots."""
+    primary_paths = db.scalars(
         select(PetEvolution.path)
         .where(PetEvolution.user_id != user_id, PetEvolution.stage > 0)
     ).all()
+    secondary_paths: list[str] = []
+    for collection in db.scalars(select(PetCollection).where(PetCollection.user_id != user_id)).all():
+        collab = pet_personas_state(collection)["collab"]
+        if collab and collab["stage"] > 0:
+            secondary_paths.append(collab["path"])
     counts = {path: 0 for path in PET_EVOLUTION_PATHS}
-    for path in paths:
+    for path in [*primary_paths, *secondary_paths]:
         if path in counts:
             counts[path] += 1
     return counts
 
 
-def choose_pet_evolution_path(db: Session, user_id: int, excluded: set[str] | None = None) -> str:
+def choose_pet_evolution_path(
+    db: Session,
+    user_id: int,
+    excluded: set[str] | None = None,
+    *,
+    persona: str = PET_PERSONA_ORIGIN,
+    pool: list[str] | None = None,
+) -> str:
     """Allocate only unowned routes; exhaustion must never create a duplicate."""
     excluded = excluded or set()
-    weighted = [path for path in PET_EVOLUTION_PATH_LOTTERY if path not in excluded]
+    weighted = [path for path in (pool or PET_EVOLUTION_PATH_LOTTERY) if path not in excluded]
     if not weighted:
         raise HTTPException(409, "暂无空闲进化路线，本次未扣券；请等待其他宠物释放路线")
-    counts = pet_evolution_route_counts(db, user_id)
+    counts = {path: 0 for path in PET_EVOLUTION_PATHS}
+    for path in pet_owned_evolution_paths(db, (user_id, persona)):
+        if path in counts:
+            counts[path] += 1
     unused = {path for path in weighted if counts[path] == 0}
     if unused:
         return secrets.choice([path for path in weighted if path in unused])
@@ -1393,6 +1495,48 @@ def pet_collection_payload(collection: PetCollection, level: int = PET_MAX_LEVEL
 def pet_dict(profile: PetProfile, progress: PetProgressV2, evolution: PetEvolution, collection: PetCollection) -> dict[str, Any]:
     xp = round(progress.xp_units / 5, 1)
     level = pet_level(xp)
+    shared = pet_collection_payload(collection, level)
+    personas_state = pet_personas_state(collection)
+    primary_targeted = pet_targeted_evolution_state(collection)
+    origin = {
+        "id": PET_PERSONA_ORIGIN,
+        "label": "本源小镜",
+        "unlocked": True,
+        "stage": evolution.stage,
+        "path": evolution.path,
+        "name": PET_EVOLUTION_PATHS.get(evolution.path, {}).get("name", "未变身"),
+        "quality": PET_EVOLUTION_PATHS.get(evolution.path, {}).get("quality", "base"),
+        "variant": evolution.variant_seed,
+        "traits": evolution.traits or [],
+        "history": evolution.history or [],
+        "pity": collection.pity,
+        "success_rate": pet_evolution_success_rate(collection),
+        "target": primary_targeted["target"],
+        "target_failures": primary_targeted["failures"],
+        "target_success_rate": pet_targeted_evolution_rate(collection, primary_targeted["target"]),
+    }
+    collab_state = personas_state["collab"]
+    collab = None
+    if collab_state:
+        collab = {
+            "id": PET_PERSONA_COLLAB,
+            "label": "联名小镜",
+            "unlocked": True,
+            "stage": collab_state["stage"],
+            "path": collab_state["path"],
+            "name": PET_EVOLUTION_PATHS.get(collab_state["path"], {}).get("name", "联名待觉醒"),
+            "quality": PET_EVOLUTION_PATHS.get(collab_state["path"], {}).get("quality", "base"),
+            "variant": collab_state["variant_seed"],
+            "traits": collab_state["traits"],
+            "history": collab_state["history"],
+            "pity": collab_state["pity"],
+            "success_rate": pet_secondary_evolution_success_rate(collection, collab_state),
+            "target": collab_state["target"],
+            "target_failures": collab_state["target_failures"],
+            "target_success_rate": pet_secondary_targeted_rate(collection, collab_state, collab_state["target"]),
+        }
+    active_id = personas_state["active"] if collab else PET_PERSONA_ORIGIN
+    active = collab if active_id == PET_PERSONA_COLLAB and collab else origin
     return {
         "name": profile.name,
         "color": profile.color,
@@ -1404,14 +1548,25 @@ def pet_dict(profile: PetProfile, progress: PetProgressV2, evolution: PetEvoluti
         "next_level_xp": pet_level_start_xp(level if level >= PET_MAX_LEVEL else level + 1),
         "evolution_chances": evolution.available_chances,
         "evolution_credited_level": evolution.credited_level,
-        "evolution_stage": evolution.stage,
-        "evolution_path": evolution.path,
-        "evolution_name": PET_EVOLUTION_PATHS.get(evolution.path, {}).get("name", "未变身"),
-        "evolution_quality": PET_EVOLUTION_PATHS.get(evolution.path, {}).get("quality", "base"),
-        "evolution_variant": evolution.variant_seed,
-        "evolution_traits": evolution.traits or [],
-        "evolution_history": evolution.history or [],
-        **pet_collection_payload(collection, level),
+        "evolution_stage": active["stage"],
+        "evolution_path": active["path"],
+        "evolution_name": active["name"],
+        "evolution_quality": active["quality"],
+        "evolution_variant": active["variant"],
+        "evolution_traits": active["traits"],
+        "evolution_history": active["history"],
+        **shared,
+        "evolution_pity": active["pity"],
+        "evolution_success_rate": active["success_rate"],
+        "targeted_evolution_target": active["target"],
+        "targeted_evolution_failures": active["target_failures"],
+        "targeted_evolution_success_rate": active["target_success_rate"],
+        "active_persona": active_id,
+        "secondary_unlocked": collab is not None,
+        "secondary_unlock_cost": PET_SECONDARY_UNLOCK_COST,
+        "secondary_unlock_required_stage": PET_SECONDARY_UNLOCK_STAGE,
+        "secondary_hard_pity": PET_SECONDARY_HARD_PITY,
+        "personas": {PET_PERSONA_ORIGIN: origin, PET_PERSONA_COLLAB: collab},
     }
 
 
@@ -1444,6 +1599,9 @@ def pet_battle_state(collection: PetCollection) -> dict[str, Any]:
 
 def pet_battle_power(progress: PetProgressV2, evolution: PetEvolution, collection: PetCollection) -> tuple[int, dict[str, int]]:
     level = pet_level(progress.xp_units / 5)
+    personas = pet_personas_state(collection)
+    collab = personas["collab"]
+    active_stage = collab["stage"] if personas["active"] == PET_PERSONA_COLLAB and collab else evolution.stage
     equipment_stats, equipment_sets = pet_equipment_state(collection)
     active_skill_levels = sum(
         max(0, min(5, int((collection.skills or {}).get(skill_id, 0) or 0)))
@@ -1454,7 +1612,7 @@ def pet_battle_power(progress: PetProgressV2, evolution: PetEvolution, collectio
     breakdown = {
         "base": 100,
         "level": level * 12,
-        "evolution": max(0, int(evolution.stage or 0)) * 22,
+        "evolution": max(0, int(active_stage or 0)) * 22,
         "equipment": max(0, int(equipment_stats["total_power"])) * 6,
         "skills": active_skill_levels * 7,
         "sets": active_set_tiers * 15,
@@ -1496,7 +1654,14 @@ def pet_home_resident_payload(
         for entry in equipment_sets
         if entry["bonuses"]
     ]
-    path = evolution.path if evolution.path in PET_EVOLUTION_PATHS else ""
+    personas = pet_personas_state(collection)
+    collab = personas["collab"]
+    active_persona = PET_PERSONA_COLLAB if personas["active"] == PET_PERSONA_COLLAB and collab else PET_PERSONA_ORIGIN
+    active_stage = collab["stage"] if active_persona == PET_PERSONA_COLLAB else evolution.stage
+    active_path = collab["path"] if active_persona == PET_PERSONA_COLLAB else evolution.path
+    active_variant = collab["variant_seed"] if active_persona == PET_PERSONA_COLLAB else evolution.variant_seed
+    active_traits = collab["traits"] if active_persona == PET_PERSONA_COLLAB else evolution.traits
+    path = active_path if active_path in PET_EVOLUTION_PATHS else ""
     return {
         "user_id": str(user.id),
         "owner_name": user.display_name,
@@ -1506,11 +1671,12 @@ def pet_home_resident_payload(
         "fashion": pet_fashion_state(collection, level),
         "level": level,
         "title": pet_title(level),
-        "evolution_stage": max(0, int(evolution.stage or 0)) if path else 0,
+        "evolution_stage": max(0, int(active_stage or 0)) if path else 0,
         "evolution_path": path,
         "evolution_name": PET_EVOLUTION_PATHS.get(path, {}).get("name", "未变身"),
-        "evolution_variant": max(0, min(7, int(evolution.variant_seed or 0))),
-        "evolution_traits": [str(trait) for trait in (evolution.traits or [])[-6:]],
+        "evolution_variant": max(0, min(7, int(active_variant or 0))),
+        "evolution_traits": [str(trait) for trait in (active_traits or [])[-6:]],
+        "active_persona": active_persona,
         "battle_power": power,
         "power_breakdown": power_breakdown,
         "equipped_items": equipped_items,
@@ -3112,17 +3278,220 @@ def update_pet(body: PetProfileUpdate, user: CurrentUser, db: DB) -> dict[str, A
     return pet_dict(profile, progress, evolution, collection)
 
 
+def lock_pet_evolution_allocation(db: Session, user_id: int) -> None:
+    if db.get_bind().dialect.name == "postgresql":
+        db.execute(select(func.pg_advisory_xact_lock(739218041)))
+    elif db.get_bind().dialect.name == "sqlite":
+        db.execute(update(User).where(User.id == user_id).values(active=User.active))
+
+
+@app.post("/api/pet/persona/unlock")
+def unlock_pet_collab_persona(user: CurrentUser, db: DB) -> dict[str, Any]:
+    lock_pet_evolution_allocation(db, user.id)
+    profile, progress, evolution, collection = get_or_create_pet(db, user.id)
+    collection = db.scalar(
+        select(PetCollection).where(PetCollection.user_id == user.id).with_for_update().execution_options(populate_existing=True)
+    ) or collection
+    evolution = db.scalar(
+        select(PetEvolution).where(PetEvolution.user_id == user.id).with_for_update().execution_options(populate_existing=True)
+    ) or evolution
+    personas = pet_personas_state(collection)
+    if personas["collab"]:
+        raise HTTPException(409, "联名小镜已经觉醒")
+    if evolution.stage < PET_SECONDARY_UNLOCK_STAGE:
+        raise HTTPException(422, f"本源小镜达到 {PET_SECONDARY_UNLOCK_STAGE} 阶后才能开启联名人格")
+    if evolution.available_chances < PET_SECONDARY_UNLOCK_COST:
+        raise HTTPException(422, f"开启联名人格需要 {PET_SECONDARY_UNLOCK_COST} 张进化券")
+    path = choose_pet_evolution_path(db, user.id, persona=PET_PERSONA_COLLAB, pool=PET_COLLAB_PATH_LOTTERY)
+    trait = secrets.choice(PET_EVOLUTION_PATHS[path]["traits"][0])
+    now = utcnow().isoformat()
+    collab = {
+        "unlocked": True,
+        "path": path,
+        "stage": 1,
+        "variant_seed": secrets.randbelow(8),
+        "traits": [trait],
+        "history": [{
+            "at": now,
+            "type": "persona_unlock",
+            "persona": PET_PERSONA_COLLAB,
+            "spent": PET_SECONDARY_UNLOCK_COST,
+            "guaranteed": True,
+            "success": True,
+            "stage": 1,
+            "path": path,
+            "trait": f"联名人格觉醒 · {trait}",
+            "traits": [trait],
+            "critical": False,
+            "success_rate": 100,
+            "pity_after": 0,
+        }],
+        "pity": 0,
+        "target": "",
+        "target_failures": 0,
+        "unlocked_at": now,
+    }
+    evolution.available_chances -= PET_SECONDARY_UNLOCK_COST
+    personas = {"active": PET_PERSONA_COLLAB, "collab": collab}
+    set_pet_personas_state(collection, personas)
+    db.commit()
+    return {
+        "profile": pet_dict(profile, progress, evolution, collection),
+        "persona": PET_PERSONA_COLLAB,
+        "spent": PET_SECONDARY_UNLOCK_COST,
+        "path": path,
+        "trait": trait,
+    }
+
+
+@app.put("/api/pet/persona")
+def switch_pet_persona(body: PetPersonaBody, user: CurrentUser, db: DB) -> dict[str, Any]:
+    if body.persona not in {PET_PERSONA_ORIGIN, PET_PERSONA_COLLAB}:
+        raise HTTPException(422, "未知的小镜人格")
+    profile, progress, evolution, collection = get_or_create_pet(db, user.id)
+    personas = pet_personas_state(collection)
+    if body.persona == PET_PERSONA_COLLAB and not personas["collab"]:
+        raise HTTPException(422, "请先开启联名人格")
+    personas["active"] = body.persona
+    set_pet_personas_state(collection, personas)
+    db.commit()
+    return pet_dict(profile, progress, evolution, collection)
+
+
+def evolve_collab_pet(
+    body: PetEvolutionBody,
+    user: User,
+    db: Session,
+    profile: PetProfile,
+    progress: PetProgressV2,
+    evolution: PetEvolution,
+    collection: PetCollection,
+) -> dict[str, Any]:
+    personas = pet_personas_state(collection)
+    collab = personas["collab"]
+    if not collab:
+        raise HTTPException(422, "请先消耗 10 张进化券开启联名人格")
+    if evolution.available_chances < body.spend:
+        raise HTTPException(409, "进化券刚刚发生变化，请刷新后重试")
+    target_path = str(body.target_path or "")
+    targeted_attempt = body.spend == 10
+    if targeted_attempt:
+        if target_path not in PET_PUBLIC_COLLAB_PATHS:
+            raise HTTPException(422, "联名人格只能定向选择公开联名路线")
+        if target_path == collab["path"]:
+            raise HTTPException(422, "目标路线不能与当前路线相同")
+        if target_path in pet_owned_evolution_paths(db, (user.id, PET_PERSONA_COLLAB)):
+            raise HTTPException(409, "该路线已被其他人格占用，请选择其他路线")
+    guaranteed = body.spend == 5
+    route_reset = guaranteed or targeted_attempt
+    previous_path = collab["path"] if route_reset else ""
+    previous_stage = collab["stage"] if route_reset else 0
+    next_path = target_path if targeted_attempt else ""
+    if not targeted_attempt and route_reset:
+        next_path = choose_pet_evolution_path(
+            db,
+            user.id,
+            {previous_path},
+            persona=PET_PERSONA_COLLAB,
+            pool=PET_COLLAB_PATH_LOTTERY,
+        )
+    evolution.available_chances -= body.spend
+    hard_pity = not route_reset and int(collab["pity"]) >= PET_SECONDARY_HARD_PITY
+    success_rate = pet_secondary_targeted_rate(collection, collab, target_path) if targeted_attempt else pet_secondary_evolution_success_rate(collection, collab)
+    success = guaranteed or hard_pity or secrets.randbelow(100) < success_rate
+    traits: list[str] = []
+    critical = False
+    awakened_skill: dict[str, Any] | None = None
+    wheel_compensation = 0
+    if success:
+        if route_reset:
+            collab["path"] = next_path
+            collab["stage"] = 0
+            collab["traits"] = []
+            collab["target"] = ""
+            collab["target_failures"] = 0
+            if targeted_attempt:
+                targeted_state = pet_targeted_evolution_state(collection)
+                set_pet_targeted_evolution_state(collection, {**targeted_state, "blessings": 0})
+        path = PET_EVOLUTION_PATHS[collab["path"]]
+        critical = False if route_reset else secrets.randbelow(100) < 12
+        stage_gain = 1 if route_reset else 2 if critical else 1
+        next_traits = list(collab["traits"])
+        for stage_offset in range(stage_gain):
+            next_stage = collab["stage"] + stage_offset
+            trait_pool = path["traits"][pet_evolution_trait_tier(collab["path"], next_stage + 1)]
+            trait = secrets.choice(trait_pool)
+            if next_stage + 1 > 15:
+                trait = f"{trait} · 进化{next_stage + 1}阶"
+            traits.append(trait)
+            next_traits.append(trait)
+        collab["traits"] = next_traits[-24:]
+        collab["stage"] += stage_gain
+        collab["variant_seed"] = secrets.randbelow(8)
+        collab["pity"] = 0
+        awakened_skill = awaken_pet_skill(collection)
+        if route_reset and previous_stage:
+            wheel_compensation = previous_stage * 2
+            wheel_state = pet_wheel_state(collection)
+            set_pet_wheel_state(collection, {**wheel_state, "chances": wheel_state["chances"] + wheel_compensation})
+    else:
+        if targeted_attempt:
+            failures = collab["target_failures"] if collab["target"] == target_path else 0
+            collab["target"] = target_path
+            collab["target_failures"] = min(3, failures + 1)
+        else:
+            collab["pity"] = min(PET_SECONDARY_HARD_PITY, int(collab["pity"]) + 1)
+    event_trait = f"{'定向' if targeted_attempt else ''}换路线 · {' / '.join(traits)}" if route_reset and success else " / ".join(traits)
+    event = {
+        "at": utcnow().isoformat(),
+        **({"type": "targeted_reroute" if targeted_attempt else "reroute", "previous_path": previous_path, "route_reset": success} if route_reset else {}),
+        "persona": PET_PERSONA_COLLAB,
+        "spent": body.spend,
+        "guaranteed": guaranteed or hard_pity,
+        "hard_pity": hard_pity,
+        "target_path": target_path if targeted_attempt else "",
+        "success": success,
+        "stage": collab["stage"],
+        "path": collab["path"],
+        "trait": event_trait,
+        "traits": traits,
+        "critical": critical,
+        "success_rate": 100 if guaranteed or hard_pity else success_rate,
+        "pity_after": collab["pity"],
+        "wheel_compensation": wheel_compensation,
+        "skill": awakened_skill,
+    }
+    collab["history"] = [event, *collab["history"]][:50]
+    personas["collab"] = collab
+    set_pet_personas_state(collection, personas)
+    db.commit()
+    return {
+        "profile": pet_dict(profile, progress, evolution, collection),
+        "success": success,
+        "spent": body.spend,
+        "guaranteed": guaranteed or hard_pity,
+        "hard_pity": hard_pity,
+        "persona": PET_PERSONA_COLLAB,
+        "route_reset": route_reset and success,
+        "targeted": targeted_attempt,
+        "target_path": target_path if targeted_attempt else "",
+        "success_rate": success_rate,
+        "wheel_compensation": wheel_compensation,
+        "previous_path": previous_path,
+        "trait": " / ".join(traits),
+        "traits": traits,
+        "critical": critical,
+        "skill": awakened_skill,
+    }
+
+
 @app.post("/api/pet/evolve")
 def evolve_pet(body: PetEvolutionBody, user: CurrentUser, db: DB) -> dict[str, Any]:
     if body.spend not in {1, 5, 10}:
         raise HTTPException(422, "进化只能使用 1 张、5 张或 10 张进化券")
     # Serialize allocation before even creating a first pet. Row locks alone do
     # not cover concurrently inserted evolution rows or an initially empty pool.
-    if db.get_bind().dialect.name == "postgresql":
-        db.execute(select(func.pg_advisory_xact_lock(739218041)))
-    elif db.get_bind().dialect.name == "sqlite":
-        # SQLite has a single writer; acquire it before reading route ownership.
-        db.execute(update(User).where(User.id == user.id).values(active=User.active))
+    lock_pet_evolution_allocation(db, user.id)
     profile, progress, evolution, collection = get_or_create_pet(db, user.id)
     if evolution.available_chances < body.spend:
         raise HTTPException(422, "可用进化券不足")
@@ -3141,6 +3510,11 @@ def evolve_pet(body: PetEvolutionBody, user: CurrentUser, db: DB) -> dict[str, A
     ) or evolution
     if evolution.available_chances < body.spend:
         raise HTTPException(409, "进化券刚刚发生变化，请刷新后重试")
+    requested_persona = str(body.persona or pet_personas_state(collection)["active"])
+    if requested_persona not in {PET_PERSONA_ORIGIN, PET_PERSONA_COLLAB}:
+        raise HTTPException(422, "未知的小镜人格")
+    if requested_persona == PET_PERSONA_COLLAB:
+        return evolve_collab_pet(body, user, db, profile, progress, evolution, collection)
     target_path = str(body.target_path or "")
     targeted_attempt = body.spend == 10
     if targeted_attempt:
@@ -3152,7 +3526,7 @@ def evolve_pet(body: PetEvolutionBody, user: CurrentUser, db: DB) -> dict[str, A
             raise HTTPException(422, "隐藏路线只能通过随机进化发现")
         if target_path == evolution.path:
             raise HTTPException(422, "目标路线不能与当前路线相同")
-        if pet_evolution_route_counts(db, user.id).get(target_path, 0) > 0:
+        if target_path in pet_owned_evolution_paths(db, (user.id, PET_PERSONA_ORIGIN)):
             raise HTTPException(409, "该路线已被其他宠物占用，请选择其他路线")
     guaranteed = body.spend == 5
     route_reset = (guaranteed and evolution.stage > 0 and evolution.path in PET_EVOLUTION_PATHS) or targeted_attempt
@@ -3218,6 +3592,7 @@ def evolve_pet(body: PetEvolutionBody, user: CurrentUser, db: DB) -> dict[str, A
         "at": utcnow().isoformat(),
         **({"type": "targeted_reroute" if targeted_attempt else "reroute", "previous_path": previous_path, "route_reset": success} if route_reset else {}),
         "spent": body.spend,
+        "persona": PET_PERSONA_ORIGIN,
         "guaranteed": guaranteed,
         "target_path": target_path if targeted_attempt else "",
         "success": success,
