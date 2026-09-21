@@ -157,6 +157,7 @@ type PetHomeResident = {
   evolution_name: string;
   evolution_variant: number;
   evolution_traits: string[];
+  active_persona?: PetPersonaId;
   battle_power: number;
   power_breakdown: { base: number; level: number; evolution: number; equipment: number; skills: number; sets: number };
   equipped_items: PetHomeEquipment[];
@@ -2164,8 +2165,11 @@ function petHomeVisualProfile(resident: PetHomeResident): PetProfile {
     return catalogItem ? [petEquipmentWithProgress(catalogItem, 1, { level: item.level })] : [];
   });
   const equipped = Object.fromEntries(inventory.map((item) => [item.slot, item.id])) as Partial<Record<PetEquipmentSlot, string>>;
+  // Homestead and battle payloads contain only the displayed persona snapshot.
+  // Default personas would override its route, stage, variant and traits.
   return normalizedPetProfile({
-    ...DEFAULT_PET,
+    active_persona: resident.active_persona ?? "origin",
+    secondary_unlocked: resident.active_persona === "collab",
     name: resident.pet_name,
     color: resident.color,
     accessory: resident.accessory,
@@ -2194,7 +2198,7 @@ function PetHomeResidentCard({ resident, isMe = false }: { resident: PetHomeResi
       <div className="pet-home-orbit"><span className="pet-home-orbit-glow" /><PetCreatureVisual profile={visualProfile} accessory={accessory} showEquipment={false} /><span className="pet-home-orbit-shadow" /></div>
       <div className="pet-home-resident-overview">
         <div className="pet-home-resident-name"><small>{resident.owner_name} 的伙伴</small><strong>{resident.pet_name}</strong><span>Lv.{resident.level} · {resident.title}</span></div>
-        <div className="pet-home-route"><i>{resident.evolution_path ? PET_EVOLUTION_PATHS[resident.evolution_path].motif : "·"}</i><div><small>进化路线</small><strong>{resident.evolution_name}</strong><span>{resident.evolution_stage ? `第 ${resident.evolution_stage} 次进化` : "尚未开始进化"}</span></div></div>
+        <div className="pet-home-route"><i>{resident.evolution_path ? PET_EVOLUTION_PATHS[resident.evolution_path].motif : "·"}</i><div><small>{resident.active_persona === "collab" ? "联名小镜" : "本源小镜"} · 进化路线</small><strong>{resident.evolution_name}</strong><span>{resident.evolution_stage ? `第 ${resident.evolution_stage} 次进化` : "尚未开始进化"}</span></div></div>
         <div className="pet-home-loadout">
           <div><small>装扮</small><strong>{PET_COLORS.find((item) => item.id === resident.color)?.label ?? "青柠"} · {Object.keys(resident.fashion ?? {}).length ? `${Object.keys(resident.fashion).length}件时装` : PET_ACCESSORIES.find((item) => item.id === resident.accessory)?.label ?? "无"}</strong></div>
           <div><small>装备</small><span>{resident.equipped_items.length ? resident.equipped_items.map((item) => <i className={`rarity-${item.rarity}`} title={`${item.name} · Lv.${item.level}`} key={item.slot}>{item.symbol}</i>) : <em>暂无</em>}</span></div>
@@ -2247,7 +2251,7 @@ function PetHomestead({ open, user, data, busy, battleBusy, error, result, onRef
           </div>
           <div className="pet-home-command-copy">
             <div className="pet-home-profile-heading"><div><span>MY COMPANION</span><h3>{data.me.pet_name}</h3><p>Lv.{data.me.level} · {data.me.title}</p></div><b><small>COMBAT POWER</small><strong>{data.me.battle_power.toLocaleString()}</strong><em>家园排行 #{data.me.rank ?? "–"}</em></b></div>
-            <div className="pet-home-profile-facts"><span><small>进化</small><strong>{data.me.evolution_name}</strong><em>{data.me.evolution_stage} 次</em></span><span><small>装备</small><strong>{data.me.equipped_items.length} / 5</strong><em>已穿戴</em></span><span><small>套装</small><strong>{data.me.active_sets.length}</strong><em>已共鸣</em></span><span><small>技能</small><strong>{data.me.active_skills.length} / 3</strong><em>已启用</em></span></div>
+            <div className="pet-home-profile-facts"><span><small>{data.me.active_persona === "collab" ? "联名小镜" : "本源小镜"} · 进化</small><strong>{data.me.evolution_name}</strong><em>{data.me.evolution_stage} 次</em></span><span><small>装备</small><strong>{data.me.equipped_items.length} / 5</strong><em>已穿戴</em></span><span><small>套装</small><strong>{data.me.active_sets.length}</strong><em>已共鸣</em></span><span><small>技能</small><strong>{data.me.active_skills.length} / 3</strong><em>已启用</em></span></div>
             <dl className="pet-home-power-breakdown"><div><dt>基础</dt><dd>{data.me.power_breakdown.base}</dd></div><div><dt>等级</dt><dd>{data.me.power_breakdown.level}</dd></div><div><dt>进化</dt><dd>{data.me.power_breakdown.evolution}</dd></div><div><dt>装备</dt><dd>{data.me.power_breakdown.equipment}</dd></div><div><dt>技能</dt><dd>{data.me.power_breakdown.skills}</dd></div><div><dt>套装</dt><dd>{data.me.power_breakdown.sets}</dd></div></dl>
             <section className="pet-home-battle-panel"><span className={data.battle_available ? "available" : "used"}>{data.battle_available ? "今日机会可用" : "今日已经出战"}</span><div><h4>{data.battle_available ? "随机拜访一位邻居" : "休整到下一个自然日"}</h4><p>{data.battle_available ? "战力严格高于对方即可获胜并保证掉落；挑战失败时也有 10% 概率意外发现装备。" : `每日仅一次机会，下一次于北京时间 ${nextBattleLabel} 恢复。`}</p></div><button className="pet-home-battle-button" type="button" disabled={battleBusy || !data.battle_available || !opponentCount} onClick={onBattle}><i>{battleBusy ? "…" : data.battle_available ? "⚔" : "✓"}</i><span><strong>{battleBusy ? "正在寻找对手" : data.battle_available ? opponentCount ? "开始随机战斗" : "暂无可匹配邻居" : "今日挑战已完成"}</strong><small>{data.battle_available ? "胜利必得 · 失败 10% 掉落" : "明天再来挑战"}</small></span></button></section>
             {error ? <p className="pet-home-inline-error">{error}</p> : null}
