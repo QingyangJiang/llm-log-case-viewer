@@ -131,9 +131,103 @@ class PetEvolutionTest(unittest.TestCase):
     def test_new_routes_include_seven_public_collaborations_and_one_hidden_route(self) -> None:
         self.assertEqual(len(api.PET_EVOLUTION_PATHS), 17)
         self.assertEqual(len(api.PET_PUBLIC_EVOLUTION_PATHS), 16)
+        self.assertEqual(len(api.PET_PUBLIC_COLLAB_PATHS), 7)
         self.assertTrue(api.PET_EVOLUTION_PATHS["nexus"]["hidden"])
         for path in {"eva", "blade_soul", "dnf", "nba", "honor", "valorant", "lol", "nexus"}:
             self.assertIn(path, api.PET_EVOLUTION_PATH_LOTTERY)
+
+    def test_unlocking_collab_persona_preserves_origin_and_spends_ten_shared_tickets(self) -> None:
+        _, _, evolution, _ = api.get_or_create_pet(self.db, self.user.id)
+        evolution.path = "forest"
+        evolution.stage = 6
+        evolution.traits = ["本源特征"]
+        evolution.available_chances = 14
+        self.db.commit()
+
+        with patch.object(api.secrets, "choice", side_effect=["eva", "紫绿装甲"]), patch.object(api.secrets, "randbelow", return_value=3):
+            result = api.unlock_pet_collab_persona(self.user, self.db)
+
+        self.assertEqual(result["spent"], 10)
+        self.assertEqual(result["profile"]["evolution_chances"], 4)
+        self.assertEqual(result["profile"]["active_persona"], "collab")
+        self.assertEqual(result["profile"]["evolution_path"], "eva")
+        self.assertEqual(result["profile"]["evolution_stage"], 1)
+        self.assertEqual(result["profile"]["personas"]["origin"]["path"], "forest")
+        self.assertEqual(result["profile"]["personas"]["origin"]["stage"], 6)
+        self.assertEqual(result["profile"]["personas"]["origin"]["traits"], ["本源特征"])
+
+        origin = api.switch_pet_persona(api.PetPersonaBody(persona="origin"), self.user, self.db)
+        self.assertEqual(origin["active_persona"], "origin")
+        self.assertEqual(origin["evolution_path"], "forest")
+        self.assertEqual(origin["personas"]["collab"]["path"], "eva")
+
+    def test_collab_persona_requires_origin_stage_six_and_ten_tickets(self) -> None:
+        _, _, evolution, _ = api.get_or_create_pet(self.db, self.user.id)
+        evolution.path = "forest"
+        evolution.stage = 5
+        evolution.available_chances = 20
+        self.db.commit()
+        with self.assertRaises(api.HTTPException) as stage_error:
+            api.unlock_pet_collab_persona(self.user, self.db)
+        self.assertEqual(stage_error.exception.status_code, 422)
+        self.assertEqual(evolution.available_chances, 20)
+
+        evolution.stage = 6
+        evolution.available_chances = 9
+        self.db.commit()
+        with self.assertRaises(api.HTTPException) as ticket_error:
+            api.unlock_pet_collab_persona(self.user, self.db)
+        self.assertEqual(ticket_error.exception.status_code, 422)
+        self.assertEqual(evolution.available_chances, 9)
+
+    def test_collab_pity_is_independent_and_twelfth_failure_is_hard_guarantee(self) -> None:
+        _, _, evolution, collection = api.get_or_create_pet(self.db, self.user.id)
+        evolution.path = "forest"
+        evolution.stage = 6
+        evolution.available_chances = 2
+        collection.pity = 4
+        api.set_pet_personas_state(collection, {"active": "collab", "collab": {
+            "unlocked": True, "path": "eva", "stage": 1, "variant_seed": 0, "traits": ["紫绿装甲"], "history": [],
+            "pity": 0, "target": "", "target_failures": 0, "unlocked_at": api.utcnow().isoformat(),
+        }})
+        self.db.commit()
+
+        with patch.object(api.secrets, "randbelow", return_value=99):
+            failed = api.evolve_pet(api.PetEvolutionBody(spend=1, persona="collab"), self.user, self.db)
+        self.assertFalse(failed["success"])
+        self.assertEqual(failed["profile"]["evolution_pity"], 1)
+        self.assertEqual(failed["profile"]["evolution_success_rate"], 7)
+        self.assertEqual(collection.pity, 4)
+        self.assertEqual(evolution.stage, 6)
+
+        personas = api.pet_personas_state(collection)
+        personas["collab"]["pity"] = 12
+        api.set_pet_personas_state(collection, personas)
+        self.db.commit()
+        with patch.object(api.secrets, "randbelow", side_effect=[99, 3]), patch.object(api.secrets, "choice", side_effect=["核心胸灯", "lucky_nose"]):
+            succeeded = api.evolve_pet(api.PetEvolutionBody(spend=1, persona="collab"), self.user, self.db)
+        self.assertTrue(succeeded["success"])
+        self.assertTrue(succeeded["hard_pity"])
+        self.assertEqual(succeeded["profile"]["evolution_stage"], 2)
+        self.assertEqual(succeeded["profile"]["evolution_pity"], 0)
+        self.assertEqual(collection.pity, 4)
+
+    def test_secondary_routes_participate_in_global_uniqueness(self) -> None:
+        _, _, _, _, opponent_collection = self.add_opponent()
+        api.set_pet_personas_state(opponent_collection, {"active": "collab", "collab": {
+            "unlocked": True, "path": "eva", "stage": 1, "variant_seed": 0, "traits": [], "history": [],
+            "pity": 0, "target": "", "target_failures": 0, "unlocked_at": api.utcnow().isoformat(),
+        }})
+        _, _, evolution, _ = api.get_or_create_pet(self.db, self.user.id)
+        evolution.path = "forest"
+        evolution.stage = 6
+        evolution.available_chances = 10
+        self.db.commit()
+
+        with patch.object(api.secrets, "choice", side_effect=lambda choices: choices[0]), patch.object(api.secrets, "randbelow", return_value=2):
+            result = api.unlock_pet_collab_persona(self.user, self.db)
+        self.assertNotEqual(result["path"], "eva")
+        self.assertEqual(api.pet_evolution_route_counts(self.db, self.user.id)["eva"], 1)
 
     def test_random_evolution_excludes_routes_owned_by_other_users(self) -> None:
         opponent, _, _, opponent_evolution, _ = self.add_opponent()

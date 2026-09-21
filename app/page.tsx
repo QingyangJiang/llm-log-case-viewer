@@ -70,6 +70,7 @@ type PetRarity = "common" | "uncommon" | "rare" | "epic" | "legendary";
 type PetEquipmentSlot = "head" | "face" | "neck" | "back" | "tail";
 type PetEquipmentSort = "theme_slot" | "slot_theme" | "power" | "level" | "rarity" | "count";
 type PetAutoEquipMode = "combat" | "evolution" | "annotation" | "pet" | "badcase" | "rarity";
+type PetPersonaId = "origin" | "collab";
 type PetEquipmentEffectKey = "all_drop_bonus" | "pet_drop_bonus" | "annotation_drop_bonus" | "badcase_drop_bonus" | "evolution_bonus" | "rarity_boost";
 type PetEquipmentAffix = { id: string; key: PetEquipmentEffectKey; label: string; value: number; critical: boolean };
 type PetEquipment = { id: string; name: string; slot: PetEquipmentSlot; slot_name: string; symbol: string; rarity: PetRarity; theme: string; count: number; level: number; power: number; effect_key: Exclude<PetEquipmentEffectKey, "rarity_boost">; effect_label: string; effect_value: number; affixes: PetEquipmentAffix[]; synthesis_failures: number; synthesis_success_rate: number };
@@ -85,7 +86,8 @@ type PetPendingDrop = { token: string; reason: PetDropReason; at: string; choice
 type PetDropReveal = { drop: PetDropEvent; identified_affix: PetEquipmentAffix; affix_added: boolean };
 type PetSynthesisResult = { profile: PetProfile; success: boolean; success_rate: number; next_success_rate: number; previous_level: number; next_level: number; remaining_count: number; gained_affixes: PetEquipmentAffix[] };
 type PetSynthesisNotice = Omit<PetSynthesisResult, "profile"> & { item: PetEquipment };
-type PetEvolutionEvent = { at: string; type?: "gift" | "reroute" | "targeted_reroute"; spent: number; guaranteed?: boolean; success: boolean; stage: number; path: PetEvolutionPath; trait: string; traits?: string[]; critical?: boolean; success_rate?: number; pity_after?: number; amount?: number; sender?: string; previous_path?: PetEvolutionPath; target_path?: PetEvolutionPath; route_reset?: boolean; wheel_compensation?: number; skill?: PetSkill | null };
+type PetEvolutionEvent = { at: string; type?: "gift" | "reroute" | "targeted_reroute" | "persona_unlock"; persona?: PetPersonaId; spent: number; guaranteed?: boolean; hard_pity?: boolean; success: boolean; stage: number; path: PetEvolutionPath; trait: string; traits?: string[]; critical?: boolean; success_rate?: number; pity_after?: number; amount?: number; sender?: string; previous_path?: PetEvolutionPath; target_path?: PetEvolutionPath; route_reset?: boolean; wheel_compensation?: number; skill?: PetSkill | null };
+type PetPersonaState = { id: PetPersonaId; label: string; unlocked: boolean; stage: number; path: PetEvolutionPath; name: string; quality: string; variant: number; traits: string[]; history: PetEvolutionEvent[]; pity: number; success_rate: number; target: PetEvolutionPath; target_failures: number; target_success_rate: number };
 type PetWheelReward = { id: string; label: string; short_label: string; icon: string; probability: number; tone: string };
 type PetWheelEvent = { reward_id: string; label: string; short_label: string; icon: string; tone: string; detail: string; at: string };
 type PetWheelSpinResult = { profile: PetProfile; reward: PetWheelEvent; reward_index: number; pending_drop?: PetPendingDrop | null };
@@ -131,6 +133,12 @@ type PetProfile = {
   total_drops: number;
   evolution_pity: number;
   evolution_success_rate: number;
+  active_persona: PetPersonaId;
+  secondary_unlocked: boolean;
+  secondary_unlock_cost: number;
+  secondary_unlock_required_stage: number;
+  secondary_hard_pity: number;
+  personas: { origin: PetPersonaState; collab: PetPersonaState | null };
 };
 type PetHomeEquipment = Pick<PetEquipment, "id" | "name" | "slot" | "slot_name" | "symbol" | "rarity" | "theme" | "level" | "power">;
 type PetHomeSkill = Pick<PetSkill, "id" | "name" | "icon" | "level">;
@@ -328,7 +336,8 @@ const PET_WHEEL_REWARDS: PetWheelReward[] = [
   { id: "route_focus", label: "定向祝福 +1层", short_label: "定向祝福", icon: "◎", probability: 18, tone: "lavender" },
   { id: "ticket_5", label: "幸运大奖 · 进化券 ×5", short_label: "5张进化券", icon: "♛", probability: 2, tone: "gold" },
 ];
-const DEFAULT_PET: PetProfile = { name: "小镜", color: "lime", accessory: "none", xp: 0, level: 1, current_level_xp: 0, next_level_xp: 20, earned_event_keys: [], evolution_chances: 0, evolution_credited_level: 1, evolution_stage: 0, evolution_path: "", evolution_variant: 0, evolution_traits: [], evolution_history: [], equipment_catalog_size: 300, equipment_parts: 0, inventory: [], equipped: {}, equipment_stats: DEFAULT_EQUIPMENT_STATS, equipment_sets: [], fashion: {}, fashion_catalog_size: 60, wardrobe_presets: [], skills: [], active_skills: [], drop_history: [], pending_drops: [], wheel_chances: 0, wheel_history: [], wheel_rewards: PET_WHEEL_REWARDS, targeted_evolution_target: "", targeted_evolution_failures: 0, targeted_evolution_blessings: 0, targeted_evolution_success_rate: 70, total_drops: 0, evolution_pity: 0, evolution_success_rate: 10 };
+const DEFAULT_ORIGIN_PERSONA: PetPersonaState = { id: "origin", label: "本源小镜", unlocked: true, stage: 0, path: "", name: "未变身", quality: "base", variant: 0, traits: [], history: [], pity: 0, success_rate: 10, target: "", target_failures: 0, target_success_rate: 70 };
+const DEFAULT_PET: PetProfile = { name: "小镜", color: "lime", accessory: "none", xp: 0, level: 1, current_level_xp: 0, next_level_xp: 20, earned_event_keys: [], evolution_chances: 0, evolution_credited_level: 1, evolution_stage: 0, evolution_path: "", evolution_variant: 0, evolution_traits: [], evolution_history: [], equipment_catalog_size: 300, equipment_parts: 0, inventory: [], equipped: {}, equipment_stats: DEFAULT_EQUIPMENT_STATS, equipment_sets: [], fashion: {}, fashion_catalog_size: 60, wardrobe_presets: [], skills: [], active_skills: [], drop_history: [], pending_drops: [], wheel_chances: 0, wheel_history: [], wheel_rewards: PET_WHEEL_REWARDS, targeted_evolution_target: "", targeted_evolution_failures: 0, targeted_evolution_blessings: 0, targeted_evolution_success_rate: 70, total_drops: 0, evolution_pity: 0, evolution_success_rate: 10, active_persona: "origin", secondary_unlocked: false, secondary_unlock_cost: 10, secondary_unlock_required_stage: 6, secondary_hard_pity: 12, personas: { origin: DEFAULT_ORIGIN_PERSONA, collab: null } };
 const PET_COLORS: { id: PetColor; label: string; value: string; level: number }[] = [
   { id: "lime", label: "青柠", value: "#d9ff78", level: 1 },
   { id: "aqua", label: "薄荷", value: "#9de8dc", level: 2 },
@@ -431,6 +440,9 @@ const PET_EVOLUTION_PATH_LOTTERY: Exclude<PetEvolutionPath, "">[] = [
   ...Array(7).fill("honor"), ...Array(7).fill("valorant"), ...Array(7).fill("lol"), ...Array(2).fill("nexus"),
 ] as Exclude<PetEvolutionPath, "">[];
 const PET_PUBLIC_EVOLUTION_PATHS = Object.entries(PET_EVOLUTION_PATHS).filter(([, item]) => !item.hidden) as [Exclude<PetEvolutionPath, "">, (typeof PET_EVOLUTION_PATHS)[Exclude<PetEvolutionPath, "">]][];
+const PET_COLLAB_PATHS = new Set<PetEvolutionPath>(["eva", "blade_soul", "dnf", "nba", "honor", "valorant", "lol", "nexus"]);
+const PET_COLLAB_EVOLUTION_PATH_LOTTERY = PET_EVOLUTION_PATH_LOTTERY.filter((path) => PET_COLLAB_PATHS.has(path));
+const PET_PUBLIC_COLLAB_PATHS = PET_PUBLIC_EVOLUTION_PATHS.filter(([path]) => PET_COLLAB_PATHS.has(path));
 const PET_EQUIPMENT_SLOTS: Record<PetEquipmentSlot, { label: string; symbol: string }> = { head: { label: "头饰", symbol: "♛" }, face: { label: "面饰", symbol: "◉" }, neck: { label: "颈饰", symbol: "✦" }, back: { label: "背饰", symbol: "⌁" }, tail: { label: "尾饰", symbol: "◇" } };
 const PET_EQUIPMENT_THEMES = ["星尘", "森林", "雷云", "海盐", "琥珀", "月影", "霓虹", "机械", "云朵", "蜂蜜", "像素", "纸片"];
 const PET_EQUIPMENT_AFFIXES: [string, PetRarity][] = [["微光", "common"], ["鲜活", "uncommon"], ["幻彩", "rare"], ["秘仪", "epic"], ["神话", "legendary"]];
@@ -645,7 +657,12 @@ function normalizedPetProfile(value: Partial<PetProfile> | null | undefined): Pe
   const evolutionPity = Math.max(0, Math.min(20, Math.floor(Number(value?.evolution_pity) || 0)));
   const echo = activeSkills.includes("evolution_echo") ? skills.find((item) => item.id === "evolution_echo")?.level ?? 0 : 0;
   const steady = activeSkills.includes("steady_heart") ? skills.find((item) => item.id === "steady_heart")?.level ?? 0 : 0;
-  const evolutionSuccessRate = Math.min(55, 10 + echo + Math.min(30, evolutionPity * (2 + steady)) + equipmentState.stats.evolution_bonus);
+  const activePersonaId: PetPersonaId = value?.active_persona === "collab" ? "collab" : "origin";
+  const calculatedEvolutionSuccessRate = activePersonaId === "collab"
+    ? evolutionPity >= 12 ? 100 : Math.min(50, 5 + echo + Math.min(30, evolutionPity * (2 + steady)) + equipmentState.stats.evolution_bonus)
+    : Math.min(55, 10 + echo + Math.min(30, evolutionPity * (2 + steady)) + equipmentState.stats.evolution_bonus);
+  const evolutionSuccessRate = calculatedEvolutionSuccessRate;
+  const targetedBlessings = Math.max(0, Math.min(20, Math.floor(Number(value?.targeted_evolution_blessings) || 0)));
   const pendingDrops = Array.isArray(value?.pending_drops) ? value.pending_drops.filter((pending): pending is PetPendingDrop => isObject(pending) && typeof pending.token === "string" && Array.isArray(pending.choices)).flatMap((pending) => {
     const choices = pending.choices.flatMap((choice) => {
       if (!isObject(choice) || typeof choice.id !== "string") return [];
@@ -691,6 +708,40 @@ function normalizedPetProfile(value: Partial<PetProfile> | null | undefined): Pe
     detail: typeof event.detail === "string" ? event.detail : String(event.label ?? "神秘奖励"),
     at: event.at,
   })).slice(0, 30) : [];
+  const normalizePersona = (raw: unknown, id: PetPersonaId, fallback: Partial<PetPersonaState>): PetPersonaState => {
+    const item = isObject(raw) ? raw : {};
+    const path = typeof item.path === "string" && item.path in PET_EVOLUTION_PATHS ? item.path as PetEvolutionPath : fallback.path ?? "";
+    const pity = Math.max(0, Math.min(id === "collab" ? 12 : 20, Math.floor(Number(item.pity ?? fallback.pity) || 0)));
+    const calculatedRate = id === "collab"
+      ? pity >= 12 ? 100 : Math.min(50, 5 + echo + Math.min(30, pity * (2 + steady)) + equipmentState.stats.evolution_bonus)
+      : Math.min(55, 10 + echo + Math.min(30, pity * (2 + steady)) + equipmentState.stats.evolution_bonus);
+    const target = typeof item.target === "string" && item.target in PET_EVOLUTION_PATHS ? item.target as PetEvolutionPath : fallback.target ?? "";
+    const targetFailures = Math.max(0, Math.min(3, Math.floor(Number(item.target_failures ?? fallback.target_failures) || 0)));
+    return {
+      id,
+      label: typeof item.label === "string" ? item.label : id === "origin" ? "本源小镜" : "联名小镜",
+      unlocked: id === "origin" || Boolean(item.unlocked ?? fallback.unlocked),
+      stage: path ? Math.max(0, Math.floor(Number(item.stage ?? fallback.stage) || 0)) : 0,
+      path,
+      name: path ? PET_EVOLUTION_PATHS[path].name : id === "origin" ? "未变身" : "联名待觉醒",
+      quality: path ? PET_EVOLUTION_PATHS[path].tone : "base",
+      variant: Math.max(0, Math.min(7, Math.floor(Number(item.variant ?? fallback.variant) || 0))),
+      traits: Array.isArray(item.traits) ? item.traits.filter((entry): entry is string => typeof entry === "string").slice(-24) : fallback.traits ?? [],
+      history: Array.isArray(item.history) ? item.history.filter((entry): entry is PetEvolutionEvent => isObject(entry) && typeof entry.at === "string" && typeof entry.success === "boolean").slice(0, 50) : fallback.history ?? [],
+      pity,
+      success_rate: calculatedRate,
+      target,
+      target_failures: targetFailures,
+      target_success_rate: Math.min(100, 70 + targetFailures * 10 + targetedBlessings * 5),
+    };
+  };
+  const rawPersonas: Record<string, unknown> = isObject(value?.personas) ? value.personas : {};
+  const topLevelFallback: Partial<PetPersonaState> = { unlocked: true, stage: evolutionStage, path: evolutionPath, variant: Math.max(0, Math.min(7, Math.floor(Number(value?.evolution_variant) || 0))), traits: Array.isArray(value?.evolution_traits) ? value.evolution_traits.filter((item): item is string => typeof item === "string").slice(-24) : [], history: Array.isArray(value?.evolution_history) ? value.evolution_history.filter((item): item is PetEvolutionEvent => isObject(item) && typeof item.at === "string" && typeof item.success === "boolean").slice(0, 50) : [], pity: evolutionPity, success_rate: evolutionSuccessRate, target: typeof value?.targeted_evolution_target === "string" ? value.targeted_evolution_target : "", target_failures: Number(value?.targeted_evolution_failures) || 0, target_success_rate: Number(value?.targeted_evolution_success_rate) || 70 };
+  const originPersona = normalizePersona(rawPersonas.origin, "origin", activePersonaId === "origin" ? topLevelFallback : DEFAULT_ORIGIN_PERSONA);
+  const collabAvailable = Boolean(value?.secondary_unlocked || isObject(rawPersonas.collab));
+  const collabPersona = collabAvailable ? normalizePersona(rawPersonas.collab, "collab", activePersonaId === "collab" ? topLevelFallback : { unlocked: true }) : null;
+  const resolvedActivePersona: PetPersonaId = activePersonaId === "collab" && collabPersona ? "collab" : "origin";
+  const activePersona = resolvedActivePersona === "collab" && collabPersona ? collabPersona : originPersona;
   return {
     name: typeof value?.name === "string" && value.name.trim() ? value.name.trim().slice(0, 20) : "小镜",
     color,
@@ -703,13 +754,13 @@ function normalizedPetProfile(value: Partial<PetProfile> | null | undefined): Pe
     earned_event_keys: Array.isArray(value?.earned_event_keys) ? value.earned_event_keys.filter((item): item is string => typeof item === "string").slice(-1000) : [],
     evolution_chances: storedChances + Math.max(0, level - storedCreditedLevel),
     evolution_credited_level: Math.max(level, storedCreditedLevel),
-    evolution_stage: evolutionStage,
-    evolution_path: evolutionPath,
-    evolution_name: evolutionPath ? PET_EVOLUTION_PATHS[evolutionPath].name : "未变身",
-    evolution_quality: evolutionPath ? PET_EVOLUTION_PATHS[evolutionPath].tone : "base",
-    evolution_variant: Math.max(0, Math.min(7, Math.floor(Number(value?.evolution_variant) || 0))),
-    evolution_traits: Array.isArray(value?.evolution_traits) ? value.evolution_traits.filter((item): item is string => typeof item === "string").slice(-24) : [],
-    evolution_history: Array.isArray(value?.evolution_history) ? value.evolution_history.filter((item): item is PetEvolutionEvent => isObject(item) && typeof item.at === "string" && typeof item.success === "boolean").slice(0, 50) : [],
+    evolution_stage: activePersona.stage,
+    evolution_path: activePersona.path,
+    evolution_name: activePersona.name,
+    evolution_quality: activePersona.quality,
+    evolution_variant: activePersona.variant,
+    evolution_traits: activePersona.traits,
+    evolution_history: activePersona.history,
     equipment_catalog_size: Math.max(PET_EQUIPMENT_CATALOG.length, Math.floor(Number(value?.equipment_catalog_size) || 0)),
     equipment_parts: Math.max(0, Math.floor(Number(value?.equipment_parts) || 0)),
     inventory,
@@ -729,13 +780,19 @@ function normalizedPetProfile(value: Partial<PetProfile> | null | undefined): Pe
     wheel_chances: Math.max(0, Math.floor(Number(value?.wheel_chances) || 0)),
     wheel_history: wheelHistory,
     wheel_rewards: wheelRewards.length ? wheelRewards : PET_WHEEL_REWARDS,
-    targeted_evolution_target: typeof value?.targeted_evolution_target === "string" && value.targeted_evolution_target in PET_EVOLUTION_PATHS ? value.targeted_evolution_target as PetEvolutionPath : "",
-    targeted_evolution_failures: Math.max(0, Math.min(3, Math.floor(Number(value?.targeted_evolution_failures) || 0))),
-    targeted_evolution_blessings: Math.max(0, Math.min(20, Math.floor(Number(value?.targeted_evolution_blessings) || 0))),
-    targeted_evolution_success_rate: Math.max(70, Math.min(100, Math.floor(Number(value?.targeted_evolution_success_rate) || 70))),
+    targeted_evolution_target: activePersona.target,
+    targeted_evolution_failures: activePersona.target_failures,
+    targeted_evolution_blessings: targetedBlessings,
+    targeted_evolution_success_rate: activePersona.target_success_rate,
     total_drops: Math.max(0, Math.floor(Number(value?.total_drops) || inventory.reduce((sum, item) => sum + item.count, 0))),
-    evolution_pity: evolutionPity,
-    evolution_success_rate: evolutionSuccessRate,
+    evolution_pity: activePersona.pity,
+    evolution_success_rate: activePersona.success_rate,
+    active_persona: resolvedActivePersona,
+    secondary_unlocked: collabPersona !== null,
+    secondary_unlock_cost: Math.max(1, Math.floor(Number(value?.secondary_unlock_cost) || 10)),
+    secondary_unlock_required_stage: Math.max(1, Math.floor(Number(value?.secondary_unlock_required_stage) || 6)),
+    secondary_hard_pity: Math.max(1, Math.floor(Number(value?.secondary_hard_pity) || 12)),
+    personas: { origin: originPersona, collab: collabPersona },
   };
 }
 
@@ -753,12 +810,17 @@ function evolveLocalPet(profile: PetProfile, spend: 1 | 5 | 10, targetPath: PetE
   const steady = profile.active_skills.includes("steady_heart") ? profile.skills.find((item) => item.id === "steady_heart")?.level ?? 0 : 0;
   const evolutionBonus = profile.equipment_stats.evolution_bonus;
   const targeted = spend === 10;
+  const isCollab = profile.active_persona === "collab";
   if (targeted && (!targetPath || PET_EVOLUTION_PATHS[targetPath]?.hidden)) throw new Error("隐藏路线只能通过随机进化发现");
+  if (targeted && isCollab && !PET_PUBLIC_COLLAB_PATHS.some(([path]) => path === targetPath)) throw new Error("联名人格只能定向选择公开联名路线");
   const targetFailures = targeted && targetPath === profile.targeted_evolution_target ? profile.targeted_evolution_failures : 0;
   const successRate = targeted
     ? Math.min(100, 70 + targetFailures * 10 + profile.targeted_evolution_blessings * 5)
-    : Math.min(55, 10 + echo + Math.min(30, profile.evolution_pity * (2 + steady)) + evolutionBonus);
-  const success = spend === 5 || petRandomInt(100) < successRate;
+    : isCollab
+      ? profile.evolution_pity >= profile.secondary_hard_pity ? 100 : Math.min(50, 5 + echo + Math.min(30, profile.evolution_pity * (2 + steady)) + evolutionBonus)
+      : Math.min(55, 10 + echo + Math.min(30, profile.evolution_pity * (2 + steady)) + evolutionBonus);
+  const hardPity = isCollab && !targeted && spend === 1 && profile.evolution_pity >= profile.secondary_hard_pity;
+  const success = spend === 5 || hardPity || petRandomInt(100) < successRate;
   const routeReset = ((spend === 5 && Boolean(profile.evolution_path) && profile.evolution_stage > 0) || targeted) && Boolean(targetPath || profile.evolution_path);
   const previousPath = routeReset ? profile.evolution_path : "";
   const previousStage = routeReset ? profile.evolution_stage : 0;
@@ -779,7 +841,7 @@ function evolveLocalPet(profile: PetProfile, spend: 1 | 5 | 10, targetPath: PetE
     if (routeReset) {
       if (targeted && targetPath && targetPath !== previousPath) path = targetPath;
       else {
-        const rerollPool = PET_EVOLUTION_PATH_LOTTERY.filter((candidate) => candidate !== previousPath);
+        const rerollPool = (isCollab ? PET_COLLAB_EVOLUTION_PATH_LOTTERY : PET_EVOLUTION_PATH_LOTTERY).filter((candidate) => candidate !== previousPath);
         path = rerollPool[petRandomInt(rerollPool.length)];
       }
       stage = 0;
@@ -789,7 +851,8 @@ function evolveLocalPet(profile: PetProfile, spend: 1 | 5 | 10, targetPath: PetE
       if (targeted) blessingsAfter = 0;
       wheelCompensation = previousStage * 2;
     } else if (!path) {
-      path = PET_EVOLUTION_PATH_LOTTERY[petRandomInt(PET_EVOLUTION_PATH_LOTTERY.length)];
+      const routePool = isCollab ? PET_COLLAB_EVOLUTION_PATH_LOTTERY : PET_EVOLUTION_PATH_LOTTERY;
+      path = routePool[petRandomInt(routePool.length)];
     }
     critical = routeReset ? false : petRandomInt(100) < 12;
     const stageGain = routeReset ? 1 : critical ? 2 : 1;
@@ -817,25 +880,47 @@ function evolveLocalPet(profile: PetProfile, spend: 1 | 5 | 10, targetPath: PetE
     targetAfter = targetPath;
     targetFailuresAfter = Math.min(3, targetFailures + 1);
   }
+  const pityAfter = targeted ? profile.evolution_pity : success ? 0 : Math.min(isCollab ? profile.secondary_hard_pity : 20, profile.evolution_pity + 1);
   const historyTrait = routeReset && success ? `${targeted ? "定向" : ""}换路线 · ${wonTraits.join(" / ")}` : wonTraits.join(" / ");
   const event: PetEvolutionEvent = {
     at: new Date().toISOString(),
     ...(routeReset ? { type: targeted ? "targeted_reroute" as const : "reroute" as const, previous_path: previousPath, target_path: targeted ? targetPath : "", route_reset: success } : {}),
     spent: spend,
     guaranteed: spend === 5,
+    hard_pity: hardPity,
+    persona: profile.active_persona,
     success,
     stage,
     path,
     trait: historyTrait,
     traits: wonTraits,
     critical,
-    success_rate: spend === 5 ? 100 : successRate,
-    pity_after: targeted ? profile.evolution_pity : success ? 0 : Math.min(20, profile.evolution_pity + 1),
+    success_rate: spend === 5 || hardPity ? 100 : successRate,
+    pity_after: pityAfter,
     wheel_compensation: wheelCompensation,
     skill: awakenedSkill,
   };
+  const nextPersona: PetPersonaState = {
+    ...(profile.active_persona === "collab" ? profile.personas.collab! : profile.personas.origin),
+    stage,
+    path,
+    name: path ? PET_EVOLUTION_PATHS[path].name : "未变身",
+    quality: path ? PET_EVOLUTION_PATHS[path].tone : "base",
+    variant,
+    traits,
+    history: [event, ...profile.evolution_history].slice(0, 50),
+    pity: pityAfter,
+    success_rate: targeted ? profile.evolution_success_rate : success ? (isCollab ? Math.min(50, 5 + echo + evolutionBonus) : Math.min(55, 10 + echo + evolutionBonus)) : (isCollab ? pityAfter >= profile.secondary_hard_pity ? 100 : Math.min(50, 5 + pityAfter * (2 + steady) + echo + evolutionBonus) : Math.min(55, 10 + pityAfter * (2 + steady) + echo + evolutionBonus)),
+    target: targetAfter,
+    target_failures: targetFailuresAfter,
+    target_success_rate: Math.min(100, 70 + targetFailuresAfter * 10 + blessingsAfter * 5),
+  };
+  const personas = profile.active_persona === "collab"
+    ? { ...profile.personas, collab: nextPersona }
+    : { ...profile.personas, origin: nextPersona };
   return {
     success,
+    hard_pity: hardPity,
     trait: wonTraits.join(" / "),
     critical,
     skill: awakenedSkill,
@@ -853,8 +938,8 @@ function evolveLocalPet(profile: PetProfile, spend: 1 | 5 | 10, targetPath: PetE
       evolution_variant: variant,
       evolution_traits: traits,
       evolution_history: [event, ...profile.evolution_history].slice(0, 50),
-      evolution_pity: targeted ? profile.evolution_pity : success ? 0 : Math.min(20, profile.evolution_pity + 1),
-      evolution_success_rate: targeted ? profile.evolution_success_rate : success ? Math.min(55, 10 + echo + evolutionBonus) : Math.min(55, 10 + (Math.min(20, profile.evolution_pity + 1) * (2 + steady)) + echo + evolutionBonus),
+      evolution_pity: pityAfter,
+      evolution_success_rate: nextPersona.success_rate,
       wheel_chances: profile.wheel_chances + wheelCompensation,
       targeted_evolution_target: targetAfter,
       targeted_evolution_failures: targetFailuresAfter,
@@ -862,6 +947,7 @@ function evolveLocalPet(profile: PetProfile, spend: 1 | 5 | 10, targetPath: PetE
       targeted_evolution_success_rate: Math.min(100, 70 + targetFailuresAfter * 10 + blessingsAfter * 5),
       skills,
       active_skills: activeSkills,
+      personas,
     }),
   };
 }
@@ -2318,7 +2404,7 @@ function PetEquipmentGuide({ open, profile, onClose }: { open: boolean; profile:
   </section>;
 }
 
-function CompanionPet({ visible, message, mood, completed, total, pulse, hasNext, profile, settingsOpen, draftName, busy, persistenceLabel, isAdmin, currentUserId, adminUsers, onPet, onEvolve, onEquip, onAutoEquip, onSynthesize, onReforge, onDismantle, onRandomForge, onOpenEquipmentGuide, onSaveWardrobe, onApplyWardrobe, onDeleteWardrobe, onToggleSkill, onGiftTickets, onSpinWheel, onCompleteWheelSpin, onGiftWheelChances, onNext, onHide, onShow, onToggleSettings, onDraftName, onSelectColor, onSelectAccessory, onSelectFashion, onSaveProfile }: {
+function CompanionPet({ visible, message, mood, completed, total, pulse, hasNext, profile, settingsOpen, draftName, busy, persistenceLabel, isAdmin, currentUserId, adminUsers, onPet, onEvolve, onUnlockPersona, onSwitchPersona, onEquip, onAutoEquip, onSynthesize, onReforge, onDismantle, onRandomForge, onOpenEquipmentGuide, onSaveWardrobe, onApplyWardrobe, onDeleteWardrobe, onToggleSkill, onGiftTickets, onSpinWheel, onCompleteWheelSpin, onGiftWheelChances, onNext, onHide, onShow, onToggleSettings, onDraftName, onSelectColor, onSelectAccessory, onSelectFashion, onSaveProfile }: {
   visible: boolean;
   message: string;
   mood: PetMood;
@@ -2336,6 +2422,8 @@ function CompanionPet({ visible, message, mood, completed, total, pulse, hasNext
   adminUsers: ServerUser[];
   onPet: () => void;
   onEvolve: (spend: 1 | 5 | 10, targetPath?: PetEvolutionPath) => void;
+  onUnlockPersona: () => void;
+  onSwitchPersona: (persona: PetPersonaId) => void;
   onEquip: (slot: PetEquipmentSlot, itemId: string | null) => void;
   onAutoEquip: (mode: PetAutoEquipMode) => void;
   onSynthesize: (itemId: string) => void;
@@ -2431,6 +2519,8 @@ function CompanionPet({ visible, message, mood, completed, total, pulse, hasNext
   const giftUsers = adminUsers.filter((item) => item.active);
   const annotatorGiftIds = giftUsers.filter((item) => item.role === "annotator").map((item) => item.id);
   const targetedEvolutionRate = Math.min(100, 70 + (targetEvolutionPath && targetEvolutionPath === profile.targeted_evolution_target ? profile.targeted_evolution_failures * 10 : 0) + profile.targeted_evolution_blessings * 5);
+  const targetedRouteOptions = profile.active_persona === "collab" ? PET_PUBLIC_COLLAB_PATHS : PET_PUBLIC_EVOLUTION_PATHS;
+  const hiddenRouteDiscovered = profile.personas.origin.path === "nexus" || profile.personas.collab?.path === "nexus";
   const toggleGiftUser = (userId: string) => setGiftUserIds((current) => current.includes(userId) ? current.filter((id) => id !== userId) : [...current, userId]);
   const toggleWheelUser = (userId: string) => setWheelUserIds((current) => current.includes(userId) ? current.filter((id) => id !== userId) : [...current, userId]);
   const spinWheel = async () => {
@@ -2485,26 +2575,33 @@ function CompanionPet({ visible, message, mood, completed, total, pulse, hasNext
               {[["evolution", "进化抽奖"], ["wheel", `幸运转盘 ${profile.wheel_chances}`], ["equipment", `装备 ${profile.inventory.length}/${profile.equipment_catalog_size}`], ["wardrobe", `衣柜 ${unlockedFashion.length}/${profile.fashion_catalog_size}`], ["skills", `技能 ${profile.skills.filter((item) => item.level > 0).length}/8`], ["appearance", "外观与等级"]].map(([id, label]) => <button type="button" className={studioSection === id ? "active" : ""} onClick={() => setStudioSection(id as typeof studioSection)} key={id}>{label}</button>)}
             </nav>
             {studioSection === "evolution" ? <section className={`pet-evolution-lab pet-evolution-v2 ${profile.evolution_path ? `path-${profile.evolution_path}` : ""}`}>
+              <section className="pet-persona-deck">
+                <header><div><span>DUAL PERSONA</span><strong>双人格 · 双修</strong><small>两套路线、阶数与保底独立；进化券、装备、衣柜和技能共享。</small></div><b>{profile.active_persona === "origin" ? "本源培养中" : "联名培养中"}</b></header>
+                <div>
+                  <button type="button" className={profile.active_persona === "origin" ? "active origin" : "origin"} disabled={busy} onClick={() => { setTargetEvolutionPath(""); onSwitchPersona("origin"); }}><i>镜</i><span><small>ORIGIN</small><strong>本源小镜</strong><em>{profile.personas.origin.path ? `${profile.personas.origin.name} · ${profile.personas.origin.stage} 阶` : "等待首次进化"}</em></span><b>{profile.personas.origin.success_rate}%</b></button>
+                  {profile.personas.collab ? <button type="button" className={profile.active_persona === "collab" ? "active collab" : "collab"} disabled={busy} onClick={() => { setTargetEvolutionPath(""); onSwitchPersona("collab"); }}><i>联</i><span><small>COLLAB</small><strong>联名小镜</strong><em>{profile.personas.collab.name} · {profile.personas.collab.stage} 阶</em></span><b>{profile.personas.collab.success_rate}%</b></button> : <article className="pet-persona-locked"><i>◇</i><span><small>SECOND PERSONA</small><strong>联名小镜待觉醒</strong><em>本源达到 {profile.secondary_unlock_required_stage} 阶后，随机获得未占用联名路线</em></span><button type="button" disabled={busy || profile.personas.origin.stage < profile.secondary_unlock_required_stage || profile.evolution_chances < profile.secondary_unlock_cost} onClick={onUnlockPersona}>{profile.personas.origin.stage < profile.secondary_unlock_required_stage ? `本源还差 ${profile.secondary_unlock_required_stage - profile.personas.origin.stage} 阶` : profile.evolution_chances < profile.secondary_unlock_cost ? `还差 ${profile.secondary_unlock_cost - profile.evolution_chances} 张券` : `消耗 ${profile.secondary_unlock_cost} 券开启`}</button></article>}
+                </div>
+              </section>
               <header><div><span>EVOLUTION LOTTERY</span><strong>{profile.evolution_stage ? `${profile.evolution_name} · 第 ${profile.evolution_stage} 次进化` : "等待第一次随机进化"}</strong></div><b>{profile.evolution_chances} 张进化券</b></header>
-              <div className="pet-lottery-hero"><div className="pet-lottery-orbit"><PetCreatureVisual profile={profile} accessory={accessory} /><i>{profile.evolution_stage || "?"}</i></div><div><strong>{profile.evolution_path ? `${PET_EVOLUTION_PATHS[profile.evolution_path].tone}路线持续强化` : "16 条公开路线 + 1 条隐藏路线"}</strong><p>{profile.evolution_path ? "单抽继续强化当前路线；使用 5 张进化券可改抽另一条路线，原路线层级与路线特征会清空，新路线从第 1 次进化开始。团队账号只会获得当前无人使用的路线；路线已满时不扣券。" : "首次成功决定主路线；团队账号仅分配无人使用的路线；没有空闲路线时不扣券，隐藏路线只能随机发现。获得路线后，也可以用 5 张券更换路线。"}</p><div className="pet-odds"><span>本次单抽成功率</span><b>{profile.evolution_success_rate}%</b><i><em style={{ width: `${profile.evolution_success_rate}%` }} /></i><small>连续失败会提高保底，成功后重置</small></div></div></div>
+              <div className="pet-lottery-hero"><div className="pet-lottery-orbit"><PetCreatureVisual profile={profile} accessory={accessory} /><i>{profile.evolution_stage || "?"}</i></div><div><strong>{profile.evolution_path ? `${PET_EVOLUTION_PATHS[profile.evolution_path].tone}路线持续强化` : "16 条公开路线 + 1 条隐藏路线"}</strong><p>{profile.evolution_path ? `当前培养「${profile.active_persona === "origin" ? "本源小镜" : "联名小镜"}」。单抽只强化当前人格；5 券随机换线也只重置当前人格，另一人格完整保留。` : "首次成功决定主路线；团队账号仅分配无人使用的路线；没有空闲路线时不扣券。"}</p><div className="pet-odds"><span>本次单抽成功率</span><b>{profile.evolution_success_rate}%</b><i><em style={{ width: `${profile.evolution_success_rate}%` }} /></i><small>{profile.active_persona === "collab" ? `基础概率 5% · 失败 ${profile.evolution_pity}/${profile.secondary_hard_pity} · 满保底后必成` : "连续失败会提高保底，成功后重置"}</small></div></div></div>
               <div className="pet-evolution-track">{[1, 3, 6, 9, 12, Math.max(15, Math.ceil((profile.evolution_stage + 1) / 3) * 3)].filter((stage, index, list) => list.indexOf(stage) === index).map((stage) => <i className={profile.evolution_stage >= stage ? "active" : stage === profile.evolution_stage + 1 ? "next" : ""} key={stage}><span>{stage}</span><small>{isIllustratedRoute(profile.evolution_path) ? routeMilestone(profile.evolution_path, stage) : stage === 1 ? "路线诞生" : stage === 3 ? "展翼" : stage === 6 ? "领域" : stage === 9 ? "神话" : stage === 12 ? "星环" : "无限强化"}</small></i>)}</div>
               {isIllustratedRoute(profile.evolution_path) ? <section className="pet-route-evolution-preview" aria-label="当前路线进化外观"><header><strong>进化后的模样</strong><small>关键阶段解锁专属外观 · 每次成功更新阶数徽记</small></header><div>{ROUTE_STAGE_THRESHOLDS.map((stage, index) => <figure className={profile.evolution_stage >= stage ? "unlocked" : "future"} key={stage}><PetRouteArt path={profile.evolution_path as keyof typeof ILLUSTRATED_ROUTES} stage={stage} /><figcaption><b>{stage} 阶</b>{ROUTE_MILESTONES[profile.evolution_path as keyof typeof ILLUSTRATED_ROUTES][index]}<small>{profile.evolution_stage >= stage ? "已达成" : "待进化"}</small></figcaption></figure>)}</div></section> : null}
 
-              <div className="pet-path-pool">{PET_PUBLIC_EVOLUTION_PATHS.filter(([id]) => !isIllustratedRoute(id)).map(([id, item]) => <span className={profile.evolution_path === id ? "active" : id === "wonky" ? "wonky" : ""} key={id}><b>{item.motif}</b>{item.name}</span>)}</div>
+              {profile.active_persona === "origin" ? <div className="pet-path-pool">{PET_PUBLIC_EVOLUTION_PATHS.filter(([id]) => !isIllustratedRoute(id)).map(([id, item]) => <span className={profile.evolution_path === id ? "active" : id === "wonky" ? "wonky" : ""} key={id}><b>{item.motif}</b>{item.name}</span>)}</div> : null}
               <section className="pet-route-gallery" aria-label="新路线外观图鉴">
                 <header><div><span>THE NEW COMPANIONS</span><strong>异世界来客</strong></div><small>7 条主题路线 · 1 位神秘来客</small></header>
                 <div>{Object.entries(ILLUSTRATED_ROUTES).map(([id, art]) => {
                   if (!isIllustratedRoute(id)) return null;
-                  const undiscovered = id === "nexus" && profile.evolution_path !== "nexus";
+                  const undiscovered = id === "nexus" && !hiddenRouteDiscovered;
                   return <article className={`${profile.evolution_path === id ? "active" : ""} ${undiscovered ? "undiscovered" : ""}`} style={{ "--route-accent": art.accent, "--route-soft": art.soft, "--route-ink": art.dark } as CSSProperties} key={id}>
                     <div className="pet-route-portrait">{undiscovered ? <div className="pet-route-mystery"><i /><b>?</b><small>UNDISCOVERED</small></div> : <PetRouteArt path={id} stage={3} />}{profile.evolution_path === id ? <span>当前路线</span> : null}</div>
                     <strong>{undiscovered ? "隐藏路线" : PET_EVOLUTION_PATHS[id].name}</strong><small>{undiscovered ? "只在随机进化中相遇" : art.caption}</small>
                   </article>;
                 })}</div>
               </section>
-              {profile.evolution_path ? <section className="pet-targeted-reroute"><header><div><span>TARGETED REROUTE</span><strong>十券定向换路线</strong><small>失败不改变当前路线；同一目标每次失败 +10%，定向祝福每层额外 +5%。已被其他宠物占用的路线不会重复分配，隐藏路线不可定向。</small></div><b>{targetedEvolutionRate}%<small>当前成功率</small></b></header><div>{PET_PUBLIC_EVOLUTION_PATHS.filter(([id]) => id !== profile.evolution_path).map(([id, item]) => <button type="button" className={`${targetEvolutionPath === id ? "active" : ""} ${profile.targeted_evolution_target === id && profile.targeted_evolution_failures ? "pity" : ""}`} onClick={() => setTargetEvolutionPath(id as PetEvolutionPath)} key={id}><i className={isIllustratedRoute(id) ? "route-choice-icon" : ""}>{isIllustratedRoute(id) ? <PetRouteArt path={id} /> : item.motif}</i><span>{item.name}<small>{profile.targeted_evolution_target === id && profile.targeted_evolution_failures ? `已失败 ${profile.targeted_evolution_failures} 次` : item.tone}</small></span></button>)}</div><footer><span><b>{profile.targeted_evolution_blessings}</b> 层定向祝福 · 成功补偿 <b>{profile.evolution_stage * 2}</b> 次大转盘</span><button type="button" disabled={busy || profile.evolution_chances < 10 || !targetEvolutionPath || targetEvolutionPath === profile.evolution_path} onClick={() => onEvolve(10, targetEvolutionPath)}>{profile.evolution_chances < 10 ? `还差 ${10 - profile.evolution_chances} 张券` : targetEvolutionPath ? `消耗 10 券 · ${targetedEvolutionRate}%` : "先选择目标路线"}</button></footer></section> : null}
+              {profile.evolution_path ? <section className="pet-targeted-reroute"><header><div><span>TARGETED REROUTE</span><strong>十券定向换路线</strong><small>失败不改变当前人格路线；同一目标每次失败 +10%，定向祝福每层额外 +5%。已被任何人格占用的路线不会重复分配，隐藏路线不可定向。</small></div><b>{targetedEvolutionRate}%<small>当前成功率</small></b></header><div>{targetedRouteOptions.filter(([id]) => id !== profile.evolution_path).map(([id, item]) => <button type="button" className={`${targetEvolutionPath === id ? "active" : ""} ${profile.targeted_evolution_target === id && profile.targeted_evolution_failures ? "pity" : ""}`} onClick={() => setTargetEvolutionPath(id as PetEvolutionPath)} key={id}><i className={isIllustratedRoute(id) ? "route-choice-icon" : ""}>{isIllustratedRoute(id) ? <PetRouteArt path={id} /> : item.motif}</i><span>{item.name}<small>{profile.targeted_evolution_target === id && profile.targeted_evolution_failures ? `已失败 ${profile.targeted_evolution_failures} 次` : item.tone}</small></span></button>)}</div><footer><span><b>{profile.targeted_evolution_blessings}</b> 层定向祝福 · 成功补偿 <b>{profile.evolution_stage * 2}</b> 次大转盘</span><button type="button" disabled={busy || profile.evolution_chances < 10 || !targetEvolutionPath || targetEvolutionPath === profile.evolution_path} onClick={() => onEvolve(10, targetEvolutionPath)}>{profile.evolution_chances < 10 ? `还差 ${10 - profile.evolution_chances} 张券` : targetEvolutionPath ? `消耗 10 券 · ${targetedEvolutionRate}%` : "先选择目标路线"}</button></footer></section> : null}
               {profile.evolution_traits.length ? <div className="pet-evolution-traits">{profile.evolution_traits.slice(-12).map((trait, index) => <span key={`${trait}-${index}`}>{trait}</span>)}</div> : <p>路线池现有 16 条公开路线，包含 EVA、剑灵、DNF、NBA、王者、VALORANT、LOL 联动主题；另有 1 条只能随机发现的隐藏路线。</p>}
-              <div className="pet-evolution-actions"><button type="button" disabled={busy || profile.evolution_chances < 1} onClick={() => onEvolve(1)}><strong>抽一次</strong><small>消耗 1 张 · 当前 {profile.evolution_success_rate}%</small></button><button className="guaranteed" type="button" disabled={busy || profile.evolution_chances < 5} onClick={() => onEvolve(5)}><strong>{profile.evolution_path ? "五券随机换路线" : "五券首进化"}</strong><small>{profile.evolution_path ? `100% 换路线 · 补偿 ${profile.evolution_stage * 2} 次转盘` : "消耗 5 张 · 100% 成功"}</small></button></div>
+              <div className="pet-evolution-actions"><button type="button" disabled={busy || profile.evolution_chances < 1} onClick={() => onEvolve(1)}><strong>抽一次 · {profile.active_persona === "origin" ? "本源" : "联名"}</strong><small>消耗 1 张 · 当前 {profile.evolution_success_rate}%</small></button><button className="guaranteed" type="button" disabled={busy || profile.evolution_chances < 5} onClick={() => onEvolve(5)}><strong>{profile.evolution_path ? `五券随机换${profile.active_persona === "collab" ? "联名" : ""}路线` : "五券首进化"}</strong><small>{profile.evolution_path ? `只重置当前人格 · 补偿 ${profile.evolution_stage * 2} 次转盘` : "消耗 5 张 · 100% 成功"}</small></button></div>
               {profile.evolution_history.length ? <details className="pet-evolution-history"><summary>最近抽奖记录 · {profile.evolution_history.length}</summary>{profile.evolution_history.slice(0, 10).map((event, index) => <div key={`${event.at}-${index}`}><span>{event.type === "gift" ? event.trait : event.success ? `${event.critical ? "暴击 · " : "成功 · "}${event.trait || PET_EVOLUTION_PATHS[event.path as Exclude<PetEvolutionPath, "">]?.name || "新形态"}${event.wheel_compensation ? ` · 补偿 ${event.wheel_compensation} 次转盘` : ""}${event.skill ? ` · ${event.skill.name} Lv.${event.skill.level}` : ""}` : event.type === "targeted_reroute" ? `定向失败 · 当前路线保留，下次同目标概率提升` : `失败 · 保底提升至 ${event.pity_after ?? 0}`}</span><small>{event.type === "gift" ? event.sender : event.type === "targeted_reroute" ? `十券定向 ${event.success_rate ?? 70}%` : event.type === "reroute" ? "五券随机换路线" : event.spent === 5 ? "五券首进化" : `单抽 ${event.success_rate ?? 10}%`} · {new Date(event.at).toLocaleString()}</small></div>)}</details> : null}
               {isAdmin ? <form className="pet-ticket-gift" onSubmit={(event) => { event.preventDefault(); void onGiftTickets(giftUserIds, giftAmount, giftNote).then(() => setGiftUserIds([])).catch(() => undefined); }}>
                 <header><div><span>管理员发放进化券</span><small>可发送给管理员或标注员；登录身份即为授权，无需再次输入密码</small></div><b>{giftUserIds.length} 人已选</b></header>
@@ -5112,6 +5209,52 @@ export default function Home() {
     }
   };
 
+  const switchPetPersona = async (persona: PetPersonaId) => {
+    const current = petProfileRef.current;
+    if (petBusy || persona === current.active_persona || (persona === "collab" && !current.secondary_unlocked)) return;
+    setPetBusy(true);
+    try {
+      const next = serverUser
+        ? await apiRequest<PetProfile>("/api/pet/persona", { method: "PUT", body: JSON.stringify({ persona }) })
+        : normalizedPetProfile({ ...current, active_persona: persona });
+      applyPetProfile(next);
+      wakePet(persona === "collab" ? "联名小镜已接管培养位，双修继续！" : "本源小镜回来啦，原来的成长完整保留。", "proud");
+    } catch (error) {
+      wakePet(error instanceof Error ? error.message : "人格切换失败，请稍后再试", "worried");
+    } finally {
+      setPetBusy(false);
+    }
+  };
+
+  const unlockCollabPersona = async () => {
+    const current = petProfileRef.current;
+    const originStage = current.personas.origin.stage;
+    if (petBusy || current.secondary_unlocked || originStage < current.secondary_unlock_required_stage || current.evolution_chances < current.secondary_unlock_cost) return;
+    if (!window.confirm(`将消耗 ${current.secondary_unlock_cost} 张进化券开启联名小镜，并随机获得一条当前可用的联名路线。两个人格独立进化，共享装备、技能与进化券。继续吗？`)) return;
+    setPetBusy(true);
+    try {
+      let next: PetProfile;
+      let trait = "联名之约";
+      if (serverUser) {
+        const result = await apiRequest<{ profile: PetProfile; spent: number; path: PetEvolutionPath; trait: string }>("/api/pet/persona/unlock", { method: "POST", body: "{}" });
+        next = result.profile;
+        trait = result.trait;
+      } else {
+        const path = PET_COLLAB_EVOLUTION_PATH_LOTTERY[petRandomInt(PET_COLLAB_EVOLUTION_PATH_LOTTERY.length)];
+        trait = PET_EVOLUTION_PATHS[path].traits[0][petRandomInt(PET_EVOLUTION_PATHS[path].traits[0].length)];
+        const event: PetEvolutionEvent = { at: new Date().toISOString(), type: "persona_unlock", persona: "collab", spent: 10, guaranteed: true, success: true, stage: 1, path, trait: `联名人格觉醒 · ${trait}`, traits: [trait], critical: false, success_rate: 100, pity_after: 0 };
+        const collab: PetPersonaState = { id: "collab", label: "联名小镜", unlocked: true, stage: 1, path, name: PET_EVOLUTION_PATHS[path].name, quality: PET_EVOLUTION_PATHS[path].tone, variant: petRandomInt(8), traits: [trait], history: [event], pity: 0, success_rate: Math.min(50, 5 + current.equipment_stats.evolution_bonus), target: "", target_failures: 0, target_success_rate: 70 };
+        next = normalizedPetProfile({ ...current, evolution_chances: current.evolution_chances - 10, active_persona: "collab", secondary_unlocked: true, personas: { ...current.personas, collab } });
+      }
+      const saved = applyPetProfile(next);
+      wakePet(`联名人格觉醒！获得「${saved.evolution_name} · ${trait}」`, "proud");
+    } catch (error) {
+      wakePet(error instanceof Error ? error.message : "联名人格觉醒失败，请稍后再试", "worried");
+    } finally {
+      setPetBusy(false);
+    }
+  };
+
   const evolveCompanion = async (spend: 1 | 5 | 10, targetPath: PetEvolutionPath = "") => {
     const current = petProfileRef.current;
     if (petBusy || current.evolution_chances < spend) return;
@@ -5131,14 +5274,14 @@ export default function Home() {
     setPetBusy(true);
     try {
       if (serverUser) {
-        const result = await apiRequest<{ profile: PetProfile; success: boolean; spent: number; guaranteed: boolean; trait: string; critical?: boolean; route_reset?: boolean; targeted?: boolean; target_path?: PetEvolutionPath; success_rate?: number; wheel_compensation?: number; previous_path?: PetEvolutionPath; skill?: PetSkill | null }>("/api/pet/evolve", { method: "POST", body: JSON.stringify({ spend, target_path: spend === 10 ? targetPath : null }) });
+        const result = await apiRequest<{ profile: PetProfile; success: boolean; spent: number; guaranteed: boolean; hard_pity?: boolean; trait: string; critical?: boolean; route_reset?: boolean; targeted?: boolean; target_path?: PetEvolutionPath; success_rate?: number; wheel_compensation?: number; previous_path?: PetEvolutionPath; skill?: PetSkill | null }>("/api/pet/evolve", { method: "POST", body: JSON.stringify({ spend, target_path: spend === 10 ? targetPath : null, persona: current.active_persona }) });
         const next = applyPetProfile(result.profile);
-        if (result.success) wakePet(`${result.route_reset ? `${result.targeted ? "定向" : "随机"}换路线成功！补偿 ${result.wheel_compensation ?? 0} 次大转盘。` : result.critical ? "暴击进化！" : "进化成功！"}获得「${result.trait}」${result.skill ? `，${result.skill.name} Lv.${result.skill.level}` : ""}`, next.evolution_path === "wonky" ? "worried" : "proud");
+        if (result.success) wakePet(`${result.route_reset ? `${result.targeted ? "定向" : "随机"}换路线成功！补偿 ${result.wheel_compensation ?? 0} 次大转盘。` : result.hard_pity ? "联名保底触发，进化成功！" : result.critical ? "暴击进化！" : "进化成功！"}获得「${result.trait}」${result.skill ? `，${result.skill.name} Lv.${result.skill.level}` : ""}`, next.evolution_path === "wonky" ? "worried" : "proud");
         else wakePet(result.targeted ? `定向换路线失败，当前路线保留；同一目标下次成功率已提升至 ${next.targeted_evolution_success_rate}%` : `这次化成星尘，单抽保底升至 ${next.evolution_success_rate}%`, "worried");
       } else {
         const result = evolveLocalPet(current, spend, targetPath);
         const next = applyPetProfile(result.profile);
-        if (result.success) wakePet(`${result.route_reset ? `${result.targeted ? "定向" : "随机"}换路线成功！补偿 ${result.wheel_compensation} 次大转盘。` : result.critical ? "暴击进化！" : "进化成功！"}获得「${result.trait}」${result.skill ? `，${result.skill.name} Lv.${result.skill.level}` : ""}`, next.evolution_path === "wonky" ? "worried" : "proud");
+        if (result.success) wakePet(`${result.route_reset ? `${result.targeted ? "定向" : "随机"}换路线成功！补偿 ${result.wheel_compensation} 次大转盘。` : result.hard_pity ? "联名保底触发，进化成功！" : result.critical ? "暴击进化！" : "进化成功！"}获得「${result.trait}」${result.skill ? `，${result.skill.name} Lv.${result.skill.level}` : ""}`, next.evolution_path === "wonky" ? "worried" : "proud");
         else wakePet(result.targeted ? `定向换路线失败，当前路线保留；同一目标下次成功率已提升至 ${next.targeted_evolution_success_rate}%` : `这次化成星尘，单抽保底升至 ${next.evolution_success_rate}%`, "worried");
       }
     } catch (error) {
@@ -6137,7 +6280,7 @@ export default function Home() {
               <div className="annotator-fields"><input value={annotatorId} disabled={Boolean(serverUser)} onChange={(event) => setAnnotatorId(event.target.value)} placeholder="用户 ID，如 jiangqy" aria-label="标注员 ID" /><input value={annotatorName} disabled={Boolean(serverUser)} onChange={(event) => setAnnotatorName(event.target.value)} placeholder="显示姓名" aria-label="标注员姓名" /></div>
               <div className="annotator-actions"><button onClick={downloadAnnotationTemplate}>下载输入模板</button><button onClick={exportAnnotationRows}>仅导出标注记录</button></div>
             </div>
-            <CompanionPet visible={petVisible} message={petMessage || defaultPetMessage} mood={petMessage ? petMood : defaultPetMood} completed={Math.min(submittedCases, annotatableCases)} total={annotatableCases} pulse={petPulse} hasNext={pendingCases > 0} profile={petProfile} settingsOpen={petSettingsOpen} draftName={petDraftName} busy={petBusy} persistenceLabel={serverUser ? "团队账号" : "当前浏览器"} isAdmin={serverUser?.role === "admin"} currentUserId={serverUser?.id} adminUsers={serverUsers} onPet={() => void petTheCompanion()} onEvolve={(spend, targetPath) => void evolveCompanion(spend, targetPath)} onEquip={(slot, itemId) => void equipPetItem(slot, itemId)} onAutoEquip={(mode) => void autoEquipPet(mode)} onSynthesize={(itemId) => void synthesizePetItem(itemId)} onReforge={(itemId) => void reforgePetItem(itemId)} onDismantle={(itemId) => void dismantlePetItem(itemId)} onRandomForge={() => void randomForgePetItem()} onOpenEquipmentGuide={openPetEquipmentGuide} onSaveWardrobe={savePetWardrobe} onApplyWardrobe={(presetId) => void applyPetWardrobe(presetId)} onDeleteWardrobe={(presetId) => void deletePetWardrobe(presetId)} onToggleSkill={(skillId) => void togglePetSkill(skillId)} onGiftTickets={giftPetTickets} onSpinWheel={requestPetWheelSpin} onCompleteWheelSpin={completePetWheelSpin} onGiftWheelChances={giftPetWheelChances} onNext={goToNextPendingCase} onHide={() => setPetVisible(false)} onShow={() => { setPetVisible(true); wakePet("我回来啦，继续一起标！", "happy"); }} onToggleSettings={togglePetStudio} onDraftName={setPetDraftName} onSelectColor={(color) => previewPetStyle({ color })} onSelectAccessory={(accessory) => previewPetStyle({ accessory })} onSelectFashion={previewPetFashion} onSaveProfile={() => void savePetCustomization()} />
+            <CompanionPet visible={petVisible} message={petMessage || defaultPetMessage} mood={petMessage ? petMood : defaultPetMood} completed={Math.min(submittedCases, annotatableCases)} total={annotatableCases} pulse={petPulse} hasNext={pendingCases > 0} profile={petProfile} settingsOpen={petSettingsOpen} draftName={petDraftName} busy={petBusy} persistenceLabel={serverUser ? "团队账号" : "当前浏览器"} isAdmin={serverUser?.role === "admin"} currentUserId={serverUser?.id} adminUsers={serverUsers} onPet={() => void petTheCompanion()} onEvolve={(spend, targetPath) => void evolveCompanion(spend, targetPath)} onUnlockPersona={() => void unlockCollabPersona()} onSwitchPersona={(persona) => void switchPetPersona(persona)} onEquip={(slot, itemId) => void equipPetItem(slot, itemId)} onAutoEquip={(mode) => void autoEquipPet(mode)} onSynthesize={(itemId) => void synthesizePetItem(itemId)} onReforge={(itemId) => void reforgePetItem(itemId)} onDismantle={(itemId) => void dismantlePetItem(itemId)} onRandomForge={() => void randomForgePetItem()} onOpenEquipmentGuide={openPetEquipmentGuide} onSaveWardrobe={savePetWardrobe} onApplyWardrobe={(presetId) => void applyPetWardrobe(presetId)} onDeleteWardrobe={(presetId) => void deletePetWardrobe(presetId)} onToggleSkill={(skillId) => void togglePetSkill(skillId)} onGiftTickets={giftPetTickets} onSpinWheel={requestPetWheelSpin} onCompleteWheelSpin={completePetWheelSpin} onGiftWheelChances={giftPetWheelChances} onNext={goToNextPendingCase} onHide={() => setPetVisible(false)} onShow={() => { setPetVisible(true); wakePet("我回来啦，继续一起标！", "happy"); }} onToggleSettings={togglePetStudio} onDraftName={setPetDraftName} onSelectColor={(color) => previewPetStyle({ color })} onSelectAccessory={(accessory) => previewPetStyle({ accessory })} onSelectFashion={previewPetFashion} onSaveProfile={() => void savePetCustomization()} />
             <label className="search-box"><Icon>⌕</Icon><input ref={searchInput} value={query} onChange={(event) => { setQuery(event.target.value); setVisibleLimit(400); }} placeholder="搜索 ID、模型或消息…" /><kbd>⌘K</kbd></label>
             <div className="filters">
               <select value={protocolFilter} onChange={(event) => { setProtocolFilter(event.target.value as "all" | Protocol); setVisibleLimit(400); }} aria-label="协议筛选">
