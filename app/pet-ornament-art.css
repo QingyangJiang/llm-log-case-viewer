@@ -1,0 +1,48 @@
+/* The same SVGs are worn on the pet and shown at readable size in the studio. */
+.pet-ornament-art { display: block; width: 100%; height: 100%; overflow: visible; }
+.pet-creature > .pet-accessory,.pet-creature > .pet-equipment { position: absolute; display: block; width: 21px; height: 21px; line-height: 0; pointer-events: none; text-shadow: none; transform: none; }
+.pet-creature > .pet-accessory { z-index: 8; left: 8px; top: -14px; filter: drop-shadow(0 1px 1px #25352c44); }
+.pet-creature > .accessory-leaf { left: 18px; top: -14px; width: 17px; transform: rotate(18deg); }
+.pet-creature > .accessory-bow { left: -7px; top: -10px; width: 20px; transform: rotate(-13deg); }
+.pet-creature > .accessory-glasses { left: 3px; top: 0; width: 27px; height: 24px; }
+.pet-creature > .accessory-star { left: 19px; top: -13px; width: 17px; transform: rotate(12deg); }
+.pet-creature > .accessory-headphones { left: -3px; top: -9px; width: 39px; height: 30px; }
+.pet-creature > .accessory-cap { left: 1px; top: -14px; width: 32px; height: 23px; transform: rotate(-9deg); }
+.pet-creature > .accessory-crown { left: 6px; top: -18px; width: 23px; }
+.pet-creature > .accessory-halo { left: 2px; top: -21px; width: 29px; height: 20px; }
+.pet-creature > .accessory-medal { left: 10px; top: 23px; width: 13px; height: 15px; }
+
+.pet-creature > .pet-equipment { z-index: 7; --gear-base: #d4c49e; --gear-light: #fff3db; --gear-outline: #75695c; --gear-gem: #a9dddb; filter: drop-shadow(0 1px 1px #26302966); }
+.pet-creature > .pet-equipment-head { left: 25px; top: -13px; width: 15px; height: 15px; transform: rotate(15deg); }
+.pet-creature > .pet-equipment-face { left: 23px; top: 4px; width: 13px; height: 15px; transform: rotate(12deg); }
+.pet-creature > .pet-equipment-neck { left: 10px; top: 24px; width: 13px; height: 15px; }
+.pet-creature > .pet-equipment-back { z-index: -1; left: -13px; top: 4px; width: 23px; height: 27px; transform: rotate(-14deg); }
+.pet-creature > .pet-equipment-tail { right: -13px; bottom: -1px; width: 18px; height: 18px; transform: rotate(12deg); }
+.pet-equipment.rarity-uncommon,.rarity-uncommon .pet-ornament-art { --gear-base: #96bd91; --gear-light: #ecf9cf; --gear-outline: #56785a; --gear-gem: #d8f7c0; }
+.pet-equipment.rarity-rare,.rarity-rare .pet-ornament-art { --gear-base: #82bad7; --gear-light: #e0f7ff; --gear-outline: #51789b; --gear-gem: #f0faff; }
+.pet-equipment.rarity-epic,.rarity-epic .pet-ornament-art { --gear-base: #ba9ad5; --gear-light: #f8eafd; --gear-outline: #785e95; --gear-gem: #ffd6f1; }
+.pet-equipment.rarity-legendary,.rarity-legendary .pet-ornament-art { --gear-base: #f2c874; --gear-light: #fff9ce; --gear-outline: #997344; --gear-gem: #faf0af; }
+.pet-creature > .pet-equipment.rarity-legendary { filter: drop-shadow(0 0 3px #ffc35c); }
+
+/* The illustrated routes have taller heads and an offset face anchor. */
+.pet-creature.pet-illustrated > .pet-accessory { top: -9px; }
+.pet-creature.pet-illustrated > .accessory-leaf { top: -10px; left: 21px; }
+.pet-creature.pet-illustrated > .accessory-bow { top: -6px; left: -5px; }
+.pet-creature.pet-illustrated > .accessory-glasses { top: 6px; }
+.pet-creature.pet-illustrated > .accessory-star { top: -6px; }
+.pet-creature.pet-illustrated > .accessory-headphones { top: -6px; }
+.pet-creature.pet-illustrated > .accessory-cap { top: -10px; }
+.pet-creature.pet-illustrated > .accessory-crown { top: -13px; }
+.pet-creature.pet-illustrated > .accessory-halo { top: -17px; }
+.pet-creature.pet-illustrated > .accessory-medal { top: 24px; }
+.pet-creature.pet-illustrated > .pet-equipment-head { top: -10px; }
+.pet-creature.pet-illustrated > .pet-equipment-face { top: 10px; }
+.pet-creature.pet-illustrated > .pet-equipment-back { z-index: 1; left: -18px; }
+
+.pet-accessory-options .pet-ornament-art { width: 28px; height: 28px; margin: auto; filter: drop-shadow(0 2px 1px #29352a24); }
+.pet-slot-select .pet-ornament-art,.pet-inventory-main .pet-ornament-art { width: 28px; height: 28px; margin: auto; }
+.pet-set-collection-detail .pet-ornament-art { width: 20px; height: 20px; }
+.pet-guide-slot-map .pet-ornament-art { width: 27px; height: 27px; margin: auto; }
+.pet-drop-choice-title .pet-ornament-art { width: 34px; height: 34px; margin: auto; }
+.pet-reveal-item .pet-ornament-art { width: 42px; height: 42px; margin: auto; }
+.pet-home-loadout .pet-ornament-art { width: 14px; height: 14px; }

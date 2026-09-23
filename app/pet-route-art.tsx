@@ -8,7 +8,7 @@ export const ILLUSTRATED_ROUTES = {
   eva: { light: "#c0a3ff", base: "#8660d1", dark: "#302846", accent: "#c7fc75", soft: "#eee5ff", caption: "紫晶装甲 · 荧光核心" },
   blade_soul: { light: "#ffffff", base: "#d3f1ef", dark: "#326c78", accent: "#83ddd1", soft: "#e5fbf7", caption: "灵族灵剑士 · 青玉飞剑" },
   dnf: { light: "#ac869f", base: "#69516f", dark: "#372c49", accent: "#ffc776", soft: "#fff0df", caption: "鬼剑士 · 鬼手与锁链" },
-  nba: { light: "#ffe6b3", base: "#e9ac67", dark: "#614538", accent: "#f28d50", soft: "#fff2d8", caption: "奶橘球星 · 冠军球衣" },
+  nba: { light: "#ffedcc", base: "#e5a366", dark: "#624435", accent: "#f7bf72", soft: "#fff1da", caption: "奶橘球星 · 球场新秀" },
   honor: { light: "#fff7fa", base: "#e3c6df", dark: "#755f86", accent: "#c5a4df", soft: "#f7edf7", caption: "梦奇灵感 · 绒耳与梦泡" },
   valorant: { light: "#f3faff", base: "#bfdadf", dark: "#304b5e", accent: "#72decf", soft: "#e6fbf7", caption: "捷风灵感 · 白发与飞刃" },
   lol: { light: "#ffecdc", base: "#edc6b8", dark: "#684b64", accent: "#9edeea", soft: "#f3edf6", caption: "阿狸灵感 · 灵珠与狐火" },
@@ -97,17 +97,16 @@ export function PetRouteArt({ path, stage = 1 }: { path: IllustratedRoute; stage
         <g transform="rotate(12 126 94)"><path d="M120 116V59l7-22 8 22v57Z" fill="#c1ccd9" /><path d="M127 44v68h8V59Z" fill="#7c879e" stroke="none" /><path d="M127 56v49" stroke="#edf4f7" strokeWidth="1.5" /><path d="M114 114q12 6 26 0l-3 7h-20Z" fill="#bba079" /><path d="M125 121v13" stroke="#8b5368" strokeWidth="6" /><circle cx="125" cy="135" r="3" fill="#bba079" /></g>
       </g> : null}
       {path === "nba" ? <>
-        <path d="M105 109q26 12 28-10 0-13-12-9" stroke="#b67848" strokeWidth="10" /><path d="M128 107q7-13-4-17" stroke="#efbc7b" strokeWidth="6" />
-        <path d="M58 102h44l3 27H85l-5-12-5 12H55Z" fill="#7261a7" /><path d="M60 126v6m40-6v6" stroke="#f4d0a1" strokeWidth="10" />
-        <path d="M53 132q9-9 20-1l1 7H51Zm34-1q11-8 20 1l2 6H86Z" fill="#fff6e6" /><path d="M53 138h20m15 0h19" stroke="#b59269" />
-        <path d="m56 90 14-6q10 10 20 0l14 6 0 28H56Z" fill="#8165b7" /><path d="m59 92 0 22m42-22 0 22" stroke="#f6d585" strokeWidth="3" /><path d="M70 89q10 10 20 0" stroke="#f6d585" strokeWidth="3" />
-        <text x="80" y="112" textAnchor="middle" fill="#fff2bc" stroke="none" fontSize="14" fontWeight="800" fontFamily="sans-serif">01</text>
+        <path d="M107 110q24 11 28-8 2-12-10-13" stroke="#b87648" strokeWidth="11" strokeLinecap="round" /><path d="M130 107q8-12-3-17" stroke="#f7ca91" strokeWidth="6" strokeLinecap="round" />
+        <path d="M56 104h48l2 26H85l-5-11-5 11H54Z" fill="#5c4b8b" stroke="#403960" strokeWidth="1.4" /><path d="M58 126v7m44-7v7" stroke="#f3ca9b" strokeWidth="9" /><path d="M54 128h20m12 0h20" stroke="#faf2dd" strokeWidth="3" />
+        <path d="M52 132q9-8 21-1l2 8H49Zm35-1q13-7 21 2l2 6H85Z" fill="#f8f5ea" stroke="#736490" strokeWidth="1.6" /><path d="M53 133h17m20 0h16" stroke="#e7b674" strokeWidth="2" /><path d="M51 139h23m14 0h21" stroke="#5a477c" strokeWidth="2" />
+        <path d="M54 92 68 84q12 10 24 0l14 8-4 29H58Z" fill="#624f94" stroke="#463b72" strokeWidth="1.5" /><path d="m57 93 6-2 2 26-7 2m45-26-6-2-2 26 7 2" fill="#f7ebd5" /><path d="M66 86q14 12 28 0" stroke="#fff4dd" strokeWidth="4" /><path d="M68 94h24m-25 23h26" stroke="#f3c178" strokeWidth="2" /><path d="M73 99h14l-7 9Z" fill="#f4dca0" /><text x="80" y="116" textAnchor="middle" fill="#fff3d7" stroke="none" fontSize="10" fontWeight="900" fontFamily="sans-serif">01</text>
         <path d="M47 55 42 27q15 0 24 18m28 0q9-18 24-18l-5 28" fill={body} /><path d="m48 38 6 13m52 0 6-13" stroke="#d99880" strokeWidth="5" />
-        <path d="M45 67q-1-25 35-25t35 25v13q-4 21-35 21T45 80Z" fill={body} />
-        <path className="route-personal-accent" d="M47 58q33-11 66 0v9q-33-11-66 0Z" fill="#fcf2da" /><path d="m74 49 2 4m8-5 0 4" stroke="#c68a54" strokeWidth="3" /><path d="m48 76 6 2m-5 5 5 1m52-6 6-2m-6 8 5-1" stroke="#c98957" strokeWidth="2" />
+        <path d="M45 67q-1-25 35-25t35 25v13q-4 21-35 21T45 80Z" fill={body} stroke="#ba8357" strokeWidth="1.4" />
+        <path className="route-personal-accent" d="M47 57q33-11 66 0v10q-33-11-66 0Z" fill="#fff0d7" /><path d="M53 58q27-7 54 0" stroke="#fff8df" strokeWidth="2" /><path d="m77 57 3-4 3 4-3 4Z" fill="#8d70a5" stroke="none" /><path d="m48 77 6 2m-5 5 5 1m52-6 6-2m-6 8 5-1" stroke="#ca8b60" strokeWidth="2" />
         <Face ink={ink} iris="#be814e" y={77} />
-        <path d="M54 99q-11-5-15 5t9 13m60-18q11-3 13 10" stroke="#d8a266" strokeWidth="12" /><path d="m42 103-3 7" stroke="#f7f0df" strokeWidth="7" />
-        <g className="route-ball"><circle cx="122" cy="115" r="17" fill="#f0a15e" /><path d="M106 115h32m-16-17v34m-12-29q23 12 0 24m24-24q-23 12 0 24" stroke="#986039" strokeWidth="1.5" /><path d="M114 103q6-3 10-2" stroke="#ffd1a0" strokeWidth="2.6" /></g>
+        <path d="M54 99q-12-5-16 6t10 13m60-18q11-4 13 10" stroke="#d9a16d" strokeWidth="12" strokeLinecap="round" /><path d="m39 105 0 6" stroke="#f8ecdc" strokeWidth="7" />
+        <g className="route-ball"><circle cx="122" cy="115" r="18" fill="#d78044" stroke="#94532e" strokeWidth="1.5" /><circle cx="122" cy="114" r="15" fill="#ec9b57" stroke="none" /><path d="M105 115h34m-17-18v36m-12-31q22 13 0 27m24-27q-22 13 0 27" stroke="#774529" strokeWidth="1.9" /><path d="M113 104q5-4 10-4" stroke="#ffd5a2" strokeWidth="2.6" strokeLinecap="round" /></g>
       </> : null}
       {path === "honor" ? <>
         <path d="M109 106q25-4 22-26 18 19-2 37l-24 5" fill={body} />
