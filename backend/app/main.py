@@ -6,6 +6,7 @@ import json
 import math
 import os
 import secrets
+import struct
 import threading
 import urllib.error
 import urllib.request
@@ -17,7 +18,7 @@ from typing import Any, Annotated
 from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, create_engine, delete, func, select, update
 from sqlalchemy.exc import IntegrityError
@@ -3170,6 +3171,42 @@ def get_pet(user: CurrentUser, db: DB) -> dict[str, Any]:
     profile, progress, evolution, collection = get_or_create_pet(db, user.id)
     db.commit()
     return pet_dict(profile, progress, evolution, collection)
+
+
+# The Codex desktop installer downloads this image without CaseLens cookies.
+# Only a short-lived, unguessable link can access the uploaded sprite sheet.
+CODEX_SPRITE_TTL_SECONDS = 60 * 30
+CODEX_SPRITE_MAX_BYTES = 20 * 1024 * 1024
+
+
+@app.post("/api/pet/codex-sprite")
+async def publish_codex_sprite(user: CurrentUser, file: UploadFile = File(...)) -> dict[str, str]:
+    if file.content_type != "image/png":
+        raise HTTPException(status_code=400, detail="请上传 PNG 精灵图")
+    data = await file.read(CODEX_SPRITE_MAX_BYTES + 1)
+    if len(data) > CODEX_SPRITE_MAX_BYTES or len(data) < 24 or data[:16] != b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR":
+        raise HTTPException(status_code=400, detail="精灵图格式不正确或超过 20 MB")
+    if struct.unpack(">II", data[16:24]) != (1536, 1872):
+        raise HTTPException(status_code=400, detail="精灵图必须为 1536 × 1872 像素")
+    destination = DATA_DIR / "codex-sprites"
+    destination.mkdir(parents=True, exist_ok=True)
+    now = utcnow().timestamp()
+    for old in destination.glob("*.png"):
+        if old.stat().st_mtime + CODEX_SPRITE_TTL_SECONDS < now:
+            old.unlink(missing_ok=True)
+    token = secrets.token_urlsafe(32)
+    (destination / f"{token}.png").write_bytes(data)
+    return {"path": f"/api/pet/codex-sprite/{token}", "expires_in_seconds": str(CODEX_SPRITE_TTL_SECONDS)}
+
+
+@app.get("/api/pet/codex-sprite/{token}")
+def get_codex_sprite(token: str) -> FileResponse:
+    if len(token) != 43 or any(char not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-" for char in token):
+        raise HTTPException(status_code=404, detail="精灵图链接无效")
+    path = DATA_DIR / "codex-sprites" / f"{token}.png"
+    if not path.is_file() or path.stat().st_mtime + CODEX_SPRITE_TTL_SECONDS < utcnow().timestamp():
+        raise HTTPException(status_code=404, detail="精灵图链接已过期")
+    return FileResponse(path, media_type="image/png", headers={"Cache-Control": "private, no-store"})
 
 
 @app.get("/api/pet/homestead")

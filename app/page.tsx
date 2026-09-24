@@ -6,6 +6,7 @@ import { MarkdownContent } from "./markdown-content";
 import { ILLUSTRATED_ROUTES, isIllustratedRoute, PetRouteArt } from "./pet-route-art";
 import { PetFashionArt } from "./pet-fashion-art";
 import { PetAccessoryArt, PetEquipmentArt } from "./pet-ornament-art";
+import { downloadCodexSprite, exportCodexSprite } from "./pet-codex-export";
 import { ROUTE_MILESTONES, ROUTE_STAGE_THRESHOLDS, routeMilestone, routeMilestoneIndex } from "./pet-route-progress";
 import { cleanApiBaseUrl, modelApiEndpoint, modelApiRequest } from "./model-api";
 import type { ApiProtocol, ModelApiMessage } from "./model-api";
@@ -2487,9 +2488,21 @@ function CompanionPet({ visible, message, mood, completed, total, pulse, hasNext
   const wheelTimer = useRef<number | null>(null);
   const [targetEvolutionPath, setTargetEvolutionPath] = useState<PetEvolutionPath>("");
   const [wardrobeName, setWardrobeName] = useState("");
+  const wardrobePreview = useRef<HTMLDivElement>(null);
+  const [codexExporting, setCodexExporting] = useState(false);
+  const [codexInstallLink, setCodexInstallLink] = useState("");
+  const [codexExportMessage, setCodexExportMessage] = useState("");
+  const [codexImageUrl, setCodexImageUrl] = useState("");
+  const [codexExportKey, setCodexExportKey] = useState("");
+  const [codexIdlePreview, setCodexIdlePreview] = useState("");
   const [fashionSlot, setFashionSlot] = useState<"all" | PetFashionSlot>("all");
   const [fashionTheme, setFashionTheme] = useState("all");
   useEffect(() => () => { if (wheelTimer.current !== null) window.clearTimeout(wheelTimer.current); }, []);
+  useEffect(() => {
+    if (!codexInstallLink) return;
+    const timeout = window.setTimeout(() => { setCodexInstallLink(""); setCodexExportMessage("安装链接已过期，请重新同步当前穿搭。"); }, 30 * 60_000);
+    return () => window.clearTimeout(timeout);
+  }, [codexInstallLink]);
   if (!visible) return <button className="pet-summon" type="button" onClick={onShow}><span aria-hidden="true">◉ᴗ◉</span> 唤回{profile.name}</button>;
   const progress = total ? Math.min(100, Math.round(completed / total * 100)) : 0;
   const levelStart = profile.current_level_xp ?? petLevelStartXp(profile.level);
@@ -2501,6 +2514,50 @@ function CompanionPet({ visible, message, mood, completed, total, pulse, hasNext
   const unlockedFashion = PET_FASHION_CATALOG.filter((item) => item.level <= profile.level);
   const visibleFashion = PET_FASHION_CATALOG.filter((item) => (fashionSlot === "all" || item.slot === fashionSlot) && (fashionTheme === "all" || item.theme === fashionTheme));
   const currentFashionSet = PET_FASHION_THEMES.find((theme) => fashionSlotEntries.every(([slot]) => profile.fashion[slot]?.startsWith(`fashion-${theme.id}-`)));
+  const codexLookKey = JSON.stringify([profile.color, profile.accessory, profile.evolution_path, profile.evolution_stage, profile.evolution_variant, profile.fashion, profile.equipped, profile.inventory.map((item) => [item.id, item.rarity])]);
+  const lookMatchesExport = codexLookKey === codexExportKey;
+  const displayedCodexLink = lookMatchesExport ? codexInstallLink : "";
+  const displayedCodexMessage = lookMatchesExport ? codexExportMessage : "";
+  const manualCodexInstallLink = lookMatchesExport && /^https:\/\/[^\s/]+(?:\/[^\s]*)?$/i.test(codexImageUrl.trim())
+    ? `codex://pets/install?name=${encodeURIComponent(profile.name)}&imageUrl=${encodeURIComponent(codexImageUrl.trim())}&spriteVersionNumber=1`
+    : "";
+  const syncCodexPet = async () => {
+    const creature = wardrobePreview.current?.querySelector<HTMLElement>(".pet-creature");
+    if (!creature || codexExporting) return;
+    setCodexExporting(true);
+    setCodexExportKey(codexLookKey);
+    setCodexInstallLink("");
+    try {
+      const sprite = await exportCodexSprite(creature);
+      if (typeof createImageBitmap === "function") {
+        try {
+          const sheetBitmap = await createImageBitmap(sprite);
+          const firstFrame = document.createElement("canvas");
+          firstFrame.width = 192;
+          firstFrame.height = 208;
+          firstFrame.getContext("2d")?.drawImage(sheetBitmap, 0, 0, 192, 208, 0, 0, 192, 208);
+          sheetBitmap.close();
+          setCodexIdlePreview(firstFrame.toDataURL("image/png"));
+        } catch { setCodexIdlePreview(""); }
+      }
+      const filename = `case-lens-${profile.active_persona || "origin"}-${Date.now()}.png`;
+      if (window.location.protocol === "https:" && currentUserId) {
+        const form = new FormData();
+        form.append("file", sprite, filename);
+        const result = await apiRequest<{ path: string }>("/api/pet/codex-sprite", { method: "POST", body: form });
+        const imageUrl = new URL(result.path, window.location.href).href;
+        setCodexInstallLink(`codex://pets/install?name=${encodeURIComponent(profile.name)}&imageUrl=${encodeURIComponent(imageUrl)}&spriteVersionNumber=1`);
+        setCodexExportMessage("精灵图已生成；请在 30 分钟内点击安装。Codex 需要能访问此 HTTPS 地址。");
+      } else {
+        downloadCodexSprite(sprite, filename);
+        setCodexExportMessage("已下载当前穿搭的 PNG。此站为内网 HTTP：请先把图片放到 Codex 可访问的 HTTPS 地址，再用下方安装链接生成器安装。");
+      }
+    } catch (error) {
+      setCodexExportMessage(error instanceof Error ? error.message : "同步失败，请重试");
+    } finally {
+      setCodexExporting(false);
+    }
+  };
   const applyFashionSet = (themeId: string) => PET_FASHION_CATALOG.filter((item) => item.theme === themeId && item.level <= profile.level).forEach((item) => onSelectFashion(item.slot, item.id));
   const slotEntries = Object.entries(PET_EQUIPMENT_SLOTS) as [PetEquipmentSlot, { label: string; symbol: string }][];
   const slotOrder = Object.keys(PET_EQUIPMENT_SLOTS) as PetEquipmentSlot[];
@@ -2679,7 +2736,7 @@ function CompanionPet({ visible, message, mood, completed, total, pulse, hasNext
             </section> : null}
             {studioSection === "wardrobe" ? <section className="pet-wardrobe-panel pet-fashion-wardrobe">
               <header><div><span>FASHION WARDROBE</span><h3>小镜暖暖 · 时装衣柜</h3><p>12 个主题、60 件独立时装，可以混搭发型头饰、连衣套装、外套披风、鞋袜与手持物。时装只改变外观，不影响装备属性。</p></div><b>{unlockedFashion.length} / {PET_FASHION_CATALOG.length}</b></header>
-              <div className="pet-wardrobe-current"><div className="pet-wardrobe-preview"><i className="pet-wardrobe-halo" /><PetCreatureVisual profile={profile} accessory={accessory} showEquipment={false} /><span>{currentFashionSet?.name ?? (Object.keys(profile.fashion).length ? "自由混搭" : "基础造型")}</span></div><div><span>CURRENT LOOK</span><strong>{PET_COLORS.find((item) => item.id === profile.color)?.label} · {Object.keys(profile.fashion).length}/5 件时装</strong><div className="pet-fashion-current-slots">{fashionSlotEntries.map(([slot, info]) => { const item = PET_FASHION_CATALOG.find((candidate) => candidate.id === profile.fashion[slot]); return <button type="button" className={item ? `rarity-${item.rarity}` : "empty"} onClick={() => setFashionSlot(slot)} title={item?.name ?? `${info.label}未穿戴`} key={slot}><i style={item ? { "--fashion-primary": item.primary, "--fashion-secondary": item.secondary } as CSSProperties : undefined}>{item ? <PetFashionArt item={item} icon /> : info.symbol}</i><small>{item?.name ?? info.label}</small></button>; })}</div><form onSubmit={(event) => { event.preventDefault(); void onSaveWardrobe(wardrobeName).then(() => setWardrobeName("")); }}><input value={wardrobeName} onChange={(event) => setWardrobeName(event.target.value)} maxLength={30} placeholder={`例如：${currentFashionSet?.name ?? "我的今日穿搭"}`} /><button type="submit" disabled={busy || profile.wardrobe_presets.length >= 8}>{profile.wardrobe_presets.length >= 8 ? "搭配收藏已满" : "收藏当前整套"}</button></form></div></div>
+              <div className="pet-wardrobe-current"><div className="pet-wardrobe-preview" ref={wardrobePreview}><i className="pet-wardrobe-halo" /><PetCreatureVisual profile={profile} accessory={accessory} /><span>{currentFashionSet?.name ?? (Object.keys(profile.fashion).length ? "自由混搭" : "基础造型")}</span></div><div><span>CURRENT LOOK</span><strong>{PET_COLORS.find((item) => item.id === profile.color)?.label} · {Object.keys(profile.fashion).length}/5 件时装</strong><div className="pet-fashion-current-slots">{fashionSlotEntries.map(([slot, info]) => { const item = PET_FASHION_CATALOG.find((candidate) => candidate.id === profile.fashion[slot]); return <button type="button" className={item ? `rarity-${item.rarity}` : "empty"} onClick={() => setFashionSlot(slot)} title={item?.name ?? `${info.label}未穿戴`} key={slot}><i style={item ? { "--fashion-primary": item.primary, "--fashion-secondary": item.secondary } as CSSProperties : undefined}>{item ? <PetFashionArt item={item} icon /> : info.symbol}</i><small>{item?.name ?? info.label}</small></button>; })}</div><form onSubmit={(event) => { event.preventDefault(); void onSaveWardrobe(wardrobeName).then(() => setWardrobeName("")); }}><input value={wardrobeName} onChange={(event) => setWardrobeName(event.target.value)} maxLength={30} placeholder={`例如：${currentFashionSet?.name ?? "我的今日穿搭"}`} /><button type="submit" disabled={busy || profile.wardrobe_presets.length >= 8}>{profile.wardrobe_presets.length >= 8 ? "搭配收藏已满" : "收藏当前整套"}</button></form><div className="pet-codex-sync"><button type="button" disabled={codexExporting} onClick={() => void syncCodexPet()}>{codexExporting ? "正在生成精灵图…" : "同步当前穿搭到 Codex"}</button>{lookMatchesExport && codexIdlePreview ? <div className="pet-codex-compare"><div className="pet-codex-idle" role="img" aria-label="Codex 精灵图首帧，与左侧当前穿搭对照" style={{ backgroundImage: `url(${codexIdlePreview})` }} /><span>Codex 首帧预览<br />可与左侧衣柜角色对照</span></div> : null}<small>以左侧实际显示的小镜为原图，包含进化、时装、配饰与装备。每次换装后点一次；Codex 不会自动监听衣柜。</small>{displayedCodexMessage ? <p role="status">{displayedCodexMessage}</p> : null}{!displayedCodexLink && displayedCodexMessage && window.location.protocol !== "https:" ? <label>精灵图的 HTTPS 图片地址<input type="url" placeholder="https://…/xiaojing.png" value={codexImageUrl} onChange={(event) => setCodexImageUrl(event.target.value)} /></label> : null}{displayedCodexLink || manualCodexInstallLink ? <a href={displayedCodexLink || manualCodexInstallLink}>在 Codex 中安装当前穿搭 ↗</a> : null}</div></div></div>
 
               <section className="pet-fashion-sets"><header><div><span>STYLE SETS</span><strong>主题套装</strong><small>一键穿上当前等级已解锁的部件，也可以在下方自由拆分混搭。</small></div><b>{PET_FASHION_THEMES.filter((theme) => PET_FASHION_CATALOG.filter((item) => item.theme === theme.id).every((item) => item.level <= profile.level)).length} / {PET_FASHION_THEMES.length} 套集齐</b></header><div>{PET_FASHION_THEMES.map((theme) => { const pieces = PET_FASHION_CATALOG.filter((item) => item.theme === theme.id); const unlocked = pieces.filter((item) => item.level <= profile.level); const active = pieces.every((item) => profile.fashion[item.slot] === item.id); return <article className={`${active ? "active" : ""} ${unlocked.length ? "available" : "locked"}`} style={{ "--fashion-primary": theme.primary, "--fashion-secondary": theme.secondary } as CSSProperties} key={theme.id}><header><i>{theme.name.slice(0, 1)}</i><span><strong>{theme.name}</strong><small>{theme.subtitle} · Lv.{theme.level} 起</small></span><b>{unlocked.length}/5</b></header><div className="pet-fashion-set-preview"><PetCreatureVisual profile={{ ...profile, fashion: Object.fromEntries(pieces.map((piece) => [piece.slot, piece.id])) }} showEquipment={false} /></div><div>{pieces.map((item) => <i className={item.level <= profile.level ? `rarity-${item.rarity}` : "locked"} title={`${item.name} · Lv.${item.level}`} key={item.id}>{<PetFashionArt item={item} icon />}</i>)}</div><button type="button" disabled={busy || !unlocked.length} onClick={() => applyFashionSet(theme.id)}>{active ? "整套穿戴中" : unlocked.length === 5 ? "一键穿整套" : `穿上已解锁 ${unlocked.length} 件`}</button></article>; })}</div></section>
 
