@@ -2561,7 +2561,7 @@ function CompanionPet({ visible, message, mood, completed, total, pulse, hasNext
         try { window.location.assign(installLink); } catch { /* The visible link works with a direct user click. */ }
       } else {
         downloadCodexSprite(sprite, filename);
-        setCodexExportMessage(`${publishError ? `${publishError}；` : ""}已下载 PNG。如需免上传安装，请让管理员配置一次 Codex 图片专用 HTTPS 入口；也可在下方填写现成的 HTTPS 图片地址。`);
+        setCodexExportMessage(`${publishError ? `${publishError}；` : ""}已下载 PNG。如需一键安装，请让管理员配置一次私有 R2；也可在下方填写现成的 HTTPS 图片地址。`);
       }
     } catch (error) {
       setCodexExportMessage(error instanceof Error ? error.message : "同步失败，请重试");
