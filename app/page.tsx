@@ -2379,6 +2379,13 @@ function CompanionPet({ visible, message, mood, completed, total, pulse, hasNext
   onSaveProfile: () => void;
 }) {
   const [studioSection, setStudioSection] = useState<"evolution" | "wheel" | "equipment" | "wardrobe" | "skills" | "appearance">("evolution");
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      const section = new URLSearchParams(window.location.search).get("petStudio");
+      if (section === "equipment" || section === "wardrobe") setStudioSection(section);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
   const [equipmentFilter, setEquipmentFilter] = useState<"all" | "synthesis" | "reforge" | "equipped">("all");
   const [equipmentSlotFilter, setEquipmentSlotFilter] = useState<"all" | PetEquipmentSlot>("all");
   const [equipmentThemeFilter, setEquipmentThemeFilter] = useState("all");
@@ -4010,6 +4017,12 @@ export default function Home() {
       setPetProfile(savedPet);
       setPetDraftName(savedPet.name);
       setPetVisible(window.localStorage.getItem("case-lens-pet-visible") !== "false");
+      const section = new URLSearchParams(window.location.search).get("petStudio");
+      if (section === "equipment" || section === "wardrobe") {
+        petCustomizationSnapshot.current = { name: savedPet.name, color: savedPet.color, accessory: savedPet.accessory, fashion: { ...savedPet.fashion } };
+        setPetVisible(true);
+        setPetSettingsOpen(true);
+      }
       setLocalPreferencesReady(true);
     }, 0);
     return () => window.clearTimeout(timer);

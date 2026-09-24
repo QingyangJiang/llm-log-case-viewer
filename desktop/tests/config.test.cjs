@@ -1,6 +1,6 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
-const { normalizeCaseLensUrl, initialPetBounds } = require("../config.cjs");
+const { normalizeCaseLensUrl, initialPetBounds, isTrustedPetUrl } = require("../config.cjs");
 
 test("desktop pet accepts intranet HTTP and HTTPS without storing credentials", () => {
   assert.equal(normalizeCaseLensUrl(" http://192.168.1.4:8080/ "), "http://192.168.1.4:8080");
@@ -14,4 +14,13 @@ test("saved desktop pet position stays visible after monitor changes", () => {
   const screen = { x: -1920, y: 30, width: 1920, height: 1050 };
   assert.deepEqual(initialPetBounds({ x: 5000, y: -200 }, screen), { x: -282, y: 30, width: 282, height: 330 });
   assert.deepEqual(initialPetBounds(null, screen), { x: -306, y: 722, width: 282, height: 330 });
+});
+
+test("pet window actions accept the same site's pet page, including redirects and query parameters", () => {
+  const server = "http://192.168.1.4:8080";
+  assert.equal(isTrustedPetUrl(`${server}/desktop-pet`, server), true);
+  assert.equal(isTrustedPetUrl(`${server}/desktop-pet/?session=1`, server), true);
+  for (const address of [`${server}/`, `${server}/desktop-pet/other`, "http://192.168.1.4:8081/desktop-pet", "javascript:alert(1)"]) {
+    assert.equal(isTrustedPetUrl(address, server), false);
+  }
 });

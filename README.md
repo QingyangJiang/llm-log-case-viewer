@@ -357,7 +357,7 @@ Token 数是浏览器端对中英文混合文本的近似估算。建议上下�
 
 ## 桌面小镜（CaseLens 独立桌面宠物）
 
-桌面版是一个可拖动的透明悬浮窗，支持 macOS / Windows / Linux。它直接读取同一个 CaseLens 账号：桌面外观与网页衣柜的毛色、进化路线、时装、配饰和装备共用同一套渲染代码。桌面摸摸调用原有 `/api/pet/pet`，经验、掉落与网页同步；掉落可在小窗口直接三选一。点击「衣柜」会打开同一桌面应用中的完整 CaseLens，登录状态共用。网页改完穿搭后，桌面小镜约 20 秒内自动更新，切回窗口时立即更新。
+桌面版是一个可拖动的透明悬浮窗，支持 macOS / Windows / Linux。它直接读取同一个 CaseLens 账号：桌面外观与网页衣柜的毛色、进化路线、时装、配饰和装备共用同一套渲染代码。桌面摸摸调用原有 `/api/pet/pet`，经验、掉落与网页同步；掉落可在小窗口直接三选一。点击「装备」或「衣柜」会在同一桌面应用中直接打开对应的工作室页面，登录状态共用。网页改完穿搭后，桌面小镜约 20 秒内自动更新，切回窗口时立即更新。
 
 ### 本机安装和启动
 
@@ -371,7 +371,7 @@ npm ci
 npm start
 ```
 
-首次启动在小窗口填入 CaseLens 首页地址，例如 `http://内网服务器IP:8080`，再用现有账号登录；地址和窗口位置保存在本机，密码只用于原有 CaseLens 登录，不写入桌面设置。按住小镜本体或顶部短横条拖动；单击小镜或「摸摸」进行摸摸；点击「衣柜」修改造型；右键小镜可重新配置服务器地址或退出。
+首次启动在小窗口填入 CaseLens 首页地址，例如 `http://内网服务器IP:8080`，再用现有账号登录；地址和窗口位置保存在本机，密码只用于原有 CaseLens 登录，不写入桌面设置。按住小镜本体或顶部短横条拖动；单击小镜或「摸摸」进行摸摸；有掉落时点击「装备」选取，否则打开装备仓库；点击「衣柜」修改造型；右键小镜可重新配置服务器地址或退出。
 
 公司网络无法直接下载 Electron 二进制时，可使用 Electron 文档提供的镜像：
 
@@ -389,7 +389,10 @@ ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ npm start
 ```bash
 sudo docker compose build web api
 sudo docker compose up -d --force-recreate --no-deps api web
+sudo docker compose restart nginx
+for i in {1..10}; do curl -fsS -o /dev/null http://127.0.0.1:8080/desktop-pet && break; sleep 2; done
 curl -fsS http://127.0.0.1:8080/api/health
+curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/desktop-pet
 ```
 
 ## License

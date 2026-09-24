@@ -21,7 +21,7 @@ type ApiError = Error & { status?: number };
 
 declare global {
   interface Window {
-    caseLensDesktop?: { moveBy(dx: number, dy: number): void; openStudio(): void; close(): void };
+    caseLensDesktop?: { moveBy(dx: number, dy: number): void; openStudio(section: "equipment" | "wardrobe"): void; close(): void };
   }
 }
 
@@ -47,6 +47,7 @@ export default function DesktopPet() {
   const [busy, setBusy] = useState(false);
   const [showDrops, setShowDrops] = useState(false);
   const drag = useRef<{ x: number; y: number; moved: boolean } | null>(null);
+  const dragged = useRef(false);
   const busyRef = useRef(false);
 
   const refresh = useCallback(async () => {
@@ -115,6 +116,7 @@ export default function DesktopPet() {
 
   const pointerDown = (event: PointerEvent<HTMLButtonElement>) => {
     if (event.button !== 0) return;
+    dragged.current = false;
     drag.current = { x: event.screenX, y: event.screenY, moved: false };
     event.currentTarget.setPointerCapture(event.pointerId);
   };
@@ -125,17 +127,18 @@ export default function DesktopPet() {
     const dy = event.screenY - state.y;
     if (!state.moved && Math.hypot(dx, dy) < 5) return;
     state.moved = true;
+    dragged.current = true;
     state.x = event.screenX;
     state.y = event.screenY;
     window.caseLensDesktop?.moveBy(dx, dy);
   };
   const pointerUp = (event: PointerEvent<HTMLButtonElement>) => {
-    const state = drag.current;
     drag.current = null;
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
-    if (state && !state.moved) void pet();
   };
-  const openStudio = () => window.caseLensDesktop ? window.caseLensDesktop.openStudio() : window.open("/", "_blank", "noopener,noreferrer");
+  const openStudio = (section: "equipment" | "wardrobe") => window.caseLensDesktop
+    ? window.caseLensDesktop.openStudio(section)
+    : window.open(`/?petStudio=${section}`, "_blank", "noopener,noreferrer");
   const color = PET_COLORS.find((item) => item.id === profile?.color)?.value ?? PET_COLORS[0].value;
   const pending = profile?.pending_drops?.[0];
 
@@ -152,7 +155,7 @@ export default function DesktopPet() {
       <button disabled={busy} type="submit">进入宠物家园 ↗</button>
     </form> : <>
       <div className="desktop-pet-stage">
-        {profile ? <button className="desktop-pet-touch" type="button" disabled={busy} aria-label={`摸摸${profile.name}，或拖动它移动位置`} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerUp} onPointerCancel={() => { drag.current = null; }}>
+        {profile ? <button className="desktop-pet-touch" type="button" disabled={busy} aria-label={`摸摸${profile.name}，或拖动它移动位置`} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerUp} onPointerCancel={() => { drag.current = null; dragged.current = true; }} onClick={() => { if (!dragged.current) void pet(); dragged.current = false; }}>
           <PetCreatureVisual profile={profile} accessory={profile.accessory !== "none" ? profile.accessory : undefined} />
         </button> : <span className="desktop-pet-loading">正在寻找小镜…</span>}
       </div>
@@ -160,8 +163,8 @@ export default function DesktopPet() {
       {profile ? <footer className="desktop-pet-actions">
         <span><b>{profile.name}</b> · Lv.{profile.level} <small>{profile.evolution_name}</small></span>
         <button type="button" onClick={() => void pet()} disabled={busy}>♡ 摸摸</button>
-        <button type="button" onClick={() => setShowDrops(!showDrops)} aria-label="查看待领取装备">{profile.pending_drops?.length ? `🎁 ${profile.pending_drops.length}` : "装备"}</button>
-        <button type="button" onClick={openStudio}>衣柜 ↗</button>
+        <button type="button" onClick={() => pending ? setShowDrops(!showDrops) : openStudio("equipment")} aria-label={pending ? "查看待领取装备" : "打开装备仓库"}>{profile.pending_drops?.length ? `🎁 ${profile.pending_drops.length}` : "装备 ↗"}</button>
+        <button type="button" onClick={() => openStudio("wardrobe")}>衣柜 ↗</button>
       </footer> : null}
       {showDrops && pending ? <section className="desktop-pet-drops" aria-label="三选一装备">
         <div><b>摸摸掉落 · 选一件</b><button type="button" onClick={() => setShowDrops(false)} aria-label="收起装备">×</button></div>

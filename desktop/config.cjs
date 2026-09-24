@@ -10,6 +10,13 @@ function normalizeCaseLensUrl(input) {
   return url.origin;
 }
 
+function isTrustedPetUrl(address, serverUrl) {
+  try {
+    const url = new URL(address);
+    return url.origin === serverUrl && url.pathname.replace(/\/+$/, "") === "/desktop-pet";
+  } catch { return false; }
+}
+
 function initialPetBounds(saved, workArea, width = 282, height = 330) {
   const x = Number.isInteger(saved?.x) ? saved.x : workArea.x + workArea.width - width - 24;
   const y = Number.isInteger(saved?.y) ? saved.y : workArea.y + workArea.height - height - 28;
@@ -20,4 +27,4 @@ function initialPetBounds(saved, workArea, width = 282, height = 330) {
   };
 }
 
-module.exports = { normalizeCaseLensUrl, initialPetBounds };
+module.exports = { normalizeCaseLensUrl, initialPetBounds, isTrustedPetUrl };

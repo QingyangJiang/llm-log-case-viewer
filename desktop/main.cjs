@@ -4,7 +4,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 const { app, BrowserWindow, ipcMain, Menu, screen, dialog } = require("electron");
-const { normalizeCaseLensUrl, initialPetBounds } = require("./config.cjs");
+const { normalizeCaseLensUrl, initialPetBounds, isTrustedPetUrl } = require("./config.cjs");
 
 let petWindow = null;
 let setupWindow = null;
@@ -32,7 +32,7 @@ function scheduleSave() {
 }
 function appPage(page = "/desktop-pet") { return new URL(page, `${serverUrl}/`).href; }
 function isPetSender(event) {
-  return petWindow && !petWindow.isDestroyed() && event.sender === petWindow.webContents && event.sender.getURL() === appPage();
+  return petWindow && !petWindow.isDestroyed() && event.sender === petWindow.webContents && isTrustedPetUrl(event.sender.getURL(), serverUrl);
 }
 function stayOnSite(contents) {
   contents.on("will-navigate", (event, address) => {
@@ -52,8 +52,9 @@ function stayOnSite(contents) {
     return { action: "deny" };
   });
 }
-function openStudio() {
-  if (studioWindow && !studioWindow.isDestroyed()) { studioWindow.show(); studioWindow.focus(); return; }
+function openStudio(section = "wardrobe") {
+  const target = appPage(`/?petStudio=${section}`);
+  if (studioWindow && !studioWindow.isDestroyed()) { studioWindow.show(); studioWindow.focus(); void studioWindow.loadURL(target); return; }
   studioWindow = new BrowserWindow({
     width: 1180, height: 800, minWidth: 780, minHeight: 560,
     title: "CaseLens · 宠物工作室",
@@ -61,7 +62,7 @@ function openStudio() {
   });
   stayOnSite(studioWindow.webContents);
   studioWindow.on("closed", () => { studioWindow = null; });
-  void studioWindow.loadURL(appPage("/"));
+  void studioWindow.loadURL(target);
 }
 function openSetup() {
   if (setupWindow && !setupWindow.isDestroyed()) { setupWindow.focus(); return; }
@@ -79,7 +80,7 @@ function openSetup() {
 }
 function showContextMenu() {
   Menu.buildFromTemplate([
-    { label: "打开 CaseLens 衣柜", click: openStudio },
+    { label: "打开 CaseLens 衣柜", click: () => openStudio("wardrobe") },
     { label: "刷新小镜", click: () => petWindow?.reload() },
     { label: "更换服务器地址", click: openSetup },
     { type: "separator" },
@@ -101,7 +102,15 @@ function openPet() {
   });
   petWindow.setAlwaysOnTop(true, "floating");
   petWindow.webContents.on("will-navigate", (event, address) => { if (address !== appPage()) event.preventDefault(); });
-  petWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  petWindow.webContents.setWindowOpenHandler(({ url }) => {
+    try {
+      const target = new URL(url);
+      if (target.origin === serverUrl && target.pathname === "/") {
+        openStudio(target.searchParams.get("petStudio") === "equipment" ? "equipment" : "wardrobe");
+      }
+    } catch { /* Ignore malformed navigation. */ }
+    return { action: "deny" };
+  });
   petWindow.webContents.on("context-menu", showContextMenu);
   petWindow.on("moved", () => { settings.bounds = petWindow?.getBounds(); scheduleSave(); });
   petWindow.on("closed", () => { petWindow = null; });
@@ -134,7 +143,7 @@ else {
       const [x, y] = petWindow.getPosition();
       petWindow.setPosition(Math.round(x + dx), Math.round(y + dy));
     });
-    ipcMain.on("pet:open-studio", (event) => { if (isPetSender(event)) openStudio(); });
+    ipcMain.on("pet:open-studio", (event, section) => { if (isPetSender(event)) openStudio(section === "equipment" ? "equipment" : "wardrobe"); });
     ipcMain.on("pet:close", (event) => { if (isPetSender(event)) app.quit(); });
     if (serverUrl) openPet(); else openSetup();
   });
