@@ -45,6 +45,24 @@ class CodexSpriteTest(unittest.TestCase):
                     asyncio.run(api.publish_codex_sprite(None, upload))
                 self.assertEqual(invalid.exception.status_code, 400)
 
+    def test_http_page_can_receive_dedicated_https_install_url(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(api, "DATA_DIR", api.Path(directory)), patch.dict(
+            os.environ, {"CODEX_SPRITE_PUBLIC_URL_PREFIX": "https://pets.example.com/codex-pets/"}
+        ):
+            result = asyncio.run(api.publish_codex_sprite(None, image_upload()))
+            token = result["path"].rsplit("/", 1)[-1]
+            self.assertEqual(result["image_url"], f"https://pets.example.com/codex-pets/{token}.png")
+            self.assertEqual(api.get_codex_sprite(token).media_type, "image/png")
+
+    def test_rejects_http_public_gateway_configuration(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(api, "DATA_DIR", api.Path(directory)), patch.dict(
+            os.environ, {"CODEX_SPRITE_PUBLIC_URL_PREFIX": "http://pets.example.com/codex-pets"}
+        ):
+            with self.assertRaises(HTTPException) as invalid:
+                asyncio.run(api.publish_codex_sprite(None, image_upload()))
+            self.assertEqual(invalid.exception.status_code, 503)
+            self.assertFalse((api.Path(directory) / "codex-sprites").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

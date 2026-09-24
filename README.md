@@ -355,14 +355,26 @@ Token 数是浏览器端对中英文混合文本的近似估算。建议上下�
 - 外部 API 模式会把本次选中的日志文本直接发送给配置的服务商
 - 可在高级设置中排除 System / Developer、Thinking 或 Tools 定义
 
+## 将小镜当前穿搭导入 Codex
+
+在「宠物工作室 → 衣柜」中点击「同步当前穿搭并打开 Codex」。导出的 PNG 为 Codex v1 动画表（1536 × 1872），首帧直接从当前衣柜角色的 DOM / SVG / CSS 绘制，包含当前人格路线、进化阶段、时装、基础配饰和已穿戴装备；可在按钮下方与衣柜角色对照。每次换装或进化后重新生成并安装，Codex 不会自动监听 CaseLens。
+
+- **HTTP 内网站点 + 专用 HTTPS 图片入口**：管理员只需配置一次，之后每次换装点击同步，页面会尝试打开 Codex 安装窗口；若浏览器拦截，再点击页面显示的安装链接。网页和账号继续走原有 HTTP；临时图片通过单独的 HTTPS 网关提供。图片 URL 带随机令牌，30 分钟后失效，旧文件在下一次上传时清理。
+- **已有 HTTPS CaseLens 站点**：直接使用同源 HTTPS，无需设置图片入口。
+- **没有 HTTPS 图片入口**：会下载同一 PNG；要安装到桌面 Codex，需手动将 PNG 放到 Codex 可访问的 HTTPS 地址并粘贴回衣柜。HTTP 图片 URL 无法用于 Codex 安装链接。
+
+### 为 HTTP 站点做一次性配置
+
+需要一个已配可信证书的 HTTPS 网关（Codex 所在电脑也能访问）。在该网关的 Nginx `server` 块中加入 [图片专用代理示例](deploy/codex-sprite-https.example.conf)，把其中的 `CASELENS_HOST` 改为 CaseLens 服务地址。这条规则只开放临时图片的 GET 请求，不代理 CaseLens 其他页面或 API。在服务器 `.env` 添加：
+
+```dotenv
+CODEX_SPRITE_PUBLIC_URL_PREFIX=https://pets.example.com/codex-pets
+```
+
+把示例域名换成实际 HTTPS 域名；该前缀要与网关路由一致。重新创建 `api` 服务加载环境变量：`sudo docker compose up -d --force-recreate --no-deps api`。从 Codex 所在电脑验证返回的临时 URL 能直接读取 PNG，且无需登录。图片文件存于 `data/app/codex-sprites`，不会进入 Git。
+
+动画表的行对应待机、右跑、左跑、挥手、跳跃、失败、等待、工作、复核。各帧使用同一件穿搭和角色原图，通过位移、镜像和倾斜产生动作；首帧与衣柜预览同源。此功能不会把宠物进度、抽奖券或装备数值同步到 Codex。
+
 ## License
 
 MIT
-# 将小镜当前穿搭导入 Codex
-
-在「宠物工作室 → 衣柜」中点击「同步当前穿搭到 Codex」。导出的 PNG 为 Codex v1 动画表（1536 × 1872），首帧直接从当前衣柜角色的 DOM / SVG / CSS 绘制，包含当前人格路线、进化阶段、时装、基础配饰和已穿戴装备；可在按钮下方与衣柜角色对照。每次换装或进化后重新生成并安装，Codex 不会自动监听 CaseLens。
-
-- **HTTPS 且已登录团队账号**：页面临时保存精灵图 30 分钟，点击「在 Codex 中安装当前穿搭」。Codex 必须能够读取该 HTTPS 图片地址；内网 HTTPS 地址仅在 Codex 所在电脑也能访问时适用。临时文件保存在 `data/app/codex-sprites`，旧文件在下一次上传时清理。
-- **默认内网 HTTP 或本地模式**：浏览器下载同一 PNG。将 PNG 上传到可由 Codex 访问的 HTTPS 图片地址（需直接返回 PNG），把地址粘贴到页面，点击生成的安装链接。HTTP 图片地址无法用于 Codex 安装链接。
-
-动画表的行对应待机、右跑、左跑、挥手、跳跃、失败、等待、工作、复核。各帧使用同一件穿搭和角色原图，通过位移、镜像和倾斜产生动作；首帧与衣柜预览同源。此功能不会把宠物进度、抽奖券或装备数值同步到 Codex。

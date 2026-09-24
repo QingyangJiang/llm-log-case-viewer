@@ -3179,8 +3179,26 @@ CODEX_SPRITE_TTL_SECONDS = 60 * 30
 CODEX_SPRITE_MAX_BYTES = 20 * 1024 * 1024
 
 
+def codex_sprite_public_url(token: str) -> str:
+    """Optional HTTPS image-only gateway; the main CaseLens page may stay on HTTP."""
+    prefix = os.getenv("CODEX_SPRITE_PUBLIC_URL_PREFIX", "").strip().rstrip("/")
+    if not prefix:
+        return ""
+    try:
+        parsed = urlsplit(prefix)
+        host = parsed.hostname
+        _ = parsed.port
+    except ValueError:
+        host = None
+    if not host or parsed.scheme != "https" or parsed.username or parsed.password or parsed.query or parsed.fragment or any(char.isspace() for char in prefix):
+        raise HTTPException(status_code=503, detail="Codex 图片入口必须是有效的 HTTPS 地址")
+    return f"{prefix}/{token}.png"
+
+
 @app.post("/api/pet/codex-sprite")
 async def publish_codex_sprite(user: CurrentUser, file: UploadFile = File(...)) -> dict[str, str]:
+    # Fail before saving anything if the optional public address is invalid.
+    codex_sprite_public_url("preview")
     if file.content_type != "image/png":
         raise HTTPException(status_code=400, detail="请上传 PNG 精灵图")
     data = await file.read(CODEX_SPRITE_MAX_BYTES + 1)
@@ -3196,7 +3214,11 @@ async def publish_codex_sprite(user: CurrentUser, file: UploadFile = File(...)) 
             old.unlink(missing_ok=True)
     token = secrets.token_urlsafe(32)
     (destination / f"{token}.png").write_bytes(data)
-    return {"path": f"/api/pet/codex-sprite/{token}", "expires_in_seconds": str(CODEX_SPRITE_TTL_SECONDS)}
+    return {
+        "path": f"/api/pet/codex-sprite/{token}",
+        "image_url": codex_sprite_public_url(token),
+        "expires_in_seconds": str(CODEX_SPRITE_TTL_SECONDS),
+    }
 
 
 @app.get("/api/pet/codex-sprite/{token}")
