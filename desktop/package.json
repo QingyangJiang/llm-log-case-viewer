@@ -1,0 +1,16 @@
+{
+  "name": "case-lens-desktop-pet",
+  "version": "1.0.0",
+  "private": true,
+  "description": "CaseLens native desktop companion",
+  "main": "main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "package": "electron-packager . CaseLensPet --out=release --overwrite --asar",
+    "test": "node --test tests/*.test.cjs"
+  },
+  "devDependencies": {
+    "@electron/packager": "20.2.0",
+    "electron": "43.2.0"
+  }
+}

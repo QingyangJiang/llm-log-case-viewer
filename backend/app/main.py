@@ -1,14 +1,11 @@
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import hmac
 import json
 import math
 import os
-import re
 import secrets
-import struct
 import threading
 import urllib.error
 import urllib.request
@@ -20,7 +17,7 @@ from typing import Any, Annotated
 from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, create_engine, delete, func, select, update
 from sqlalchemy.exc import IntegrityError
@@ -3173,112 +3170,6 @@ def get_pet(user: CurrentUser, db: DB) -> dict[str, Any]:
     profile, progress, evolution, collection = get_or_create_pet(db, user.id)
     db.commit()
     return pet_dict(profile, progress, evolution, collection)
-
-
-# The Codex desktop installer downloads this image without CaseLens cookies.
-# Only a short-lived, unguessable link can access the uploaded sprite sheet.
-CODEX_SPRITE_TTL_SECONDS = 60 * 30
-CODEX_SPRITE_MAX_BYTES = 20 * 1024 * 1024
-CODEX_SPRITE_R2_KEY_PREFIX = "case-lens-pets/"
-
-
-def codex_sprite_r2_config() -> tuple[str, str, str, str] | None:
-    names = (
-        "CODEX_SPRITE_R2_ACCOUNT_ID",
-        "CODEX_SPRITE_R2_BUCKET",
-        "CODEX_SPRITE_R2_ACCESS_KEY_ID",
-        "CODEX_SPRITE_R2_SECRET_ACCESS_KEY",
-    )
-    values = tuple(os.getenv(name, "").strip() for name in names)
-    jurisdiction = os.getenv("CODEX_SPRITE_R2_JURISDICTION", "").strip().lower()
-    if not any(values) and not jurisdiction:
-        return None
-    if not all(values) or not re.fullmatch(r"[a-fA-F0-9]{32}", values[0]) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,61}[a-z0-9]", values[1]) or jurisdiction not in ("", "eu", "us", "fedramp"):
-        raise HTTPException(status_code=503, detail="私有 R2 配置不完整或格式有误，请联系管理员")
-    endpoint = f"https://{values[0]}{'.' + jurisdiction if jurisdiction else ''}.r2.cloudflarestorage.com"
-    return endpoint, values[1], values[2], values[3]
-
-
-def upload_codex_sprite_to_r2(data: bytes, token: str, config: tuple[str, str, str, str]) -> str:
-    import boto3
-    from botocore.config import Config
-
-    endpoint, bucket, access_key_id, secret_access_key = config
-    client = boto3.client(
-        "s3",
-        endpoint_url=endpoint,
-        aws_access_key_id=access_key_id,
-        aws_secret_access_key=secret_access_key,
-        region_name="auto",
-        config=Config(connect_timeout=5, read_timeout=15, retries={"max_attempts": 1}),
-    )
-    key = f"{CODEX_SPRITE_R2_KEY_PREFIX}{token}.png"
-    client.put_object(Bucket=bucket, Key=key, Body=data, ContentType="image/png", CacheControl="private, no-store")
-    return client.generate_presigned_url(
-        "get_object",
-        Params={"Bucket": bucket, "Key": key},
-        ExpiresIn=CODEX_SPRITE_TTL_SECONDS,
-    )
-
-
-def codex_sprite_public_url(token: str) -> str:
-    """Optional HTTPS image-only gateway; the main CaseLens page may stay on HTTP."""
-    prefix = os.getenv("CODEX_SPRITE_PUBLIC_URL_PREFIX", "").strip().rstrip("/")
-    if not prefix:
-        return ""
-    try:
-        parsed = urlsplit(prefix)
-        host = parsed.hostname
-        _ = parsed.port
-    except ValueError:
-        host = None
-    if not host or parsed.scheme != "https" or parsed.username or parsed.password or parsed.query or parsed.fragment or any(char.isspace() for char in prefix):
-        raise HTTPException(status_code=503, detail="Codex 图片入口必须是有效的 HTTPS 地址")
-    return f"{prefix}/{token}.png"
-
-
-@app.post("/api/pet/codex-sprite")
-async def publish_codex_sprite(user: CurrentUser, file: UploadFile = File(...)) -> dict[str, str]:
-    r2_config = codex_sprite_r2_config()
-    if r2_config is None:
-        # Fail before saving anything if the optional public address is invalid.
-        codex_sprite_public_url("preview")
-    if file.content_type != "image/png":
-        raise HTTPException(status_code=400, detail="请上传 PNG 精灵图")
-    data = await file.read(CODEX_SPRITE_MAX_BYTES + 1)
-    if len(data) > CODEX_SPRITE_MAX_BYTES or len(data) < 24 or data[:16] != b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR":
-        raise HTTPException(status_code=400, detail="精灵图格式不正确或超过 20 MB")
-    if struct.unpack(">II", data[16:24]) != (1536, 1872):
-        raise HTTPException(status_code=400, detail="精灵图必须为 1536 × 1872 像素")
-    token = secrets.token_urlsafe(32)
-    if r2_config is not None:
-        try:
-            image_url = await asyncio.to_thread(upload_codex_sprite_to_r2, data, token, r2_config)
-        except Exception as exc:
-            raise HTTPException(status_code=502, detail="私有 R2 上传失败，请重试或下载 PNG") from exc
-        return {"path": "", "image_url": image_url, "expires_in_seconds": str(CODEX_SPRITE_TTL_SECONDS)}
-    destination = DATA_DIR / "codex-sprites"
-    destination.mkdir(parents=True, exist_ok=True)
-    now = utcnow().timestamp()
-    for old in destination.glob("*.png"):
-        if old.stat().st_mtime + CODEX_SPRITE_TTL_SECONDS < now:
-            old.unlink(missing_ok=True)
-    (destination / f"{token}.png").write_bytes(data)
-    return {
-        "path": f"/api/pet/codex-sprite/{token}",
-        "image_url": codex_sprite_public_url(token),
-        "expires_in_seconds": str(CODEX_SPRITE_TTL_SECONDS),
-    }
-
-
-@app.get("/api/pet/codex-sprite/{token}")
-def get_codex_sprite(token: str) -> FileResponse:
-    if len(token) != 43 or any(char not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-" for char in token):
-        raise HTTPException(status_code=404, detail="精灵图链接无效")
-    path = DATA_DIR / "codex-sprites" / f"{token}.png"
-    if not path.is_file() or path.stat().st_mtime + CODEX_SPRITE_TTL_SECONDS < utcnow().timestamp():
-        raise HTTPException(status_code=404, detail="精灵图链接已过期")
-    return FileResponse(path, media_type="image/png", headers={"Cache-Control": "private, no-store"})
 
 
 @app.get("/api/pet/homestead")

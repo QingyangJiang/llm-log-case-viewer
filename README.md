@@ -355,44 +355,42 @@ Token 数是浏览器端对中英文混合文本的近似估算。建议上下�
 - 外部 API 模式会把本次选中的日志文本直接发送给配置的服务商
 - 可在高级设置中排除 System / Developer、Thinking 或 Tools 定义
 
-## 将小镜当前穿搭导入 Codex
+## 桌面小镜（CaseLens 独立桌面宠物）
 
-在「宠物工作室 → 衣柜」中点击「同步当前穿搭并打开 Codex」。导出的 PNG 为 Codex v1 动画表（1536 × 1872），首帧直接从当前衣柜角色的 DOM / SVG / CSS 绘制，包含当前人格路线、进化阶段、时装、基础配饰和已穿戴装备；可在按钮下方与衣柜角色对照。每次换装或进化后重新生成并安装，Codex 不会自动监听 CaseLens。
+桌面版是一个可拖动的透明悬浮窗，支持 macOS / Windows / Linux。它直接读取同一个 CaseLens 账号：桌面外观与网页衣柜的毛色、进化路线、时装、配饰和装备共用同一套渲染代码。桌面摸摸调用原有 `/api/pet/pet`，经验、掉落与网页同步；掉落可在小窗口直接三选一。点击「衣柜」会打开同一桌面应用中的完整 CaseLens，登录状态共用。网页改完穿搭后，桌面小镜约 20 秒内自动更新，切回窗口时立即更新。
 
-- **HTTP 内网站点 + 私有 R2（推荐）**：管理员配置一次 Cloudflare R2 私有存储桶，后端直接上传图片并生成 30 分钟有效的 HTTPS 签名链接。无需域名、反向代理、公开存储桶或浏览器直连上传权限。之后每次换装点击同步即可；浏览器若拦截 Codex 安装窗口，再点击页面显示的安装按钮。
-- **HTTP 内网站点 + 专用 HTTPS 图片入口**：仍支持原有图片网关配置；图片 URL 带随机令牌，30 分钟后失效，旧文件在下一次上传时清理。
-- **已有 HTTPS CaseLens 站点**：直接使用同源 HTTPS，无需设置图片入口。
-- **未配置 R2 或 HTTPS 图片入口**：会下载同一 PNG；要安装到桌面 Codex，需手动将 PNG 放到 Codex 可访问的 HTTPS 地址并粘贴回衣柜。HTTP 图片 URL 无法用于 Codex 安装链接。R2 上传失败时也会下载当前 PNG。
+### 本机安装和启动
 
-### 私有 R2 一次性配置（无需自己的 HTTPS 域名）
+先将网站按常规方式部署到内网服务器；桌面宠物运行在 **使用者自己的电脑**，不是运行在 Docker 容器或服务器上。电脑需能访问原有 CaseLens HTTP 地址，无需 R2、图片域名或公网 HTTPS。
 
-1. 在 Cloudflare R2 创建私有存储桶，例如 `case-lens-pets`；保持公开访问关闭。创建作用范围仅限该存储桶的 **Object Read & Write** API 令牌，记下账号 ID、Access Key ID、Secret Access Key。后端需要能通过 HTTPS 访问 Cloudflare 的 R2 S3 端点。
-2. 在存储桶「Settings → Object Lifecycle Rules」添加规则：仅对前缀 `case-lens-pets/` 的对象在创建后 **1 天删除**。签名链接 30 分钟失效；生命周期规则负责实际删除 PNG。
-3. 在服务器项目目录的 `.env` 填入以下四项（仅供 `api` 容器使用，不要放入前端或 Git）：
+在使用者的 macOS / Windows / Linux 电脑上取得项目代码，安装 Node.js 22+，运行：
 
-   ```dotenv
-   CODEX_SPRITE_R2_ACCOUNT_ID=你的32位Cloudflare账号ID
-   CODEX_SPRITE_R2_BUCKET=case-lens-pets
-   CODEX_SPRITE_R2_ACCESS_KEY_ID=你的R2访问密钥ID
-   CODEX_SPRITE_R2_SECRET_ACCESS_KEY=你的R2秘密访问密钥
-   ```
-
-   如果存储桶创建在特殊辖区，还需设置 `CODEX_SPRITE_R2_JURISDICTION=eu`、`us` 或 `fedramp`。默认辖区无需设置。启用 R2 后会优先使用 R2，原有 `CODEX_SPRITE_PUBLIC_URL_PREFIX` 无需配置。
-4. 拉取包含本功能的提交，在服务器运行 `sudo docker compose build api && sudo docker compose up -d --force-recreate --no-deps api`。检查 `sudo docker compose ps`；回到衣柜点击「同步当前穿搭并打开 Codex」。图片从当前衣柜画面生成，每次换装后再同步一次。
-
-返回的签名链接含访问权限，请勿发布到公开场所；过期后重新点击同步即可。上传由后端完成，浏览器无需 R2 的 CORS 规则。如果服务器不能访问 R2 端点，页面会保留同一 PNG 的下载方式。
-
-### 原有图片网关配置（可选）
-
-需要一个已配可信证书的 HTTPS 网关（Codex 所在电脑也能访问）。在该网关的 Nginx `server` 块中加入 [图片专用代理示例](deploy/codex-sprite-https.example.conf)，把其中的 `CASELENS_HOST` 改为 CaseLens 服务地址。这条规则只开放临时图片的 GET 请求，不代理 CaseLens 其他页面或 API。在服务器 `.env` 添加：
-
-```dotenv
-CODEX_SPRITE_PUBLIC_URL_PREFIX=https://pets.example.com/codex-pets
+```bash
+cd llm-log-case-viewer/desktop
+npm ci
+npm start
 ```
 
-把示例域名换成实际 HTTPS 域名；该前缀要与网关路由一致。重新创建 `api` 服务加载环境变量：`sudo docker compose up -d --force-recreate --no-deps api`。从 Codex 所在电脑验证返回的临时 URL 能直接读取 PNG，且无需登录。图片文件存于 `data/app/codex-sprites`，不会进入 Git。
+首次启动在小窗口填入 CaseLens 首页地址，例如 `http://内网服务器IP:8080`，再用现有账号登录；地址和窗口位置保存在本机，密码只用于原有 CaseLens 登录，不写入桌面设置。按住小镜本体或顶部短横条拖动；单击小镜或「摸摸」进行摸摸；点击「衣柜」修改造型；右键小镜可重新配置服务器地址或退出。
 
-动画表的行对应待机、右跑、左跑、挥手、跳跃、失败、等待、工作、复核。各帧使用同一件穿搭和角色原图，通过位移、镜像和倾斜产生动作；首帧与衣柜预览同源。此功能不会把宠物进度、抽奖券或装备数值同步到 Codex。
+公司网络无法直接下载 Electron 二进制时，可使用 Electron 文档提供的镜像：
+
+```bash
+ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ npm ci --registry=https://registry.npmmirror.com
+ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ npm start
+```
+
+在目标操作系统上运行 `npm run package` 会在 `desktop/release/` 生成可运行的原生应用（macOS 为 `.app`，Windows 为 `.exe`）。这个本地构建没有开发者签名；分发给其他同事前若要免除系统安全提示，需由公司进行签名与公证。打包后的程序仍连接同一台内网 CaseLens 服务器。
+
+### 服务器更新
+
+部署包含 `/desktop-pet` 页面和现有摸摸接口的版本，至少重建 `web` 和 `api`：
+
+```bash
+sudo docker compose build web api
+sudo docker compose up -d --force-recreate --no-deps api web
+curl -fsS http://127.0.0.1:8080/api/health
+```
 
 ## License
 

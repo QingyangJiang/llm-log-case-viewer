@@ -18,9 +18,6 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "LLM 日志 Case Viewer",
   description: "在浏览器本地查看 OpenAI 与 Anthropic 格式的 JSONL 对话日志。",
-  other: {
-    "codex-preview": "development",
-  },
   icons: {
     icon: "/favicon.svg",
     shortcut: "/favicon.svg",

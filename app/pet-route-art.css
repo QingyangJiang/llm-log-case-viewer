@@ -37,7 +37,7 @@
 @keyframes route-glimmer { 0%,100% { opacity: .5; } 50% { opacity: 1; } }
 @keyframes route-orbit { 0%,100% { transform: rotate(-6deg); } 50% { transform: rotate(6deg); } }
 
-/* The codex uses the actual pet art, including the undiscovered-state boundary. */
+/* The route gallery uses the same creature art as the wardrobe and desktop pet. */
 .pet-route-gallery { margin: 4px 12px 18px; padding: 15px; border: 1px solid #536359; border-radius: 16px; background: linear-gradient(140deg,#24362e,#1c2a24); }
 .pet-route-gallery > header { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; padding: 1px 0 14px; }
 .pet-route-gallery > header span { display: block; color: #acbcac; font-size: 8px; font-weight: 650; letter-spacing: .18em; }

@@ -4,9 +4,10 @@ import { ChangeEvent, CSSProperties, DragEvent, ReactNode, UIEvent, useCallback,
 import { BADCASE_AUTO_SCORE_THRESHOLD, shouldAutoMarkBadcase } from "./annotation-rules";
 import { MarkdownContent } from "./markdown-content";
 import { ILLUSTRATED_ROUTES, isIllustratedRoute, PetRouteArt } from "./pet-route-art";
+import { PetCreatureVisual } from "./pet-creature-visual";
 import { PetFashionArt } from "./pet-fashion-art";
 import { PetAccessoryArt, PetEquipmentArt } from "./pet-ornament-art";
-import { downloadCodexSprite, exportCodexSprite } from "./pet-codex-export";
+import { PET_COLORS, PET_EVOLUTION_PATHS, PET_FASHION_CATALOG, PET_FASHION_SLOTS, PET_FASHION_THEMES } from "./pet-visual-data";
 import { ROUTE_MILESTONES, ROUTE_STAGE_THRESHOLDS, routeMilestone, routeMilestoneIndex } from "./pet-route-progress";
 import { cleanApiBaseUrl, modelApiEndpoint, modelApiRequest } from "./model-api";
 import type { ApiProtocol, ModelApiMessage } from "./model-api";
@@ -66,7 +67,6 @@ type PetMood = "idle" | "happy" | "proud" | "curious" | "worried";
 type PetColor = "lime" | "aqua" | "peach" | "lavender" | "sky" | "coral" | "gold" | "midnight" | "rose" | "jade" | "violet" | "sunset" | "ice" | "fuchsia" | "emerald" | "azure" | "ruby" | "pearl" | "aurora" | "cosmos";
 type PetAccessory = "none" | "leaf" | "bow" | "glasses" | "star" | "headphones" | "cap" | "crown" | "halo" | "medal";
 type PetFashionSlot = "headwear" | "outfit" | "outerwear" | "footwear" | "handheld";
-type PetFashionItem = { id: string; name: string; slot: PetFashionSlot; slot_name: string; symbol: string; theme: string; theme_name: string; level: number; rarity: PetRarity; primary: string; secondary: string };
 type PetEvolutionPath = "" | "starlight" | "guardian" | "forest" | "storm" | "ocean" | "ember" | "cloud" | "pixel" | "wonky" | "eva" | "blade_soul" | "dnf" | "nba" | "honor" | "valorant" | "lol" | "nexus";
 type PetRarity = "common" | "uncommon" | "rare" | "epic" | "legendary";
 type PetEquipmentSlot = "head" | "face" | "neck" | "back" | "tail";
@@ -341,28 +341,6 @@ const PET_WHEEL_REWARDS: PetWheelReward[] = [
 ];
 const DEFAULT_ORIGIN_PERSONA: PetPersonaState = { id: "origin", label: "本源小镜", unlocked: true, stage: 0, path: "", name: "未变身", quality: "base", variant: 0, traits: [], history: [], pity: 0, success_rate: 10, target: "", target_failures: 0, target_success_rate: 70 };
 const DEFAULT_PET: PetProfile = { name: "小镜", color: "lime", accessory: "none", xp: 0, level: 1, current_level_xp: 0, next_level_xp: 20, earned_event_keys: [], evolution_chances: 0, evolution_credited_level: 1, evolution_stage: 0, evolution_path: "", evolution_variant: 0, evolution_traits: [], evolution_history: [], equipment_catalog_size: 300, equipment_parts: 0, inventory: [], equipped: {}, equipment_stats: DEFAULT_EQUIPMENT_STATS, equipment_sets: [], fashion: {}, fashion_catalog_size: 60, wardrobe_presets: [], skills: [], active_skills: [], drop_history: [], pending_drops: [], wheel_chances: 0, wheel_history: [], wheel_rewards: PET_WHEEL_REWARDS, targeted_evolution_target: "", targeted_evolution_failures: 0, targeted_evolution_blessings: 0, targeted_evolution_success_rate: 70, total_drops: 0, evolution_pity: 0, evolution_success_rate: 10, active_persona: "origin", secondary_unlocked: false, secondary_unlock_cost: 10, secondary_unlock_required_stage: 6, secondary_hard_pity: 12, personas: { origin: DEFAULT_ORIGIN_PERSONA, collab: null } };
-const PET_COLORS: { id: PetColor; label: string; value: string; level: number }[] = [
-  { id: "lime", label: "青柠", value: "#d9ff78", level: 1 },
-  { id: "aqua", label: "薄荷", value: "#9de8dc", level: 2 },
-  { id: "peach", label: "蜜桃", value: "#ffc7b8", level: 3 },
-  { id: "lavender", label: "薰衣草", value: "#cbbcff", level: 4 },
-  { id: "sky", label: "晴空", value: "#9fd7ff", level: 5 },
-  { id: "coral", label: "珊瑚", value: "#ff9c91", level: 6 },
-  { id: "gold", label: "鎏金", value: "#ffda68", level: 8 },
-  { id: "midnight", label: "星夜", value: "#7e88b8", level: 10 },
-  { id: "rose", label: "玫瑰汽水", value: "#ff8fb8", level: 12 },
-  { id: "jade", label: "翡翠", value: "#63e6ad", level: 15 },
-  { id: "violet", label: "紫晶", value: "#9b7cff", level: 18 },
-  { id: "sunset", label: "落日橘", value: "#ff9a5c", level: 20 },
-  { id: "ice", label: "冰晶", value: "#d8f3ff", level: 24 },
-  { id: "fuchsia", label: "绮丽洋红", value: "#f16cff", level: 28 },
-  { id: "emerald", label: "极光绿", value: "#46d997", level: 32 },
-  { id: "azure", label: "电光蓝", value: "#4fb3ff", level: 36 },
-  { id: "ruby", label: "红宝石", value: "#ef476f", level: 40 },
-  { id: "pearl", label: "月白珍珠", value: "#f7efe5", level: 45 },
-  { id: "aurora", label: "极昼青", value: "#77f2c2", level: 48 },
-  { id: "cosmos", label: "宇宙蓝紫", value: "#5961d8", level: 50 },
-];
 const PET_ACCESSORIES: { id: PetAccessory; label: string; symbol: string; level: number }[] = [
   { id: "none", label: "无", symbol: "", level: 1 },
   { id: "leaf", label: "叶子", symbol: "◆", level: 2 },
@@ -375,33 +353,6 @@ const PET_ACCESSORIES: { id: PetAccessory; label: string; symbol: string; level:
   { id: "halo", label: "光环", symbol: "◯", level: 10 },
   { id: "medal", label: "勋章", symbol: "✪", level: 12 },
 ];
-const PET_FASHION_SLOTS: Record<PetFashionSlot, { label: string; symbol: string }> = {
-  headwear: { label: "发型头饰", symbol: "♛" },
-  outfit: { label: "连衣套装", symbol: "♢" },
-  outerwear: { label: "外套披风", symbol: "⌁" },
-  footwear: { label: "鞋袜", symbol: "⌄" },
-  handheld: { label: "手持物", symbol: "✦" },
-};
-const PET_FASHION_THEMES = [
-  { id: "academy", name: "森系学院", subtitle: "新生报到", level: 1, primary: "#537861", secondary: "#f0d7a1", pieces: { headwear: ["学院贝雷帽", "◆"], outfit: ["格纹学院装", "▦"], outerwear: ["深绿短斗篷", "⌁"], footwear: ["棕色乐福鞋", "⌄"], handheld: ["课程手册", "▤"] } },
-  { id: "berry", name: "草莓甜心", subtitle: "午后茶会", level: 3, primary: "#ef7694", secondary: "#fff0d5", pieces: { headwear: ["莓果奶油帽", "●"], outfit: ["草莓泡泡裙", "♥"], outerwear: ["奶油针织衫", "≈"], footwear: ["糖霜圆头鞋", "⌄"], handheld: ["莓果小蛋糕", "♧"] } },
-  { id: "cloud", name: "云朵梦游", subtitle: "软绵睡衣", level: 5, primary: "#9cbbe7", secondary: "#f7f5ff", pieces: { headwear: ["月亮睡帽", "☾"], outfit: ["云朵连体衣", "☁"], outerwear: ["星星小毯子", "✦"], footwear: ["绒绒拖鞋", "⌄"], handheld: ["晚安抱枕", "○"] } },
-  { id: "sailor", name: "海盐航行", subtitle: "晴日出海", level: 8, primary: "#3979a8", secondary: "#f4efe3", pieces: { headwear: ["海风水手帽", "△"], outfit: ["蓝白水手服", "≋"], outerwear: ["航海短披肩", "⌁"], footwear: ["甲板短靴", "⌄"], handheld: ["迷你望远镜", "◎"] } },
-  { id: "forest", name: "森林茶会", subtitle: "花园来客", level: 10, primary: "#55966b", secondary: "#f2d79e", pieces: { headwear: ["花叶软帽", "♧"], outfit: ["苔绿茶会裙", "❀"], outerwear: ["藤蔓小披肩", "⌁"], footwear: ["蘑菇系带鞋", "⌄"], handheld: ["铃兰花篮", "❁"] } },
-  { id: "starlight", name: "星河礼服", subtitle: "银河舞会", level: 12, primary: "#6760b8", secondary: "#f3d879", pieces: { headwear: ["星月发冠", "✦"], outfit: ["银河礼服", "⋆"], outerwear: ["流星薄纱", "⌁"], footwear: ["星尘舞鞋", "⌄"], handheld: ["星轨手杖", "☄"] } },
-  { id: "detective", name: "侦探事务所", subtitle: "谜案追踪", level: 15, primary: "#6e5948", secondary: "#d6b777", pieces: { headwear: ["猎鹿侦探帽", "◇"], outfit: ["线索调查装", "▥"], outerwear: ["长款风衣", "⌁"], footwear: ["寻迹皮靴", "⌄"], handheld: ["线索放大镜", "◉"] } },
-  { id: "neon", name: "霓虹未来", subtitle: "夜城巡游", level: 18, primary: "#4f63d9", secondary: "#55f0d2", pieces: { headwear: ["全息耳罩", "Ω"], outfit: ["霓虹机能装", "▦"], outerwear: ["光轨夹克", "⌁"], footwear: ["悬浮跑鞋", "⌄"], handheld: ["像素终端", "▣"] } },
-  { id: "royal", name: "月桂王庭", subtitle: "花冠典礼", level: 22, primary: "#8b5b99", secondary: "#efd785", pieces: { headwear: ["月桂宝冠", "♛"], outfit: ["王庭礼仪服", "♕"], outerwear: ["紫金大披风", "⌁"], footwear: ["典礼长靴", "⌄"], handheld: ["月桂权杖", "†"] } },
-  { id: "aurora", name: "极光雪国", subtitle: "冰晶庆典", level: 28, primary: "#70b9c7", secondary: "#eefcff", pieces: { headwear: ["冰晶绒帽", "❉"], outfit: ["极光雪衣", "❄"], outerwear: ["北境绒披风", "⌁"], footwear: ["踏雪毛靴", "⌄"], handheld: ["雪花提灯", "✧"] } },
-  { id: "phoenix", name: "赤焰华服", subtitle: "凤凰巡礼", level: 36, primary: "#d65343", secondary: "#ffc857", pieces: { headwear: ["赤金凤冠", "♨"], outfit: ["流火华裳", "火"], outerwear: ["凤凰羽衣", "⌁"], footwear: ["踏焰云履", "⌄"], handheld: ["赤羽团扇", "◒"] } },
-  { id: "cosmos", name: "宇宙歌剧", subtitle: "终幕星穹", level: 45, primary: "#343b91", secondary: "#e777df", pieces: { headwear: ["星穹冠冕", "✺"], outfit: ["宇宙歌剧服", "∞"], outerwear: ["星云长披风", "⌁"], footwear: ["引力星靴", "⌄"], handheld: ["天体仪", "◎"] } },
-] as const;
-const PET_FASHION_CATALOG: PetFashionItem[] = PET_FASHION_THEMES.flatMap((theme) => (Object.entries(PET_FASHION_SLOTS) as [PetFashionSlot, { label: string; symbol: string }][]).map(([slot, slotInfo]) => {
-  const [name, symbol] = theme.pieces[slot];
-  const level = theme.level;
-  const rarity: PetRarity = level >= 40 ? "legendary" : level >= 25 ? "epic" : level >= 12 ? "rare" : level >= 5 ? "uncommon" : "common";
-  return { id: `fashion-${theme.id}-${slot}`, name, slot, slot_name: slotInfo.label, symbol, theme: theme.id, theme_name: theme.name, level, rarity, primary: theme.primary, secondary: theme.secondary };
-}));
 const PET_LEVELS = [
   { level: 1, title: "实习搭子", unlock: "青柠色 · 森系学院套装" },
   { level: 2, title: "认真观察员", unlock: "薄荷色 · 叶子" },
@@ -417,25 +368,6 @@ const PET_LEVELS = [
 ];
 const PET_MAX_LEVEL = 50;
 const PET_STEADY_LEVEL_COST = 140;
-const PET_EVOLUTION_PATHS: Record<Exclude<PetEvolutionPath, "">, { name: string; motif: string; traits: string[][]; tone: string; hidden?: boolean }> = {
-  starlight: { name: "星辉灵兽", motif: "✦", traits: [["星尘额纹", "新月耳尖", "彗星小角"], ["月光羽翼", "星轨尾焰", "银河披风"], ["星环冠冕", "极光领域", "星核辉光"], ["群星脉络", "超新星尾迹", "天穹结晶"], ["星海共鸣", "永昼星环", "宇宙心核"], ["星神投影", "万象星幕", "永恒辉光"]], tone: "璀璨" },
-  guardian: { name: "守护机甲", motif: "◆", traits: [["合金耳甲", "战术目镜", "棱镜面罩"], ["折叠钢翼", "推进尾翼", "护盾肩甲"], ["量子核心", "冠军冠冕", "脉冲力场"], ["轨道装甲", "光束翼阵", "重力护盾"], ["星舰核心", "堡垒领域", "超导王冠"], ["终焉机铠", "天基阵列", "不灭能源"]], tone: "坚毅" },
-  forest: { name: "森灵幻兽", motif: "♧", traits: [["新芽鹿角", "苔藓耳尖", "花蕾额纹"], ["叶脉羽翼", "花藤披风", "蒲公英尾"], ["萤火光环", "古树冠冕", "四季领域"], ["灵鹿枝冠", "雨林结界", "蘑菇星灯"], ["世界树心", "百花圣环", "万物低语"], ["森神化身", "四季轮转", "生命洪流"]], tone: "温柔" },
-  storm: { name: "风暴精灵", motif: "ϟ", traits: [["闪电耳羽", "雷云额纹", "电光小角"], ["疾风羽翼", "旋风尾环", "雷霆披风"], ["风眼冠冕", "暴雨领域", "蓝电核心"], ["雷暴羽阵", "闪击足环", "积雨云甲"], ["极昼雷核", "天罚光环", "飓风结界"], ["雷神化身", "万钧天幕", "永动风眼"]], tone: "迅捷" },
-  ocean: { name: "潮汐幻灵", motif: "≈", traits: [["珊瑚耳鳍", "珍珠额珠", "浪花尾尖"], ["潮汐披风", "水晶鳍翼", "泡泡光环"], ["深海冠冕", "鲸歌领域", "海蓝心核"], ["洋流翼阵", "月潮鳞甲", "海沟辉石"], ["七海圣环", "潮汐王座", "深蓝结界"], ["海神投影", "无尽洋流", "深渊星光"]], tone: "澄澈" },
-  ember: { name: "焰心灵狐", motif: "△", traits: [["火苗耳尖", "暖阳额纹", "炭火尾尖"], ["熔岩披风", "焰羽双翼", "火花足环"], ["烈阳冠冕", "赤焰领域", "熔火心核"], ["凤凰尾羽", "日珥翼阵", "曜石战甲"], ["太阳圣环", "焚天结界", "赤金王座"], ["火神化身", "恒星熔炉", "不灭真焰"]], tone: "炽热" },
-  cloud: { name: "云梦团子", motif: "☁", traits: [["棉云耳朵", "彩虹额纹", "雨滴尾巴"], ["软云翅膀", "晚霞披风", "风铃足环"], ["晴空冠冕", "梦境领域", "虹光心核"], ["层云软甲", "晨曦翼阵", "雷雨铃铛"], ["九霄圣环", "幻梦结界", "天空王座"], ["云神化身", "万里晴空", "长梦不醒"]], tone: "软绵" },
-  pixel: { name: "像素精怪", motif: "▦", traits: [["方块耳尖", "扫描额纹", "光标尾巴"], ["数据翅膀", "代码披风", "缓存光环"], ["像素冠冕", "矩阵领域", "算力核心"], ["量子像素", "递归翼阵", "霓虹装甲"], ["无限循环环", "协议王座", "虚拟结界"], ["数字神格", "全域矩阵", "永恒在线"]], tone: "赛博" },
-  wonky: { name: "歪歪异变体", motif: "≋", traits: [["参差尖牙", "皱皱触角", "大小眼花纹"], ["斑驳小翅膀", "歪斜尾鳍", "补丁披风"], ["倾斜纸冠", "毛边光圈", "咕嘟气泡场"], ["打结尾巴", "漏气翼阵", "反向护目镜"], ["掉漆王座", "卡顿领域", "吱呀心核"], ["究极毛边", "歪星圣环", "混沌咕嘟"]], tone: "有点难看" },
-  eva: { name: "EVA · 同步机体", motif: "◈", traits: [["紫绿装甲", "单角头甲", "同步目镜"], ["拘束肩甲", "核心胸灯", "脐带电缆"], ["AT 力场", "八边屏障", "领域投影"], ["核心觉醒", "装甲辉光", "觉醒核心"], ["领域扩张", "力场共鸣", "八边领域"], ["同步突破", "核心共鸣", "机体觉醒"]], tone: "同步" },
-  blade_soul: { name: "剑灵 · 御剑灵兽", motif: "剑", traits: [["灵族长耳", "青玉飞剑", "灵剑剑穗"], ["流云披帛", "玉佩腰带", "青锋护手"], ["双剑护身", "灵气流转", "剑穗飘带"], ["御剑剑阵", "剑气环绕", "灵剑共鸣"], ["流云剑气", "剑阵展开", "剑心护持"], ["剑心通明", "飞剑齐鸣", "灵气归一"]], tone: "凌厉" },
-  dnf: { name: "DNF · 深渊勇者", motif: "✥", traits: [["银发剑士", "鬼手印记", "冒险长剑"], ["鬼手锁链", "皮革护甲", "剑柄护手"], ["血气觉醒", "锁链护腕", "血色剑气"], ["巨剑锋芒", "觉醒剑痕", "阿拉德徽记"], ["剑痕爆发", "鬼手辉光", "巨剑重斩"], ["冒险者荣誉", "阿拉德勇士", "觉醒锋芒"]], tone: "觉醒" },
-  nba: { name: "NBA · 全明星球王", motif: "●", traits: [["新秀球衣", "运动发带", "圆头球鞋"], ["运动护臂", "吸汗护腕", "训练队服"], ["全明星徽章", "球衣金边", "比赛用球"], ["冠军奖杯", "夺冠纪念", "球场荣誉"], ["主场聚光", "球场边线", "全明星之夜"], ["传奇球星", "荣誉金星", "冠军纪念章"]], tone: "热血" },
-  honor: { name: "王者 · 峡谷传说", motif: "♜", traits: [["入梦绒耳", "梦纹额饰", "信物吊坠"], ["梦力泡泡", "幻梦绒毛", "寻梦足迹"], ["梦境护盾", "梦力流转", "绒耳灵光"], ["梦境环游", "泡泡轨迹", "幻梦涟漪"], ["幻梦森林", "寻梦花叶", "梦泡簇拥"], ["寻梦之旅", "梦力共鸣", "入梦之灵"]], tone: "荣耀" },
-  valorant: { name: "VALORANT · 战术特工", motif: "V", traits: [["白发束髻", "青蓝战衣", "战术手套"], ["乘风起势", "轻装护臂", "风刃护手"], ["浮空飞刃", "上升气流", "风势环绕"], ["五刃齐发", "逐风轨迹", "精准飞刃"], ["疾风掠影", "风流交错", "机动轨迹"], ["王牌时刻", "飞刃齐鸣", "疾风纪念章"]], tone: "精准" },
-  lol: { name: "LOL · 符文传奇", motif: "◐", traits: [["灵狐双耳", "九尾绒毛", "面颊狐纹"], ["灵魂宝珠", "红白灵衣", "金边腰饰"], ["狐火环绕", "灵珠辉光", "灵魂流光"], ["灵魄突袭", "狐尾流转", "灵火足迹"], ["九尾舒展", "灵魂涟漪", "狐火共鸣"], ["灵魂共鸣", "灵狐辉光", "九尾流光"]], tone: "传奇" },
-  nexus: { name: "终焉 · 次元观测者", motif: "?", traits: [["月相额纹", "星河绒羽", "观测尾光"], ["月相流转", "弦月伴星", "月光轨迹"], ["星羽展开", "绒羽流光", "次元羽翼"], ["双重星轨", "星环交汇", "观测星体"], ["星图浮现", "星座连线", "星幕绘卷"], ["次元观测", "观测者印记", "群星共鸣"]], tone: "隐藏", hidden: true },
-};
 const PET_EVOLUTION_PATH_LOTTERY: Exclude<PetEvolutionPath, "">[] = [
   ...Array(16).fill("starlight"), ...Array(15).fill("guardian"), ...Array(15).fill("forest"), ...Array(14).fill("storm"),
   ...Array(12).fill("ocean"), ...Array(11).fill("ember"), ...Array(10).fill("cloud"), ...Array(8).fill("pixel"), ...Array(9).fill("wonky"),
@@ -2152,30 +2084,6 @@ function Icon({ children }: { children: ReactNode }) {
   return <span className="icon" aria-hidden="true">{children}</span>;
 }
 
-function PetCreatureVisual({ profile, accessory, showEquipment = true, showFashion = true }: { profile: PetProfile; accessory?: string; showEquipment?: boolean; showFashion?: boolean }) {
-  const path = profile.evolution_path;
-  const pathInfo = path ? PET_EVOLUTION_PATHS[path] : null;
-  const illustrated = profile.evolution_stage >= 1 && isIllustratedRoute(path);
-  const equippedItems = Object.values(profile.equipped).map((itemId) => profile.inventory.find((item) => item.id === itemId)).filter((item): item is PetEquipment => Boolean(item));
-  const fashionItems = showFashion ? (Object.entries(profile.fashion) as [PetFashionSlot, string][]).flatMap(([slot, itemId]) => {
-    const item = PET_FASHION_CATALOG.find((candidate) => candidate.id === itemId && candidate.slot === slot);
-    return item ? [item] : [];
-  }) : [];
-  return <span className={`pet-creature ${illustrated ? "pet-illustrated" : ""} evolution-${path || "base"} evolution-stage-${profile.evolution_stage} evolution-variant-${profile.evolution_variant}`} aria-hidden="true">
-    {illustrated && isIllustratedRoute(path) ? <PetRouteArt path={path} stage={profile.evolution_stage} /> : <>
-    {profile.evolution_stage >= 3 ? <span className="pet-evolution-aura" /> : null}
-    {profile.evolution_stage >= 1 && pathInfo ? <><span className="pet-route-feature primary" /><span className="pet-route-feature secondary" /></> : null}
-    {profile.evolution_stage >= 1 && pathInfo ? <span className="pet-evolution-mark">{pathInfo.motif}</span> : null}
-    {profile.evolution_stage >= 2 ? <><span className="pet-evolution-wing left" /><span className="pet-evolution-wing right" /></> : null}
-    {profile.evolution_stage >= 3 ? <span className="pet-evolution-crown" /> : null}
-    <i className="pet-ear left" /><i className="pet-ear right" /><b className="pet-eye left" /><b className="pet-eye right" /><em /><span className="pet-tail" />
-    </>}
-    {fashionItems.map((item) => item.slot === "footwear" ? <span className={`pet-fashion pet-fashion-footwear fashion-theme-${item.theme}`} style={{ "--fashion-primary": item.primary, "--fashion-secondary": item.secondary } as CSSProperties} title={item.name} key={item.slot} /> : <PetFashionArt item={item} illustrated={illustrated} key={item.slot} />)}
-    {accessory ? <span className={`pet-accessory accessory-${profile.accessory}`}><PetAccessoryArt id={profile.accessory} /></span> : null}
-    {showEquipment ? equippedItems.map((item) => <span className={`pet-equipment pet-equipment-${item.slot} rarity-${item.rarity}`} key={item.slot}><PetEquipmentArt slot={item.slot} /></span>) : null}
-  </span>;
-}
-
 function petHomeVisualProfile(resident: PetHomeResident): PetProfile {
   const inventory = resident.equipped_items.flatMap((item) => {
     const catalogItem = PET_EQUIPMENT_CATALOG.find((candidate) => candidate.id === item.id);
@@ -2488,21 +2396,9 @@ function CompanionPet({ visible, message, mood, completed, total, pulse, hasNext
   const wheelTimer = useRef<number | null>(null);
   const [targetEvolutionPath, setTargetEvolutionPath] = useState<PetEvolutionPath>("");
   const [wardrobeName, setWardrobeName] = useState("");
-  const wardrobePreview = useRef<HTMLDivElement>(null);
-  const [codexExporting, setCodexExporting] = useState(false);
-  const [codexInstallLink, setCodexInstallLink] = useState("");
-  const [codexExportMessage, setCodexExportMessage] = useState("");
-  const [codexImageUrl, setCodexImageUrl] = useState("");
-  const [codexExportKey, setCodexExportKey] = useState("");
-  const [codexIdlePreview, setCodexIdlePreview] = useState("");
   const [fashionSlot, setFashionSlot] = useState<"all" | PetFashionSlot>("all");
   const [fashionTheme, setFashionTheme] = useState("all");
   useEffect(() => () => { if (wheelTimer.current !== null) window.clearTimeout(wheelTimer.current); }, []);
-  useEffect(() => {
-    if (!codexInstallLink) return;
-    const timeout = window.setTimeout(() => { setCodexInstallLink(""); setCodexExportMessage("安装链接已过期，请重新同步当前穿搭。"); }, 30 * 60_000);
-    return () => window.clearTimeout(timeout);
-  }, [codexInstallLink]);
   if (!visible) return <button className="pet-summon" type="button" onClick={onShow}><span aria-hidden="true">◉ᴗ◉</span> 唤回{profile.name}</button>;
   const progress = total ? Math.min(100, Math.round(completed / total * 100)) : 0;
   const levelStart = profile.current_level_xp ?? petLevelStartXp(profile.level);
@@ -2514,61 +2410,6 @@ function CompanionPet({ visible, message, mood, completed, total, pulse, hasNext
   const unlockedFashion = PET_FASHION_CATALOG.filter((item) => item.level <= profile.level);
   const visibleFashion = PET_FASHION_CATALOG.filter((item) => (fashionSlot === "all" || item.slot === fashionSlot) && (fashionTheme === "all" || item.theme === fashionTheme));
   const currentFashionSet = PET_FASHION_THEMES.find((theme) => fashionSlotEntries.every(([slot]) => profile.fashion[slot]?.startsWith(`fashion-${theme.id}-`)));
-  const codexLookKey = JSON.stringify([profile.color, profile.accessory, profile.evolution_path, profile.evolution_stage, profile.evolution_variant, profile.fashion, profile.equipped, profile.inventory.map((item) => [item.id, item.rarity])]);
-  const lookMatchesExport = codexLookKey === codexExportKey;
-  const displayedCodexLink = lookMatchesExport ? codexInstallLink : "";
-  const displayedCodexMessage = lookMatchesExport ? codexExportMessage : "";
-  const manualCodexInstallLink = lookMatchesExport && /^https:\/\/[^\s/]+(?:\/[^\s]*)?$/i.test(codexImageUrl.trim())
-    ? `codex://pets/install?name=${encodeURIComponent(profile.name)}&imageUrl=${encodeURIComponent(codexImageUrl.trim())}&spriteVersionNumber=1`
-    : "";
-  const syncCodexPet = async () => {
-    const creature = wardrobePreview.current?.querySelector<HTMLElement>(".pet-creature");
-    if (!creature || codexExporting) return;
-    setCodexExporting(true);
-    setCodexExportKey(codexLookKey);
-    setCodexInstallLink("");
-    try {
-      const sprite = await exportCodexSprite(creature);
-      if (typeof createImageBitmap === "function") {
-        try {
-          const sheetBitmap = await createImageBitmap(sprite);
-          const firstFrame = document.createElement("canvas");
-          firstFrame.width = 192;
-          firstFrame.height = 208;
-          firstFrame.getContext("2d")?.drawImage(sheetBitmap, 0, 0, 192, 208, 0, 0, 192, 208);
-          sheetBitmap.close();
-          setCodexIdlePreview(firstFrame.toDataURL("image/png"));
-        } catch { setCodexIdlePreview(""); }
-      }
-      const filename = `case-lens-${profile.active_persona || "origin"}-${Date.now()}.png`;
-      let imageUrl = "";
-      let publishError = "";
-      if (currentUserId) {
-        const form = new FormData();
-        form.append("file", sprite, filename);
-        try {
-          const result = await apiRequest<{ path: string; image_url?: string }>("/api/pet/codex-sprite", { method: "POST", body: form });
-          const address = new URL(result.image_url || result.path, window.location.href);
-          if (address.protocol === "https:") imageUrl = address.href;
-        } catch (error) {
-          publishError = error instanceof Error ? error.message : "图片入口暂不可用";
-        }
-      }
-      if (imageUrl) {
-        const installLink = `codex://pets/install?name=${encodeURIComponent(profile.name)}&imageUrl=${encodeURIComponent(imageUrl)}&spriteVersionNumber=1`;
-        setCodexInstallLink(installLink);
-        setCodexExportMessage("正在打开 Codex 安装窗口；如果浏览器拦截，请在 30 分钟内点击下方安装按钮。");
-        try { window.location.assign(installLink); } catch { /* The visible link works with a direct user click. */ }
-      } else {
-        downloadCodexSprite(sprite, filename);
-        setCodexExportMessage(`${publishError ? `${publishError}；` : ""}已下载 PNG。如需一键安装，请让管理员配置一次私有 R2；也可在下方填写现成的 HTTPS 图片地址。`);
-      }
-    } catch (error) {
-      setCodexExportMessage(error instanceof Error ? error.message : "同步失败，请重试");
-    } finally {
-      setCodexExporting(false);
-    }
-  };
   const applyFashionSet = (themeId: string) => PET_FASHION_CATALOG.filter((item) => item.theme === themeId && item.level <= profile.level).forEach((item) => onSelectFashion(item.slot, item.id));
   const slotEntries = Object.entries(PET_EQUIPMENT_SLOTS) as [PetEquipmentSlot, { label: string; symbol: string }][];
   const slotOrder = Object.keys(PET_EQUIPMENT_SLOTS) as PetEquipmentSlot[];
@@ -2747,7 +2588,7 @@ function CompanionPet({ visible, message, mood, completed, total, pulse, hasNext
             </section> : null}
             {studioSection === "wardrobe" ? <section className="pet-wardrobe-panel pet-fashion-wardrobe">
               <header><div><span>FASHION WARDROBE</span><h3>小镜暖暖 · 时装衣柜</h3><p>12 个主题、60 件独立时装，可以混搭发型头饰、连衣套装、外套披风、鞋袜与手持物。时装只改变外观，不影响装备属性。</p></div><b>{unlockedFashion.length} / {PET_FASHION_CATALOG.length}</b></header>
-              <div className="pet-wardrobe-current"><div className="pet-wardrobe-preview" ref={wardrobePreview}><i className="pet-wardrobe-halo" /><PetCreatureVisual profile={profile} accessory={accessory} /><span>{currentFashionSet?.name ?? (Object.keys(profile.fashion).length ? "自由混搭" : "基础造型")}</span></div><div><span>CURRENT LOOK</span><strong>{PET_COLORS.find((item) => item.id === profile.color)?.label} · {Object.keys(profile.fashion).length}/5 件时装</strong><div className="pet-fashion-current-slots">{fashionSlotEntries.map(([slot, info]) => { const item = PET_FASHION_CATALOG.find((candidate) => candidate.id === profile.fashion[slot]); return <button type="button" className={item ? `rarity-${item.rarity}` : "empty"} onClick={() => setFashionSlot(slot)} title={item?.name ?? `${info.label}未穿戴`} key={slot}><i style={item ? { "--fashion-primary": item.primary, "--fashion-secondary": item.secondary } as CSSProperties : undefined}>{item ? <PetFashionArt item={item} icon /> : info.symbol}</i><small>{item?.name ?? info.label}</small></button>; })}</div><form onSubmit={(event) => { event.preventDefault(); void onSaveWardrobe(wardrobeName).then(() => setWardrobeName("")); }}><input value={wardrobeName} onChange={(event) => setWardrobeName(event.target.value)} maxLength={30} placeholder={`例如：${currentFashionSet?.name ?? "我的今日穿搭"}`} /><button type="submit" disabled={busy || profile.wardrobe_presets.length >= 8}>{profile.wardrobe_presets.length >= 8 ? "搭配收藏已满" : "收藏当前整套"}</button></form><div className="pet-codex-sync"><button type="button" disabled={codexExporting} onClick={() => void syncCodexPet()}>{codexExporting ? "正在生成精灵图…" : "同步当前穿搭并打开 Codex"}</button>{lookMatchesExport && codexIdlePreview ? <div className="pet-codex-compare"><div className="pet-codex-idle" role="img" aria-label="Codex 精灵图首帧，与左侧当前穿搭对照" style={{ backgroundImage: `url(${codexIdlePreview})` }} /><span>Codex 首帧预览<br />可与左侧衣柜角色对照</span></div> : null}<small>原样使用左侧小镜的进化外观、时装、配饰与装备；配置图片入口后无需手动传图。换装后再点一次。</small>{displayedCodexMessage ? <p role="status">{displayedCodexMessage}</p> : null}{!displayedCodexLink && displayedCodexMessage ? <label>精灵图的 HTTPS 图片地址<input type="url" placeholder="https://…/xiaojing.png" value={codexImageUrl} onChange={(event) => setCodexImageUrl(event.target.value)} /></label> : null}{displayedCodexLink || manualCodexInstallLink ? <a href={displayedCodexLink || manualCodexInstallLink}>在 Codex 中安装当前穿搭 ↗</a> : null}</div></div></div>
+              <div className="pet-wardrobe-current"><div className="pet-wardrobe-preview"><i className="pet-wardrobe-halo" /><PetCreatureVisual profile={profile} accessory={accessory} /><span>{currentFashionSet?.name ?? (Object.keys(profile.fashion).length ? "自由混搭" : "基础造型")}</span></div><div><span>CURRENT LOOK</span><strong>{PET_COLORS.find((item) => item.id === profile.color)?.label} · {Object.keys(profile.fashion).length}/5 件时装</strong><div className="pet-fashion-current-slots">{fashionSlotEntries.map(([slot, info]) => { const item = PET_FASHION_CATALOG.find((candidate) => candidate.id === profile.fashion[slot]); return <button type="button" className={item ? `rarity-${item.rarity}` : "empty"} onClick={() => setFashionSlot(slot)} title={item?.name ?? `${info.label}未穿戴`} key={slot}><i style={item ? { "--fashion-primary": item.primary, "--fashion-secondary": item.secondary } as CSSProperties : undefined}>{item ? <PetFashionArt item={item} icon /> : info.symbol}</i><small>{item?.name ?? info.label}</small></button>; })}</div><form onSubmit={(event) => { event.preventDefault(); void onSaveWardrobe(wardrobeName).then(() => setWardrobeName("")); }}><input value={wardrobeName} onChange={(event) => setWardrobeName(event.target.value)} maxLength={30} placeholder={`例如：${currentFashionSet?.name ?? "我的今日穿搭"}`} /><button type="submit" disabled={busy || profile.wardrobe_presets.length >= 8}>{profile.wardrobe_presets.length >= 8 ? "搭配收藏已满" : "收藏当前整套"}</button></form><div className="pet-desktop-sync"><b>◉ 桌面小镜</b><small>桌面宠物会显示这套穿搭与进化外观；换装保存后自动更新，摸摸和装备与账号共用。</small></div></div></div>
 
               <section className="pet-fashion-sets"><header><div><span>STYLE SETS</span><strong>主题套装</strong><small>一键穿上当前等级已解锁的部件，也可以在下方自由拆分混搭。</small></div><b>{PET_FASHION_THEMES.filter((theme) => PET_FASHION_CATALOG.filter((item) => item.theme === theme.id).every((item) => item.level <= profile.level)).length} / {PET_FASHION_THEMES.length} 套集齐</b></header><div>{PET_FASHION_THEMES.map((theme) => { const pieces = PET_FASHION_CATALOG.filter((item) => item.theme === theme.id); const unlocked = pieces.filter((item) => item.level <= profile.level); const active = pieces.every((item) => profile.fashion[item.slot] === item.id); return <article className={`${active ? "active" : ""} ${unlocked.length ? "available" : "locked"}`} style={{ "--fashion-primary": theme.primary, "--fashion-secondary": theme.secondary } as CSSProperties} key={theme.id}><header><i>{theme.name.slice(0, 1)}</i><span><strong>{theme.name}</strong><small>{theme.subtitle} · Lv.{theme.level} 起</small></span><b>{unlocked.length}/5</b></header><div className="pet-fashion-set-preview"><PetCreatureVisual profile={{ ...profile, fashion: Object.fromEntries(pieces.map((piece) => [piece.slot, piece.id])) }} showEquipment={false} /></div><div>{pieces.map((item) => <i className={item.level <= profile.level ? `rarity-${item.rarity}` : "locked"} title={`${item.name} · Lv.${item.level}`} key={item.id}>{<PetFashionArt item={item} icon />}</i>)}</div><button type="button" disabled={busy || !unlocked.length} onClick={() => applyFashionSet(theme.id)}>{active ? "整套穿戴中" : unlocked.length === 5 ? "一键穿整套" : `穿上已解锁 ${unlocked.length} 件`}</button></article>; })}</div></section>
 
