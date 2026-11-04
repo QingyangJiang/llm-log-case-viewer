@@ -745,9 +745,13 @@ PET_EVOLUTION_PATHS: dict[str, dict[str, Any]] = {
     "honor": {"name": "王者 · 峡谷传说", "quality": "glory", "traits": [["入梦绒耳", "梦纹额饰", "信物吊坠"], ["梦力泡泡", "幻梦绒毛", "寻梦足迹"], ["梦境护盾", "梦力流转", "绒耳灵光"], ["梦境环游", "泡泡轨迹", "幻梦涟漪"], ["幻梦森林", "寻梦花叶", "梦泡簇拥"], ["寻梦之旅", "梦力共鸣", "入梦之灵"]]},
     "valorant": {"name": "VALORANT · 战术特工", "quality": "tactical", "traits": [["白发束髻", "青蓝战衣", "战术手套"], ["乘风起势", "轻装护臂", "风刃护手"], ["浮空飞刃", "上升气流", "风势环绕"], ["五刃齐发", "逐风轨迹", "精准飞刃"], ["疾风掠影", "风流交错", "机动轨迹"], ["王牌时刻", "飞刃齐鸣", "疾风纪念章"]]},
     "lol": {"name": "LOL · 符文传奇", "quality": "rune", "traits": [["灵狐双耳", "九尾绒毛", "面颊狐纹"], ["灵魂宝珠", "红白灵衣", "金边腰饰"], ["狐火环绕", "灵珠辉光", "灵魂流光"], ["灵魄突袭", "狐尾流转", "灵火足迹"], ["九尾舒展", "灵魂涟漪", "狐火共鸣"], ["灵魂共鸣", "灵狐辉光", "九尾流光"]]},
+    "phantom_soul": {"name": "影之刃零 · 魂", "quality": "kungfupunk", "traits": [["墨衣剑客", "赤刃锋芒", "束发红绳"], ["赤巾猎风", "旧铜刀镡", "绑带护腕"], ["双刃出鞘", "交错剑锋", "赤纹剑鞘"], ["残影逐月", "墨痕刀弧", "疾行衣摆"], ["墨羽长氅", "赤金刀纹", "回风披带"], ["一刃破局", "孤锋剑意", "赤月刀光"]]},
+    "phantom_zuoshang": {"name": "影之刃零 · 左殇", "quality": "kungfupunk", "traits": [["紫锋长剑", "束冠墨发", "金纹武袍"], ["鎏金肩甲", "云纹腰封", "垂玉剑穗"], ["剑气悬锋", "金芒护刃", "悬剑护身"], ["三剑成阵", "交织剑气", "御刃之势"], ["游龙剑势", "金绸剑光", "龙纹披帛"], ["金阙剑域", "六锋齐鸣", "藏锋归一"]]},
+    "phantom_xiaokui": {"name": "影之刃零 · 沐小葵", "quality": "kungfupunk", "traits": [["青衫少女", "朱绳发结", "银叶发簪"], ["流袖系铃", "青玉腰佩", "锦绣裙摆"], ["玉卫相随", "玉色机关", "轻灵护卫"], ["铁卫同行", "重甲机关", "双卫守候"], ["红绫牵机", "绫带回环", "机关共鸣"], ["双卫护心", "银枝花冠", "青绫环舞"]]},
+    "phantom_xianzhe": {"name": "影之刃零 · 弦者", "quality": "kungfupunk", "traits": [["怀抱琵琶", "墨发朱绳", "木偶关节"], ["锦袖垂音", "金纹琴轸", "绣边长裙"], ["弦波初起", "金线回声", "幽音环绕"], ["三叠回响", "弦阵展开", "琴纹流光"], ["朱弦织境", "绯色琴丝", "回声垂幕"], ["月下终曲", "弦月共鸣", "余音不散"]]},
     "nexus": {"name": "终焉 · 次元观测者", "quality": "hidden", "hidden": True, "traits": [["月相额纹", "星河绒羽", "观测尾光"], ["月相流转", "弦月伴星", "月光轨迹"], ["星羽展开", "绒羽流光", "次元羽翼"], ["双重星轨", "星环交汇", "观测星体"], ["星图浮现", "星座连线", "星幕绘卷"], ["次元观测", "观测者印记", "群星共鸣"]]},
 }
-PET_ILLUSTRATED_PATHS = frozenset({"eva", "blade_soul", "dnf", "nba", "honor", "valorant", "lol", "nexus"})
+PET_ILLUSTRATED_PATHS = frozenset({"eva", "blade_soul", "dnf", "nba", "honor", "valorant", "lol", "nexus", "phantom_soul", "phantom_zuoshang", "phantom_xiaokui", "phantom_xianzhe"})
 PET_ILLUSTRATED_STAGE_THRESHOLDS = (1, 3, 6, 9, 12, 15)
 
 
@@ -757,7 +761,7 @@ def pet_evolution_trait_tier(path: str, completed_stage: int) -> int:
     return min(max(0, completed_stage - 1) // 2, len(PET_EVOLUTION_PATHS[path]["traits"]) - 1)
 
 
-PET_EVOLUTION_PATH_LOTTERY = ["starlight"] * 16 + ["guardian"] * 15 + ["forest"] * 15 + ["storm"] * 14 + ["ocean"] * 12 + ["ember"] * 11 + ["cloud"] * 10 + ["pixel"] * 8 + ["wonky"] * 9 + ["eva"] * 7 + ["blade_soul"] * 7 + ["dnf"] * 7 + ["nba"] * 6 + ["honor"] * 7 + ["valorant"] * 7 + ["lol"] * 7 + ["nexus"] * 2
+PET_EVOLUTION_PATH_LOTTERY = ["starlight"] * 16 + ["guardian"] * 15 + ["forest"] * 15 + ["storm"] * 14 + ["ocean"] * 12 + ["ember"] * 11 + ["cloud"] * 10 + ["pixel"] * 8 + ["wonky"] * 9 + ["eva"] * 7 + ["blade_soul"] * 7 + ["dnf"] * 7 + ["nba"] * 6 + ["honor"] * 7 + ["valorant"] * 7 + ["lol"] * 7 + ["nexus"] * 2 + ["phantom_soul"] * 7 + ["phantom_zuoshang"] * 7 + ["phantom_xiaokui"] * 7 + ["phantom_xianzhe"] * 7
 PET_PUBLIC_EVOLUTION_PATHS = tuple(path for path, definition in PET_EVOLUTION_PATHS.items() if not definition.get("hidden"))
 PET_COLLAB_PATHS = PET_ILLUSTRATED_PATHS
 PET_PUBLIC_COLLAB_PATHS = tuple(path for path in PET_PUBLIC_EVOLUTION_PATHS if path in PET_COLLAB_PATHS)

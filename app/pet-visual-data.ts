@@ -1,9 +1,11 @@
+import { PHANTOM_ROUTES, type PhantomRoute } from "./pet-phantom-data";
+
 /** Visual catalog shared by the CaseLens wardrobe and the native desktop pet. */
 export type PetColor = "lime" | "aqua" | "peach" | "lavender" | "sky" | "coral" | "gold" | "midnight" | "rose" | "jade" | "violet" | "sunset" | "ice" | "fuchsia" | "emerald" | "azure" | "ruby" | "pearl" | "aurora" | "cosmos";
 export type PetFashionSlot = "headwear" | "outfit" | "outerwear" | "footwear" | "handheld";
 export type PetRarity = "common" | "uncommon" | "rare" | "epic" | "legendary";
 export type PetFashionItem = { id: string; name: string; slot: PetFashionSlot; slot_name: string; symbol: string; theme: string; theme_name: string; level: number; rarity: PetRarity; primary: string; secondary: string };
-export type PetEvolutionPath = "" | "starlight" | "guardian" | "forest" | "storm" | "ocean" | "ember" | "cloud" | "pixel" | "wonky" | "eva" | "blade_soul" | "dnf" | "nba" | "honor" | "valorant" | "lol" | "nexus";
+export type PetEvolutionPath = "" | "starlight" | "guardian" | "forest" | "storm" | "ocean" | "ember" | "cloud" | "pixel" | "wonky" | "eva" | "blade_soul" | "dnf" | "nba" | "honor" | "valorant" | "lol" | "nexus" | PhantomRoute;
 
 export const PET_COLORS: { id: PetColor; label: string; value: string; level: number }[] = [
   { id: "lime", label: "青柠", value: "#d9ff78", level: 1 },
@@ -71,5 +73,6 @@ export const PET_EVOLUTION_PATHS: Record<Exclude<PetEvolutionPath, "">, { name: 
   honor: { name: "王者 · 峡谷传说", motif: "♜", traits: [["入梦绒耳", "梦纹额饰", "信物吊坠"], ["梦力泡泡", "幻梦绒毛", "寻梦足迹"], ["梦境护盾", "梦力流转", "绒耳灵光"], ["梦境环游", "泡泡轨迹", "幻梦涟漪"], ["幻梦森林", "寻梦花叶", "梦泡簇拥"], ["寻梦之旅", "梦力共鸣", "入梦之灵"]], tone: "荣耀" },
   valorant: { name: "VALORANT · 战术特工", motif: "V", traits: [["白发束髻", "青蓝战衣", "战术手套"], ["乘风起势", "轻装护臂", "风刃护手"], ["浮空飞刃", "上升气流", "风势环绕"], ["五刃齐发", "逐风轨迹", "精准飞刃"], ["疾风掠影", "风流交错", "机动轨迹"], ["王牌时刻", "飞刃齐鸣", "疾风纪念章"]], tone: "精准" },
   lol: { name: "LOL · 符文传奇", motif: "◐", traits: [["灵狐双耳", "九尾绒毛", "面颊狐纹"], ["灵魂宝珠", "红白灵衣", "金边腰饰"], ["狐火环绕", "灵珠辉光", "灵魂流光"], ["灵魄突袭", "狐尾流转", "灵火足迹"], ["九尾舒展", "灵魂涟漪", "狐火共鸣"], ["灵魂共鸣", "灵狐辉光", "九尾流光"]], tone: "传奇" },
+  ...PHANTOM_ROUTES,
   nexus: { name: "终焉 · 次元观测者", motif: "?", traits: [["月相额纹", "星河绒羽", "观测尾光"], ["月相流转", "弦月伴星", "月光轨迹"], ["星羽展开", "绒羽流光", "次元羽翼"], ["双重星轨", "星环交汇", "观测星体"], ["星图浮现", "星座连线", "星幕绘卷"], ["次元观测", "观测者印记", "群星共鸣"]], tone: "隐藏", hidden: true },
 };
