@@ -21,6 +21,8 @@
 .pet-illustrated > .pet-fashion-handheld { bottom: -6px; }
 .pet-illustrated .route-personal-accent { fill: var(--pet-color); }
 .pet-illustrated > .pet-equipment-neck { top: 24px; }
+.pet-creature.pet-illustrated.pet-crossover > .pet-equipment-neck { top: 15px; }
+.pet-creature.pet-illustrated.pet-crossover > .pet-equipment-face { top: 1px; }
 .pet-lottery-orbit .pet-creature.pet-illustrated { left: 49px; top: 43px; transform: scale(1.65); }
 .pet-home-orbit .pet-creature.pet-illustrated { left: 37px; top: 32px; transform: scale(1.65); }
 .pet-wardrobe-preview .pet-creature.pet-illustrated { left: 55px; top: 49px; transform: scale(1.9); }

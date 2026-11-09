@@ -745,14 +745,25 @@ PET_EVOLUTION_PATHS: dict[str, dict[str, Any]] = {
     "honor": {"name": "王者 · 峡谷传说", "quality": "glory", "traits": [["入梦绒耳", "梦纹额饰", "信物吊坠"], ["梦力泡泡", "幻梦绒毛", "寻梦足迹"], ["梦境护盾", "梦力流转", "绒耳灵光"], ["梦境环游", "泡泡轨迹", "幻梦涟漪"], ["幻梦森林", "寻梦花叶", "梦泡簇拥"], ["寻梦之旅", "梦力共鸣", "入梦之灵"]]},
     "valorant": {"name": "VALORANT · 战术特工", "quality": "tactical", "traits": [["白发束髻", "青蓝战衣", "战术手套"], ["乘风起势", "轻装护臂", "风刃护手"], ["浮空飞刃", "上升气流", "风势环绕"], ["五刃齐发", "逐风轨迹", "精准飞刃"], ["疾风掠影", "风流交错", "机动轨迹"], ["王牌时刻", "飞刃齐鸣", "疾风纪念章"]]},
     "lol": {"name": "LOL · 符文传奇", "quality": "rune", "traits": [["灵狐双耳", "九尾绒毛", "面颊狐纹"], ["灵魂宝珠", "红白灵衣", "金边腰饰"], ["狐火环绕", "灵珠辉光", "灵魂流光"], ["灵魄突袭", "狐尾流转", "灵火足迹"], ["九尾舒展", "灵魂涟漪", "狐火共鸣"], ["灵魂共鸣", "灵狐辉光", "九尾流光"]]},
-    "phantom_soul": {"name": "影之刃零 · 魂", "quality": "kungfupunk", "traits": [["墨衣剑客", "赤刃锋芒", "束发红绳"], ["赤巾猎风", "旧铜刀镡", "绑带护腕"], ["双刃出鞘", "交错剑锋", "赤纹剑鞘"], ["残影逐月", "墨痕刀弧", "疾行衣摆"], ["墨羽长氅", "赤金刀纹", "回风披带"], ["一刃破局", "孤锋剑意", "赤月刀光"]]},
-    "phantom_zuoshang": {"name": "影之刃零 · 左殇", "quality": "kungfupunk", "traits": [["紫锋长剑", "束冠墨发", "金纹武袍"], ["鎏金肩甲", "云纹腰封", "垂玉剑穗"], ["剑气悬锋", "金芒护刃", "悬剑护身"], ["三剑成阵", "交织剑气", "御刃之势"], ["游龙剑势", "金绸剑光", "龙纹披帛"], ["金阙剑域", "六锋齐鸣", "藏锋归一"]]},
-    "phantom_xiaokui": {"name": "影之刃零 · 沐小葵", "quality": "kungfupunk", "traits": [["青衫少女", "朱绳发结", "银叶发簪"], ["流袖系铃", "青玉腰佩", "锦绣裙摆"], ["玉卫相随", "玉色机关", "轻灵护卫"], ["铁卫同行", "重甲机关", "双卫守候"], ["红绫牵机", "绫带回环", "机关共鸣"], ["双卫护心", "银枝花冠", "青绫环舞"]]},
-    "phantom_xianzhe": {"name": "影之刃零 · 弦者", "quality": "kungfupunk", "traits": [["怀抱琵琶", "墨发朱绳", "木偶关节"], ["锦袖垂音", "金纹琴轸", "绣边长裙"], ["弦波初起", "金线回声", "幽音环绕"], ["三叠回响", "弦阵展开", "琴纹流光"], ["朱弦织境", "绯色琴丝", "回声垂幕"], ["月下终曲", "弦月共鸣", "余音不散"]]},
+    "wukong": {"name": "黑神话 · 悟空", "quality": "crossover", "traits": [["如意金箍棒", "灵猴面相", "玄金战甲"], ["酒葫芦", "行者飘带", "金纹束带"], ["金甲护身", "如意棍花", "赤金战意"], ["凤翅紫金冠", "双翎长羽", "齐天冠冕"], ["筋斗祥云", "云海环绕", "踏云金光"], ["大圣归来", "金箍法相", "如意无边"]]},
+    "nezha": {"name": "黑神话风 · 哪吒", "quality": "crossover", "traits": [["双髻朱绳", "赤莲额印", "火尖枪"], ["混天绫", "朱绫回舞", "赤金绑带"], ["乾坤圈", "金轮护身", "莲纹护腕"], ["风火轮", "双轮踏焰", "焰尾流光"], ["赤莲法座", "莲焰盛放", "火莲羽瓣"], ["六臂法相", "莲心不灭", "破厄金光"]]},
+    "aobing": {"name": "黑神话风 · 敖丙", "quality": "crossover", "traits": [["冰蓝长发", "玉色龙角", "沧海长枪"], ["寒玉龙鳞", "鳞甲悬玉", "冰晶护身"], ["冰晶枪锋", "寒霜结晶", "蓝玉枪阵"], ["龙尾沧浪", "踏浪云履", "海潮回卷"], ["霜龙环身", "寒龙显形", "冰鳞长龙"], ["四海龙吟", "龙珠共鸣", "苍海龙域"]]},
+    "doraemon": {"name": "哆啦A梦", "quality": "crossover", "traits": [["红鼻蓝猫", "金色铃铛", "四次元口袋"], ["铜锣烧", "点心纸袋", "甜甜笑颜"], ["竹蜻蜓", "轻风螺旋", "飞行小帽"], ["粉色任意门", "任意门钥匙", "快乐启程"], ["时光机", "时空仪表", "旅行座舱"], ["百宝星空", "未来星环", "圆梦之旅"]]},
+    "furina": {"name": "水神 · 芙宁娜", "quality": "crossover", "traits": [["蓝白礼帽", "水色异瞳", "歌剧燕尾服"], ["海沫水滴", "水纹礼赞", "蓝晶胸针"], ["沙龙小章鱼", "水灵来客", "水泡伴舞"], ["螃蟹骑士", "海马使者", "众水巡游"], ["歌剧帷幕", "聚光水幕", "水色舞台"], ["水华终章", "礼赞之冠", "众水回响"]]},
+    "yae_miko": {"name": "原神 · 八重神子", "quality": "crossover", "traits": [["粉色狐耳", "白赤巫女服", "紫电神之眼"], ["御币幡纸", "樱花回舞", "朱绳神铃"], ["杀生樱", "紫电狐灯", "樱枝雷纹"], ["三樱结阵", "狐灯齐鸣", "雷樱连线"], ["天狐显影", "五尾灵光", "狐灵守候"], ["神樱眷顾", "樱雷法环", "鸣神御守"]]},
     "nexus": {"name": "终焉 · 次元观测者", "quality": "hidden", "hidden": True, "traits": [["月相额纹", "星河绒羽", "观测尾光"], ["月相流转", "弦月伴星", "月光轨迹"], ["星羽展开", "绒羽流光", "次元羽翼"], ["双重星轨", "星环交汇", "观测星体"], ["星图浮现", "星座连线", "星幕绘卷"], ["次元观测", "观测者印记", "群星共鸣"]]},
 }
-PET_ILLUSTRATED_PATHS = frozenset({"eva", "blade_soul", "dnf", "nba", "honor", "valorant", "lol", "nexus", "phantom_soul", "phantom_zuoshang", "phantom_xiaokui", "phantom_xianzhe"})
+PET_ILLUSTRATED_PATHS = frozenset({"eva", "blade_soul", "dnf", "nba", "honor", "valorant", "lol", "nexus", "wukong", "nezha", "aobing", "doraemon", "furina", "yae_miko"})
 PET_ILLUSTRATED_STAGE_THRESHOLDS = (1, 3, 6, 9, 12, 15)
+PET_RETIRED_ROUTE_REPLACEMENTS = {
+    "phantom_soul": "wukong", "phantom_zuoshang": "aobing",
+    "phantom_xiaokui": "nezha", "phantom_xianzhe": "yae_miko",
+}
+
+
+def replacement_pet_route(path: str) -> str:
+    return PET_RETIRED_ROUTE_REPLACEMENTS.get(path, path)
+
 
 
 def pet_evolution_trait_tier(path: str, completed_stage: int) -> int:
@@ -761,7 +772,7 @@ def pet_evolution_trait_tier(path: str, completed_stage: int) -> int:
     return min(max(0, completed_stage - 1) // 2, len(PET_EVOLUTION_PATHS[path]["traits"]) - 1)
 
 
-PET_EVOLUTION_PATH_LOTTERY = ["starlight"] * 16 + ["guardian"] * 15 + ["forest"] * 15 + ["storm"] * 14 + ["ocean"] * 12 + ["ember"] * 11 + ["cloud"] * 10 + ["pixel"] * 8 + ["wonky"] * 9 + ["eva"] * 7 + ["blade_soul"] * 7 + ["dnf"] * 7 + ["nba"] * 6 + ["honor"] * 7 + ["valorant"] * 7 + ["lol"] * 7 + ["nexus"] * 2 + ["phantom_soul"] * 7 + ["phantom_zuoshang"] * 7 + ["phantom_xiaokui"] * 7 + ["phantom_xianzhe"] * 7
+PET_EVOLUTION_PATH_LOTTERY = ["starlight"] * 16 + ["guardian"] * 15 + ["forest"] * 15 + ["storm"] * 14 + ["ocean"] * 12 + ["ember"] * 11 + ["cloud"] * 10 + ["pixel"] * 8 + ["wonky"] * 9 + ["eva"] * 7 + ["blade_soul"] * 7 + ["dnf"] * 7 + ["nba"] * 6 + ["honor"] * 7 + ["valorant"] * 7 + ["lol"] * 7 + ["nexus"] * 2 + ["wukong"] * 7 + ["nezha"] * 7 + ["aobing"] * 7 + ["doraemon"] * 7 + ["furina"] * 7 + ["yae_miko"] * 7
 PET_PUBLIC_EVOLUTION_PATHS = tuple(path for path, definition in PET_EVOLUTION_PATHS.items() if not definition.get("hidden"))
 PET_COLLAB_PATHS = PET_ILLUSTRATED_PATHS
 PET_PUBLIC_COLLAB_PATHS = tuple(path for path in PET_PUBLIC_EVOLUTION_PATHS if path in PET_COLLAB_PATHS)
@@ -917,6 +928,14 @@ def get_or_create_pet(db: Session, user_id: int) -> tuple[PetProfile, PetProgres
         collection = PetCollection(user_id=user_id)
         db.add(collection)
         db.flush()
+    # A retired route keeps its owner's progression and reserves its replacement.
+    if evolution.path in PET_RETIRED_ROUTE_REPLACEMENTS:
+        evolution.path = replacement_pet_route(evolution.path)
+        evolution.updated_at = utcnow()
+    raw_personas = (collection.inventory or {}).get(PET_PERSONAS_KEY, {})
+    raw_collab = raw_personas.get("collab") if isinstance(raw_personas, dict) else None
+    if isinstance(raw_collab, dict) and raw_collab.get("path") in PET_RETIRED_ROUTE_REPLACEMENTS:
+        set_pet_personas_state(collection, pet_personas_state(collection))
     return profile, progress, evolution, collection
 
 
@@ -1293,7 +1312,7 @@ def pet_personas_state(collection: PetCollection) -> dict[str, Any]:
     collab_raw = raw.get("collab")
     collab: dict[str, Any] | None = None
     if isinstance(collab_raw, dict) and collab_raw.get("unlocked"):
-        path = str(collab_raw.get("path") or "")
+        path = replacement_pet_route(str(collab_raw.get("path") or ""))
         stage = max(0, int(collab_raw.get("stage", 0) or 0))
         if path not in PET_COLLAB_PATHS or stage < 1:
             path, stage = "", 0
@@ -1305,7 +1324,7 @@ def pet_personas_state(collection: PetCollection) -> dict[str, Any]:
             "traits": [item for item in collab_raw.get("traits", []) if isinstance(item, str)][-24:] if isinstance(collab_raw.get("traits"), list) else [],
             "history": [item for item in collab_raw.get("history", []) if isinstance(item, dict)][:50] if isinstance(collab_raw.get("history"), list) else [],
             "pity": max(0, min(PET_SECONDARY_HARD_PITY, int(collab_raw.get("pity", 0) or 0))),
-            "target": str(collab_raw.get("target") or "") if str(collab_raw.get("target") or "") in PET_PUBLIC_COLLAB_PATHS else "",
+            "target": replacement_pet_route(str(collab_raw.get("target") or "")) if replacement_pet_route(str(collab_raw.get("target") or "")) in PET_PUBLIC_COLLAB_PATHS else "",
             "target_failures": max(0, min(3, int(collab_raw.get("target_failures", 0) or 0))),
             "unlocked_at": str(collab_raw.get("unlocked_at") or ""),
         }
@@ -1346,6 +1365,7 @@ def pet_owned_evolution_paths(db: Session, excluded_owner: tuple[int, str] | Non
     for owner_id, path, stage in db.execute(select(PetEvolution.user_id, PetEvolution.path, PetEvolution.stage)).all():
         if excluded_owner == (owner_id, PET_PERSONA_ORIGIN):
             continue
+        path = replacement_pet_route(path)
         if stage > 0 and path in PET_EVOLUTION_PATHS:
             paths.append(path)
     for collection in db.scalars(select(PetCollection)).all():
@@ -1370,6 +1390,7 @@ def pet_evolution_route_counts(db: Session, user_id: int) -> dict[str, int]:
             secondary_paths.append(collab["path"])
     counts = {path: 0 for path in PET_EVOLUTION_PATHS}
     for path in [*primary_paths, *secondary_paths]:
+        path = replacement_pet_route(path)
         if path in counts:
             counts[path] += 1
     return counts
@@ -1423,7 +1444,7 @@ def pet_targeted_evolution_state(collection: PetCollection) -> dict[str, Any]:
     raw = (collection.inventory or {}).get(PET_TARGETED_EVOLUTION_KEY, {})
     if not isinstance(raw, dict):
         raw = {}
-    target = str(raw.get("target") or "")
+    target = replacement_pet_route(str(raw.get("target") or ""))
     return {
         "target": target if target in PET_EVOLUTION_PATHS else "",
         "failures": max(0, min(3, int(raw.get("failures", 0) or 0))),

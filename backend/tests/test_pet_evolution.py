@@ -128,10 +128,10 @@ class PetEvolutionTest(unittest.TestCase):
         self.assertEqual(second["wheel_compensation"], 2)
         self.assertEqual(second["profile"]["wheel_chances"], 2)
 
-    def test_route_pool_includes_eleven_public_collaborations_and_one_hidden_route(self) -> None:
-        self.assertEqual(len(api.PET_EVOLUTION_PATHS), 21)
-        self.assertEqual(len(api.PET_PUBLIC_EVOLUTION_PATHS), 20)
-        self.assertEqual(len(api.PET_PUBLIC_COLLAB_PATHS), 11)
+    def test_route_pool_includes_thirteen_public_collaborations_and_one_hidden_route(self) -> None:
+        self.assertEqual(len(api.PET_EVOLUTION_PATHS), 23)
+        self.assertEqual(len(api.PET_PUBLIC_EVOLUTION_PATHS), 22)
+        self.assertEqual(len(api.PET_PUBLIC_COLLAB_PATHS), 13)
         self.assertTrue(api.PET_EVOLUTION_PATHS["nexus"]["hidden"])
         for path in {"eva", "blade_soul", "dnf", "nba", "honor", "valorant", "lol", "nexus"}:
             self.assertIn(path, api.PET_EVOLUTION_PATH_LOTTERY)
@@ -161,9 +161,9 @@ class PetEvolutionTest(unittest.TestCase):
         self.assertEqual(origin["evolution_path"], "forest")
         self.assertEqual(origin["personas"]["collab"]["path"], "eva")
 
-    def test_phantom_characters_can_be_targeted_in_both_personas(self) -> None:
+    def test_crossover_characters_can_be_targeted_in_both_personas(self) -> None:
         _, _, evolution, collection = api.get_or_create_pet(self.db, self.user.id)
-        for path, name in {"phantom_soul": "魂", "phantom_zuoshang": "左殇", "phantom_xiaokui": "沐小葵", "phantom_xianzhe": "弦者"}.items():
+        for path, name in {'wukong': '黑神话 · 悟空', 'nezha': '黑神话风 · 哪吒', 'aobing': '黑神话风 · 敖丙', 'doraemon': '哆啦A梦', 'furina': '水神 · 芙宁娜', 'yae_miko': '原神 · 八重神子'}.items():
             for persona in ("origin", "collab"):
                 with self.subTest(path=path, persona=persona):
                     evolution.path = "forest"
@@ -178,17 +178,17 @@ class PetEvolutionTest(unittest.TestCase):
                     self.assertTrue(result["success"])
                     state = result["profile"]["personas"][persona]
                     self.assertEqual(state["path"], path)
-                    self.assertEqual(state["name"], f"影之刃零 · {name}")
+                    self.assertEqual(state["name"], name)
                     self.assertEqual(state["stage"], 1)
                     self.assertIn(state["traits"][0], api.PET_EVOLUTION_PATHS[path]["traits"][0])
                     self.assertEqual(result["profile"]["evolution_chances"], 10)
                     other = "collab" if persona == "origin" else "origin"
                     self.assertEqual(result["profile"]["personas"][other]["path"], "eva" if other == "collab" else "forest")
 
-    def test_phantom_routes_reserve_both_personas_before_spending_tickets(self) -> None:
+    def test_crossover_routes_reserve_both_personas_before_spending_tickets(self) -> None:
         _, _, _, _, other_collection = self.add_opponent()
         api.set_pet_personas_state(other_collection, {"active": "collab", "collab": {
-            "unlocked": True, "stage": 3, "path": "phantom_soul", "traits": ["赤巾猎风"],
+            "unlocked": True, "stage": 3, "path": "wukong", "traits": ["如意金箍棒"],
         }})
         _, _, evolution, _ = api.get_or_create_pet(self.db, self.user.id)
         evolution.path = "forest"
@@ -196,10 +196,58 @@ class PetEvolutionTest(unittest.TestCase):
         evolution.available_chances = 20
         self.db.commit()
         with self.assertRaises(api.HTTPException) as occupied:
-            api.evolve_pet(api.PetEvolutionBody(spend=10, target_path="phantom_soul"), self.user, self.db)
+            api.evolve_pet(api.PetEvolutionBody(spend=10, target_path="wukong"), self.user, self.db)
         self.assertEqual(occupied.exception.status_code, 409)
         self.assertEqual(evolution.available_chances, 20)
         self.assertEqual(evolution.path, "forest")
+
+    def test_retired_routes_reserve_replacements_before_their_owner_logs_in(self) -> None:
+        other, _, _, other_evolution, other_collection = self.add_opponent()
+        _, _, evolution, _ = api.get_or_create_pet(self.db, self.user.id)
+        evolution.path, evolution.stage, evolution.available_chances = "forest", 6, 20
+        for old, replacement in api.PET_RETIRED_ROUTE_REPLACEMENTS.items():
+            for persona in ("origin", "collab"):
+                with self.subTest(old=old, persona=persona):
+                    other_evolution.path = old if persona == "origin" else "storm"
+                    other_evolution.stage = 12
+                    other_evolution.available_chances = 17
+                    other_evolution.traits = ["旧词条保留"]
+                    api.set_pet_personas_state(other_collection, {"active": persona, "collab": {
+                        "unlocked": True, "stage": 9, "path": old if persona == "collab" else "eva",
+                        "traits": ["第二人格词条"], "pity": 7, "target": old, "target_failures": 2,
+                    }})
+                    self.db.commit()
+                    self.assertEqual(api.pet_evolution_route_counts(self.db, self.user.id)[replacement], 1)
+                    with self.assertRaises(api.HTTPException) as occupied:
+                        api.evolve_pet(api.PetEvolutionBody(spend=10, target_path=replacement), self.user, self.db)
+                    self.assertEqual(occupied.exception.status_code, 409)
+                    self.assertEqual(evolution.available_chances, 20)
+                    # Loading the old account performs an idempotent, free migration.
+                    _, _, migrated, collection = api.get_or_create_pet(self.db, other.id)
+                    state = api.pet_personas_state(collection)
+                    self.assertEqual(migrated.path, replacement if persona == "origin" else "storm")
+                    self.assertEqual(migrated.stage, 12)
+                    self.assertEqual(migrated.available_chances, 17)
+                    self.assertEqual(migrated.traits, ["旧词条保留"])
+                    self.assertEqual(state["collab"]["path"], replacement if persona == "collab" else "eva")
+                    self.assertEqual(state["collab"]["stage"], 9)
+                    self.assertEqual(state["collab"]["pity"], 7)
+                    self.assertEqual(state["collab"]["target"], replacement)
+                    self.assertEqual(state["collab"]["target_failures"], 2)
+                    self.assertEqual(state["collab"]["traits"], ["第二人格词条"])
+                    self.assertEqual(api.get_or_create_pet(self.db, other.id)[2].available_chances, 17)
+
+    def test_retired_routes_cannot_be_drawn_or_targeted(self) -> None:
+        _, _, evolution, _ = api.get_or_create_pet(self.db, self.user.id)
+        evolution.path, evolution.stage, evolution.available_chances = "forest", 6, 20
+        self.db.commit()
+        for old in api.PET_RETIRED_ROUTE_REPLACEMENTS:
+            self.assertNotIn(old, api.PET_EVOLUTION_PATHS)
+            self.assertNotIn(old, api.PET_EVOLUTION_PATH_LOTTERY)
+            with self.assertRaises(api.HTTPException) as invalid:
+                api.evolve_pet(api.PetEvolutionBody(spend=10, target_path=old), self.user, self.db)
+            self.assertEqual(invalid.exception.status_code, 422)
+        self.assertEqual(evolution.available_chances, 20)
 
     def test_collab_persona_requires_origin_stage_six_and_ten_tickets(self) -> None:
         _, _, evolution, _ = api.get_or_create_pet(self.db, self.user.id)

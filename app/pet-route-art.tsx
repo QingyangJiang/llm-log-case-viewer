@@ -1,8 +1,8 @@
 "use client";
 
 import { useId } from "react";
-import { PHANTOM_ROUTES, isPhantomRoute } from "./pet-phantom-data";
-import { PhantomRouteArt } from "./pet-phantom-art";
+import { CROSSOVER_ROUTES, isCrossoverRoute } from "./pet-crossover-data";
+import { CrossoverRouteArt } from "./pet-crossover-art";
 import { RouteRegalia } from "./pet-route-regalia";
 import { RouteProgress } from "./pet-route-progress";
 
@@ -14,10 +14,12 @@ export const ILLUSTRATED_ROUTES = {
   honor: { light: "#fff7fa", base: "#e3c6df", dark: "#755f86", accent: "#c5a4df", soft: "#f7edf7", caption: "梦奇灵感 · 绒耳与梦泡" },
   valorant: { light: "#f3faff", base: "#bfdadf", dark: "#304b5e", accent: "#72decf", soft: "#e6fbf7", caption: "捷风灵感 · 白发与飞刃" },
   lol: { light: "#ffecdc", base: "#edc6b8", dark: "#684b64", accent: "#9edeea", soft: "#f3edf6", caption: "阿狸灵感 · 灵珠与狐火" },
-  phantom_soul: PHANTOM_ROUTES.phantom_soul.palette,
-  phantom_zuoshang: PHANTOM_ROUTES.phantom_zuoshang.palette,
-  phantom_xiaokui: PHANTOM_ROUTES.phantom_xiaokui.palette,
-  phantom_xianzhe: PHANTOM_ROUTES.phantom_xianzhe.palette,
+  wukong: CROSSOVER_ROUTES.wukong.palette,
+  nezha: CROSSOVER_ROUTES.nezha.palette,
+  aobing: CROSSOVER_ROUTES.aobing.palette,
+  doraemon: CROSSOVER_ROUTES.doraemon.palette,
+  furina: CROSSOVER_ROUTES.furina.palette,
+  yae_miko: CROSSOVER_ROUTES.yae_miko.palette,
   nexus: { light: "#9285ca", base: "#504d88", dark: "#2a2b53", accent: "#d0bcff", soft: "#ede7ff", caption: "星河绒羽 · 月相之环" },
 } as const;
 
@@ -54,7 +56,7 @@ export function PetRouteArt({ path, stage = 1 }: { path: IllustratedRoute; stage
   const body = paint("body");
   const metal = paint("metal");
   const ink = palette.dark;
-  if (isPhantomRoute(path)) return <PhantomRouteArt path={path} stage={stage} />;
+  if (isCrossoverRoute(path)) return <CrossoverRouteArt path={path} stage={stage} />;
   return <svg className={`pet-route-illustration route-art-${path}`} viewBox="0 0 160 160" fill="none" aria-hidden="true" focusable="false">
     <defs>
       <linearGradient id={`pet-${uid}-body`} x1="50" y1="36" x2="113" y2="128" gradientUnits="userSpaceOnUse"><stop stopColor={palette.light} /><stop offset="1" stopColor={palette.base} /></linearGradient>

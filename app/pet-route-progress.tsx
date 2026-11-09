@@ -1,4 +1,4 @@
-import { PHANTOM_ROUTES } from "./pet-phantom-data";
+import { CROSSOVER_ROUTES } from "./pet-crossover-data";
 import type { IllustratedRoute } from "./pet-route-art";
 
 export const ROUTE_MILESTONES: Record<IllustratedRoute, readonly string[]> = {
@@ -9,10 +9,12 @@ export const ROUTE_MILESTONES: Record<IllustratedRoute, readonly string[]> = {
   honor: ["入梦之灵", "梦力泡泡", "梦境护盾", "梦境环游", "幻梦森林", "寻梦之旅"],
   valorant: ["疾风特工", "乘风起势", "浮空飞刃", "五刃齐发", "逐风轨迹", "王牌时刻"],
   lol: ["灵狐来客", "灵魂宝珠", "狐火环绕", "灵魄突袭", "九尾舒展", "灵魂共鸣"],
-  phantom_soul: PHANTOM_ROUTES.phantom_soul.milestones,
-  phantom_zuoshang: PHANTOM_ROUTES.phantom_zuoshang.milestones,
-  phantom_xiaokui: PHANTOM_ROUTES.phantom_xiaokui.milestones,
-  phantom_xianzhe: PHANTOM_ROUTES.phantom_xianzhe.milestones,
+  wukong: CROSSOVER_ROUTES.wukong.milestones,
+  nezha: CROSSOVER_ROUTES.nezha.milestones,
+  aobing: CROSSOVER_ROUTES.aobing.milestones,
+  doraemon: CROSSOVER_ROUTES.doraemon.milestones,
+  furina: CROSSOVER_ROUTES.furina.milestones,
+  yae_miko: CROSSOVER_ROUTES.yae_miko.milestones,
   nexus: ["未知来客", "月相流转", "星羽展开", "双重星轨", "星图浮现", "次元观测"],
 };
 export const ROUTE_STAGE_THRESHOLDS = [1, 3, 6, 9, 12, 15] as const;

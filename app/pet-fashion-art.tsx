@@ -17,7 +17,7 @@ function tint(color: string, white: number) {
 }
 
 /** Tailored to the shared face/body anchors. Icons and worn clothes use identical paths. */
-export function PetFashionArt({ item, illustrated = true, icon = false }: { item: FashionPiece; illustrated?: boolean; icon?: boolean }) {
+export function PetFashionArt({ item, illustrated = true, icon = false, crossover = false }: { item: FashionPiece; illustrated?: boolean; icon?: boolean; crossover?: boolean }) {
   const { slot, theme, primary, secondary } = item;
   const uid = useId().replace(/[^a-zA-Z0-9_-]/g, "");
   const fabric = `fashion-${uid}-fabric`;
@@ -96,7 +96,7 @@ export function PetFashionArt({ item, illustrated = true, icon = false }: { item
   </g>;
   // Round toes are intentionally retained from the original wardrobe.
   if (slot === "footwear") art = <g fill={p}><path d="M51 130q10-8 20 0v9H49Z" /><path d="M89 130q10-8 20 0l2 9H89Z" /><path d="M52 135h17m22 0h17" stroke={s} strokeWidth="3" /></g>;
-  const offset = icon || illustrated ? 0 : slot === "headwear" ? -15 : slot === "footwear" ? -7 : -3;
+  const offset = icon ? 0 : crossover ? slot === "headwear" ? -14 : slot === "outfit" || slot === "outerwear" ? -11 : 0 : illustrated ? 0 : slot === "headwear" ? -15 : slot === "footwear" ? -7 : -3;
   return <svg className={icon ? "pet-fashion-icon" : `pet-fashion-art pet-fashion-art-${slot}`} viewBox={icon ? CROPS[slot] : "0 0 160 160"} fill="none" aria-hidden="true" focusable="false">
     <defs><linearGradient id={fabric} x1="0" y1="0" x2=".8" y2="1"><stop stopColor={tint(primary, .46)} /><stop offset=".48" stopColor={tint(primary, .12)} /><stop offset="1" stopColor={primary} /></linearGradient></defs>
     <g transform={`translate(0 ${offset})`} stroke={ink} strokeWidth={slot === "footwear" ? 1.6 : 1.2} strokeLinejoin="round" strokeLinecap="round">{art}</g>

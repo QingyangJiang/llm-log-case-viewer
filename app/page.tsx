@@ -8,6 +8,7 @@ import { PetCreatureVisual } from "./pet-creature-visual";
 import { PetFashionArt } from "./pet-fashion-art";
 import { PetAccessoryArt, PetEquipmentArt } from "./pet-ornament-art";
 import { PET_COLORS, PET_EVOLUTION_PATHS, PET_FASHION_CATALOG, PET_FASHION_SLOTS, PET_FASHION_THEMES, type PetEvolutionPath } from "./pet-visual-data";
+import { replacementPetRoute } from "./pet-crossover-data";
 import { ROUTE_MILESTONES, ROUTE_STAGE_THRESHOLDS, routeMilestone, routeMilestoneIndex } from "./pet-route-progress";
 import { cleanApiBaseUrl, modelApiEndpoint, modelApiRequest } from "./model-api";
 import type { ApiProtocol, ModelApiMessage } from "./model-api";
@@ -372,8 +373,8 @@ const PET_EVOLUTION_PATH_LOTTERY: Exclude<PetEvolutionPath, "">[] = [
   ...Array(12).fill("ocean"), ...Array(11).fill("ember"), ...Array(10).fill("cloud"), ...Array(8).fill("pixel"), ...Array(9).fill("wonky"),
   ...Array(7).fill("eva"), ...Array(7).fill("blade_soul"), ...Array(7).fill("dnf"), ...Array(6).fill("nba"),
   ...Array(7).fill("honor"), ...Array(7).fill("valorant"), ...Array(7).fill("lol"), ...Array(2).fill("nexus"),
-  ...Array(7).fill("phantom_soul"), ...Array(7).fill("phantom_zuoshang"),
-  ...Array(7).fill("phantom_xiaokui"), ...Array(7).fill("phantom_xianzhe"),
+  ...Array(7).fill("wukong"), ...Array(7).fill("nezha"), ...Array(7).fill("aobing"),
+  ...Array(7).fill("doraemon"), ...Array(7).fill("furina"), ...Array(7).fill("yae_miko"),
 ] as Exclude<PetEvolutionPath, "">[];
 const PET_PUBLIC_EVOLUTION_PATHS = Object.entries(PET_EVOLUTION_PATHS).filter(([, item]) => !item.hidden) as [Exclude<PetEvolutionPath, "">, (typeof PET_EVOLUTION_PATHS)[Exclude<PetEvolutionPath, "">]][];
 const PET_COLLAB_PATHS = new Set<PetEvolutionPath>(Object.keys(ILLUSTRATED_ROUTES) as PetEvolutionPath[]);
@@ -578,7 +579,8 @@ function normalizedPetProfile(value: Partial<PetProfile> | null | undefined): Pe
   const accessory = PET_ACCESSORIES.some((item) => item.id === value?.accessory && item.level <= level) ? value!.accessory as PetAccessory : "none";
   const storedCreditedLevel = Number.isFinite(value?.evolution_credited_level) ? Math.max(1, Math.floor(Number(value?.evolution_credited_level))) : 1;
   const storedChances = Number.isFinite(value?.evolution_chances) ? Math.max(0, Math.floor(Number(value?.evolution_chances))) : 0;
-  const evolutionPath = typeof value?.evolution_path === "string" && value.evolution_path in PET_EVOLUTION_PATHS ? value.evolution_path as PetEvolutionPath : "";
+  const replacedPath = replacementPetRoute(String(value?.evolution_path ?? ""));
+  const evolutionPath = replacedPath in PET_EVOLUTION_PATHS ? replacedPath as PetEvolutionPath : "";
   const evolutionStage = evolutionPath ? Math.max(0, Math.floor(Number(value?.evolution_stage) || 0)) : 0;
   const inventory = Array.isArray(value?.inventory) ? value.inventory.filter((item): item is PetEquipment => isObject(item) && typeof item.id === "string").flatMap((item) => {
     const catalogItem = PET_EQUIPMENT_CATALOG.find((candidate) => candidate.id === item.id);
@@ -661,12 +663,14 @@ function normalizedPetProfile(value: Partial<PetProfile> | null | undefined): Pe
   })).slice(0, 30) : [];
   const normalizePersona = (raw: unknown, id: PetPersonaId, fallback: Partial<PetPersonaState>): PetPersonaState => {
     const item = isObject(raw) ? raw : {};
-    const path = typeof item.path === "string" && item.path in PET_EVOLUTION_PATHS ? item.path as PetEvolutionPath : fallback.path ?? "";
+    const replacedPath = replacementPetRoute(String(item.path ?? fallback.path ?? ""));
+    const path = replacedPath in PET_EVOLUTION_PATHS ? replacedPath as PetEvolutionPath : "";
     const pity = Math.max(0, Math.min(id === "collab" ? 12 : 20, Math.floor(Number(item.pity ?? fallback.pity) || 0)));
     const calculatedRate = id === "collab"
       ? pity >= 12 ? 100 : Math.min(50, 5 + echo + Math.min(30, pity * (2 + steady)) + equipmentState.stats.evolution_bonus)
       : Math.min(55, 10 + echo + Math.min(30, pity * (2 + steady)) + equipmentState.stats.evolution_bonus);
-    const target = typeof item.target === "string" && item.target in PET_EVOLUTION_PATHS ? item.target as PetEvolutionPath : fallback.target ?? "";
+    const replacedTarget = replacementPetRoute(String(item.target ?? fallback.target ?? ""));
+    const target = replacedTarget in PET_EVOLUTION_PATHS ? replacedTarget as PetEvolutionPath : "";
     const targetFailures = Math.max(0, Math.min(3, Math.floor(Number(item.target_failures ?? fallback.target_failures) || 0)));
     return {
       id,
@@ -2539,7 +2543,7 @@ function CompanionPet({ visible, message, mood, completed, total, pulse, hasNext
                 })}</div>
               </section>
               {profile.evolution_path ? <section className="pet-targeted-reroute"><header><div><span>TARGETED REROUTE</span><strong>十券定向换路线</strong><small>失败不改变当前人格路线；同一目标每次失败 +10%，定向祝福每层额外 +5%。已被任何人格占用的路线不会重复分配，隐藏路线不可定向。</small></div><b>{targetedEvolutionRate}%<small>当前成功率</small></b></header><div>{targetedRouteOptions.filter(([id]) => id !== profile.evolution_path).map(([id, item]) => <button type="button" className={`${targetEvolutionPath === id ? "active" : ""} ${profile.targeted_evolution_target === id && profile.targeted_evolution_failures ? "pity" : ""}`} onClick={() => setTargetEvolutionPath(id as PetEvolutionPath)} key={id}><i className={isIllustratedRoute(id) ? "route-choice-icon" : ""}>{isIllustratedRoute(id) ? <PetRouteArt path={id} /> : item.motif}</i><span>{item.name}<small>{profile.targeted_evolution_target === id && profile.targeted_evolution_failures ? `已失败 ${profile.targeted_evolution_failures} 次` : item.tone}</small></span></button>)}</div><footer><span><b>{profile.targeted_evolution_blessings}</b> 层定向祝福 · 成功补偿 <b>{profile.evolution_stage * 2}</b> 次大转盘</span><button type="button" disabled={busy || profile.evolution_chances < 10 || !targetEvolutionPath || targetEvolutionPath === profile.evolution_path} onClick={() => onEvolve(10, targetEvolutionPath)}>{profile.evolution_chances < 10 ? `还差 ${10 - profile.evolution_chances} 张券` : targetEvolutionPath ? `消耗 10 券 · ${targetedEvolutionRate}%` : "先选择目标路线"}</button></footer></section> : null}
-              {profile.evolution_traits.length ? <div className="pet-evolution-traits">{profile.evolution_traits.slice(-12).map((trait, index) => <span key={`${trait}-${index}`}>{trait}</span>)}</div> : <p>路线池现有 {PET_PUBLIC_EVOLUTION_PATHS.length} 条公开路线，包含 EVA、剑灵、DNF、NBA、王者、VALORANT、LOL，以及《影之刃零》魂、左殇、沐小葵、弦者四条角色主题；另有 1 条只能随机发现的隐藏路线。</p>}
+              {profile.evolution_traits.length ? <div className="pet-evolution-traits">{profile.evolution_traits.slice(-12).map((trait, index) => <span key={`${trait}-${index}`}>{trait}</span>)}</div> : <p>路线池现有 {PET_PUBLIC_EVOLUTION_PATHS.length} 条公开路线，包含 EVA、剑灵、DNF、NBA、王者、VALORANT、LOL，以及悟空、暗黑神话风哪吒与敖丙、哆啦A梦、芙宁娜、八重神子六条角色主题；另有 1 条只能随机发现的隐藏路线。</p>}
               <div className="pet-evolution-actions"><button type="button" disabled={busy || profile.evolution_chances < 1} onClick={() => onEvolve(1)}><strong>抽一次 · {profile.active_persona === "origin" ? "本源" : "联名"}</strong><small>消耗 1 张 · 当前 {profile.evolution_success_rate}%</small></button><button className="guaranteed" type="button" disabled={busy || profile.evolution_chances < 5} onClick={() => onEvolve(5)}><strong>{profile.evolution_path ? `五券随机换${profile.active_persona === "collab" ? "联名" : ""}路线` : "五券首进化"}</strong><small>{profile.evolution_path ? `只重置当前人格 · 补偿 ${profile.evolution_stage * 2} 次转盘` : "消耗 5 张 · 100% 成功"}</small></button></div>
               {profile.evolution_history.length ? <details className="pet-evolution-history"><summary>最近抽奖记录 · {profile.evolution_history.length}</summary>{profile.evolution_history.slice(0, 10).map((event, index) => <div key={`${event.at}-${index}`}><span>{event.type === "gift" ? event.trait : event.success ? `${event.critical ? "暴击 · " : "成功 · "}${event.trait || PET_EVOLUTION_PATHS[event.path as Exclude<PetEvolutionPath, "">]?.name || "新形态"}${event.wheel_compensation ? ` · 补偿 ${event.wheel_compensation} 次转盘` : ""}${event.skill ? ` · ${event.skill.name} Lv.${event.skill.level}` : ""}` : event.type === "targeted_reroute" ? `定向失败 · 当前路线保留，下次同目标概率提升` : `失败 · 保底提升至 ${event.pity_after ?? 0}`}</span><small>{event.type === "gift" ? event.sender : event.type === "targeted_reroute" ? `十券定向 ${event.success_rate ?? 70}%` : event.type === "reroute" ? "五券随机换路线" : event.spent === 5 ? "五券首进化" : `单抽 ${event.success_rate ?? 10}%`} · {new Date(event.at).toLocaleString()}</small></div>)}</details> : null}
               {isAdmin ? <form className="pet-ticket-gift" onSubmit={(event) => { event.preventDefault(); void onGiftTickets(giftUserIds, giftAmount, giftNote).then(() => setGiftUserIds([])).catch(() => undefined); }}>
